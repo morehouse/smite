@@ -2,9 +2,9 @@ FROM debian:bookworm AS builder
 
 # Build arguments
 ARG LLVM_V=19
-ARG GO_VERSION=1.23.4
-ARG LND_VERSION=v0.19.3-beta
-ARG BITCOIN_VERSION=28.1
+ARG GO_VERSION=1.24.11
+ARG LND_VERSION=v0.20.0-beta
+ARG BITCOIN_VERSION=29.2
 
 ENV LLVM_V=${LLVM_V}
 
@@ -58,7 +58,7 @@ RUN cd cmd/lncli && go build
 
 # Download and install Bitcoin Core
 WORKDIR /tmp
-RUN wget https://bitcoin.org/bin/bitcoin-core-${BITCOIN_VERSION}/bitcoin-${BITCOIN_VERSION}-x86_64-linux-gnu.tar.gz && \
+RUN wget https://bitcoincore.org/bin/bitcoin-core-${BITCOIN_VERSION}/bitcoin-${BITCOIN_VERSION}-x86_64-linux-gnu.tar.gz && \
     tar -xzf bitcoin-${BITCOIN_VERSION}-x86_64-linux-gnu.tar.gz && \
     mv bitcoin-${BITCOIN_VERSION}/bin/bitcoind /usr/local/bin/bitcoind && \
     mv bitcoin-${BITCOIN_VERSION}/bin/bitcoin-cli /usr/local/bin/bitcoin-cli && \
