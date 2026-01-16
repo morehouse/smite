@@ -3,7 +3,6 @@ package lnd
 /*
 #cgo CFLAGS: -fPIC
 
-#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,7 +12,6 @@ package lnd
 
 static uint8_t *__coverage_map = NULL;
 static size_t __coverage_map_size = 0;
-static pthread_mutex_t __coverage_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int __coverage_initialized = 0;
 
 static uint8_t *__counters_start = NULL;
@@ -61,15 +59,11 @@ __attribute__((weak)) void sancov_copy_coverage_to_shmem(void) {
     return;
   }
 
-  pthread_mutex_lock(&__coverage_mutex);
-
   size_t counters_size = __counters_end - __counters_start;
   size_t copy_size =
       counters_size < __coverage_map_size ? counters_size : __coverage_map_size;
 
   memcpy(__coverage_map, __counters_start, copy_size);
-
-  pthread_mutex_unlock(&__coverage_mutex);
 }
 
 __attribute__((weak)) void __sanitizer_cov_pcs_init(const uintptr_t *pcs_beg,
