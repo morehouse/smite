@@ -36,6 +36,11 @@ static int __init_coverage_map(void) {
     printf("Warning: __AFL_SHM_ID not set, coverage tracking disabled\n");
     return 0;
   }
+  const char *map_size_str = getenv("AFL_MAP_SIZE");
+  if (!map_size_str) {
+    printf("Warning: AFL_MAP_SIZE not set, coverage tracking disabled\n");
+    return 0;
+  }
 
   int shm_id = atoi(shm_id_str);
   if (shm_id < 0) {
@@ -50,12 +55,7 @@ static int __init_coverage_map(void) {
     return 0;
   }
 
-  const char *map_size_str = getenv("AFL_MAP_SIZE");
-  if (map_size_str) {
-    __coverage_map_size = (size_t)atoi(map_size_str);
-  } else {
-    __coverage_map_size = 65536;
-  }
+  __coverage_map_size = (size_t)atoi(map_size_str);
 
   printf("Coverage map initialized: %p (size: %zu)\n", __coverage_map,
          __coverage_map_size);
