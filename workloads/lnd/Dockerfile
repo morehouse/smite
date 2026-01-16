@@ -51,8 +51,8 @@ RUN git clone --depth 1 --branch ${LND_VERSION} https://github.com/lightningnetw
 
 WORKDIR /lnd
 
-# Apply coverage patch and build LND with coverage instrumentation
-RUN git apply /smite/workloads/lnd/0001-sancov.patch
+# Add coverage tracking and build LND with coverage instrumentation
+COPY ./workloads/lnd/sancov.go /lnd/sancov.go
 RUN cd cmd/lnd && CGO_ENABLED=1 go build -v -tags=libfuzzer -gcflags=all=-d=libfuzzer
 RUN cd cmd/lncli && go build
 

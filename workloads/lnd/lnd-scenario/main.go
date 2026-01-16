@@ -41,6 +41,10 @@ type DaemonManager struct {
 	bitcoindCmd *exec.Cmd
 	lndCmd      *exec.Cmd
 	lndPubKey   string
+
+	// Pipes for coverage sync
+	coverageTriggerWrite *os.File // Write to trigger coverage copying
+	coverageAckRead      *os.File // Read to wait for copy completion
 }
 
 func check(err error) {
@@ -164,8 +168,38 @@ func (dm *DaemonManager) startLnd() error {
 	)
 	dm.lndCmd.Env = os.Environ()
 
+	// Create pipes for coverage sync if in fuzzing mode
+	var triggerRead, ackWrite *os.File
+	if os.Getenv("__AFL_SHM_ID") != "" {
+		var err error
+		triggerRead, dm.coverageTriggerWrite, err = os.Pipe()
+		if err != nil {
+			return fmt.Errorf("failed to create trigger pipe: %v", err)
+		}
+		dm.coverageAckRead, ackWrite, err = os.Pipe()
+		if err != nil {
+			return fmt.Errorf("failed to create ack pipe: %v", err)
+		}
+
+		// Pass coverage pipe FDs to LND via ExtraFiles. FDs start at 3
+		// (after stdin=0, stdout=1, stderr=2).
+		dm.lndCmd.ExtraFiles = []*os.File{triggerRead, ackWrite}
+		dm.lndCmd.Env = append(dm.lndCmd.Env,
+			"COVERAGE_TRIGGER_FD=3",
+			"COVERAGE_ACK_FD=4",
+		)
+	}
+
 	if err := dm.lndCmd.Start(); err != nil {
 		return fmt.Errorf("failed to start lnd: %v", err)
+	}
+
+	// Close the LND-side pipe ends
+	if triggerRead != nil {
+		triggerRead.Close()
+	}
+	if ackWrite != nil {
+		ackWrite.Close()
 	}
 
 	// Wait for lnd to be ready
@@ -239,8 +273,36 @@ func (dm *DaemonManager) getLndAddr() (*lnwire.NetAddress, error) {
 	}, nil
 }
 
+// SyncCoverage triggers LND to copy coverage counters to AFL shared memory.
+func (dm *DaemonManager) SyncCoverage() error {
+	if dm.coverageTriggerWrite == nil || dm.coverageAckRead == nil {
+		return nil // Not in fuzzing mode
+	}
+
+	// Trigger coverage copy
+	if _, err := dm.coverageTriggerWrite.Write([]byte{0}); err != nil {
+		return fmt.Errorf("failed to trigger coverage: %v", err)
+	}
+
+	// Wait for copy to finish
+	buf := make([]byte, 1)
+	if _, err := dm.coverageAckRead.Read(buf); err != nil {
+		return fmt.Errorf("failed while waiting for coverage: %v", err)
+	}
+
+	return nil
+}
+
 func (dm *DaemonManager) Cleanup() {
 	log.Println("Cleaning up daemons...")
+
+	// Close coverage pipes
+	if dm.coverageTriggerWrite != nil {
+		dm.coverageTriggerWrite.Close()
+	}
+	if dm.coverageAckRead != nil {
+		dm.coverageAckRead.Close()
+	}
 
 	// Attempt graceful shutdown via SIGTERM. After shutdownTimeout,
 	// forcefully kill unresponsive processes.
@@ -436,18 +498,10 @@ func main() {
 	}
 	conn.Flush()
 
-	lndDataDir := filepath.Join(dm.dataDir, "lnd")
-	// Call `GetInfo()` rpc to trigger the copying of the coverage map.
-	// TODO: using the `lncli` tool is really slow.
-	cmd := exec.Command("lncli",
-		"--lnddir="+lndDataDir,
-		"--rpcserver="+lndHost+":"+lndRPCPort,
-		"--network=regtest",
-		"getinfo",
-	)
-	if err := cmd.Run(); err != nil {
-		runner.Fail("GetInfo failed, lnd might be dead")
-		return
+	// Sleep while LND processes the message, then sync coverage.
+	time.Sleep(20 * time.Millisecond)
+	if err := dm.SyncCoverage(); err != nil {
+		log.Printf("Coverage sync failed: %v", err)
 	}
 
 	log.Println("Fuzzing iteration complete")
