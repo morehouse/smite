@@ -24,8 +24,11 @@ if [ $# -lt 1 ]; then
     exit 1
 fi
 
-CORPUS_DIR="$1"
+# Convert to absolute paths to prevent Docker from interpreting relative paths
+# as named volumes
+CORPUS_DIR="$(cd "$1" && pwd)"
 OUTPUT_DIR="${2:-./coverage-report}"
+OUTPUT_DIR="$(mkdir -p "$OUTPUT_DIR" && cd "$OUTPUT_DIR" && pwd)"
 
 # Validate PARALLEL
 MAX_JOBS="${PARALLEL:-$(nproc)}"
