@@ -15,7 +15,6 @@ import (
 // It retrieves fuzz inputs from the Nyx agent and reports test results.
 type NyxRunner struct {
 	maxInputSize int
-	released     bool
 }
 
 // NewNyxRunner creates a new NyxRunner instance and initializes the Nyx agent.
@@ -33,7 +32,6 @@ func NewNyxRunner() (*NyxRunner, error) {
 
 	return &NyxRunner{
 		maxInputSize: maxInputSize,
-		released:     false,
 	}, nil
 }
 
@@ -48,23 +46,18 @@ func (r *NyxRunner) GetFuzzInput() []byte {
 // Fail reports a crash to the Nyx agent with the given error message.
 func (r *NyxRunner) Fail(message string) {
 	nyxFail(message)
-	r.released = true
 }
 
 // Skip skips the current test case by resetting the coverage bitmap
 // and VM state.
 func (r *NyxRunner) Skip() {
 	nyxSkip()
-	r.released = true
 }
 
 // Close releases the Nyx agent, resetting the VM to the snapshot state.
 // This should be called after successfully processing a test case.
 func (r *NyxRunner) Close() error {
-	if !r.released {
-		nyxRelease()
-		r.released = true
-	}
+	nyxRelease()
 	return nil
 }
 
