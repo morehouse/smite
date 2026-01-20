@@ -22,20 +22,8 @@ ENV PATH="/usr/local/go/bin:${PATH}"
 ENV GOPATH="/go"
 ENV PATH="${GOPATH}/bin:${PATH}"
 
-# Copy smite source
-WORKDIR /smite
-COPY . .
-
 # Clone LND (do NOT apply sancov.patch - native Go coverage doesn't need it)
 RUN git clone --depth 1 --branch ${LND_VERSION} https://github.com/lightningnetwork/lnd.git /lnd
-
-WORKDIR /lnd
-
-# Build LND with Go's native coverage instrumentation.
-# -cover enables coverage, -covermode=count tracks execution counts, -coverpkg
-# specifies which packages to instrument
-RUN cd cmd/lnd && go build -cover -covermode=count -coverpkg=github.com/lightningnetwork/lnd/...
-RUN cd cmd/lncli && go build
 
 # Download and install Bitcoin Core
 WORKDIR /tmp
@@ -45,7 +33,17 @@ RUN wget https://bitcoincore.org/bin/bitcoin-core-${BITCOIN_VERSION}/bitcoin-${B
     mv bitcoin-${BITCOIN_VERSION}/bin/bitcoin-cli /usr/local/bin/bitcoin-cli && \
     rm -rf bitcoin-${BITCOIN_VERSION}*
 
+# Build LND with Go's native coverage instrumentation.
+# -cover enables coverage, -covermode=count tracks execution counts, -coverpkg
+# specifies which packages to instrument
+WORKDIR /lnd
+RUN cd cmd/lnd && go build -cover -covermode=count -coverpkg=github.com/lightningnetwork/lnd/...
+RUN cd cmd/lncli && go build
+
 # Build lnd-scenario (uses LocalRunner for coverage, no CGO/nyx needed)
+WORKDIR /smite
+COPY bindings/go/ bindings/go/
+COPY workloads/lnd/lnd-scenario/ workloads/lnd/lnd-scenario/
 WORKDIR /smite/workloads/lnd/lnd-scenario
 RUN go build -v -o /lnd-scenario
 

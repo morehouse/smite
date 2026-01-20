@@ -42,19 +42,8 @@ ENV PATH="/usr/local/go/bin:${PATH}"
 ENV GOPATH="/go"
 ENV PATH="${GOPATH}/bin:${PATH}"
 
-# Copy smite source
-WORKDIR /smite
-COPY . .
-
 # Clone LND
 RUN git clone --depth 1 --branch ${LND_VERSION} https://github.com/lightningnetwork/lnd.git /lnd
-
-WORKDIR /lnd
-
-# Add coverage tracking and build LND with coverage instrumentation
-COPY ./workloads/lnd/sancov.go /lnd/sancov.go
-RUN cd cmd/lnd && CGO_ENABLED=1 go build -v -tags=libfuzzer -gcflags=all=-d=libfuzzer
-RUN cd cmd/lncli && go build
 
 # Download and install Bitcoin Core
 WORKDIR /tmp
@@ -64,11 +53,22 @@ RUN wget https://bitcoincore.org/bin/bitcoin-core-${BITCOIN_VERSION}/bitcoin-${B
     mv bitcoin-${BITCOIN_VERSION}/bin/bitcoin-cli /usr/local/bin/bitcoin-cli && \
     rm -rf bitcoin-${BITCOIN_VERSION}*
 
-# Build smite-nyx-sys with correct coverage map size
+# Copy sancov.go and build LND with coverage instrumentation
+WORKDIR /lnd
+COPY ./workloads/lnd/sancov.go /lnd/sancov.go
+RUN cd cmd/lnd && CGO_ENABLED=1 go build -v -tags=libfuzzer -gcflags=all=-d=libfuzzer
+RUN cd cmd/lncli && go build
+
+# Copy smite workspace files and build smite-nyx-sys
 WORKDIR /smite
+COPY Cargo.toml Cargo.lock ./
+COPY smite/ smite/
+COPY smite-nyx-sys/ smite-nyx-sys/
 RUN TARGET_PATH=/lnd/cmd/lnd/lnd cargo build -p smite-nyx-sys --release
 
 # Build the lnd-scenario fuzzing harness with nyx support
+COPY bindings/go/ bindings/go/
+COPY workloads/lnd/lnd-scenario/ workloads/lnd/lnd-scenario/
 WORKDIR /smite/workloads/lnd/lnd-scenario
 RUN CGO_ENABLED=1 go build -v -tags=nyx -o /lnd-scenario
 
