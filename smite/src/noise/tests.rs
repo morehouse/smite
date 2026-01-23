@@ -489,3 +489,142 @@ fn full_handshake_both_sides() {
         .expect("message decryption successful");
     assert_eq!(decrypted2, msg2);
 }
+
+// =============================================================================
+// NoiseConnection Integration Tests
+// =============================================================================
+
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::thread;
+use std::time::Duration;
+
+use super::cipher::MAC_SIZE;
+use super::connection::NoiseConnection;
+
+#[test]
+fn noise_connection_handshake_and_messages() {
+    let timeout = Duration::from_secs(5);
+
+    // Use BOLT 8 test vector keys for determinism
+    let initiator_static =
+        secret_key("1111111111111111111111111111111111111111111111111111111111111111");
+    let initiator_ephemeral =
+        secret_key("1212121212121212121212121212121212121212121212121212121212121212");
+    let responder_static =
+        secret_key("2121212121212121212121212121212121212121212121212121212121212121");
+    let responder_ephemeral =
+        secret_key("2222222222222222222222222222222222222222222222222222222222222222");
+
+    let secp = secp256k1::Secp256k1::new();
+    let responder_pubkey = secp256k1::PublicKey::from_secret_key(&secp, &responder_static);
+
+    // Bind to a random available port
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener bind successful");
+    let addr = listener.local_addr().expect("bound address");
+
+    // Spawn responder thread
+    let responder_handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("connection accepted");
+        stream.set_read_timeout(Some(timeout)).unwrap();
+        stream.set_write_timeout(Some(timeout)).unwrap();
+
+        // Perform handshake as responder
+        let mut handshake = NoiseHandshake::new_responder(responder_static, responder_ephemeral);
+
+        let mut act_one = [0u8; ACT_ONE_SIZE];
+        stream
+            .read_exact(&mut act_one)
+            .expect("read act one successful");
+
+        let act_two = handshake
+            .process_act_one(&act_one)
+            .expect("process act one successful");
+        stream
+            .write_all(&act_two)
+            .expect("write act two successful");
+
+        let mut act_three = [0u8; ACT_THREE_SIZE];
+        stream
+            .read_exact(&mut act_three)
+            .expect("read act three successful");
+
+        handshake
+            .process_act_three(&act_three)
+            .expect("process act three successful");
+
+        let mut cipher = handshake
+            .into_cipher()
+            .expect("cipher conversion successful");
+
+        // Receive message from initiator
+        let mut encrypted_len = [0u8; ENCRYPTED_LENGTH_SIZE];
+        stream
+            .read_exact(&mut encrypted_len)
+            .expect("read encrypted length successful");
+        let msg_len = cipher
+            .decrypt_length(&encrypted_len)
+            .expect("length decryption successful");
+
+        let mut encrypted_msg = vec![0u8; usize::from(msg_len) + MAC_SIZE];
+        stream
+            .read_exact(&mut encrypted_msg)
+            .expect("read message successful");
+        let msg = cipher
+            .decrypt_message(&encrypted_msg)
+            .expect("message decryption successful");
+
+        assert_eq!(msg, b"hello from initiator");
+
+        // Send response
+        let response = cipher.encrypt(b"hello from responder");
+        stream
+            .write_all(&response)
+            .expect("write response successful");
+
+        // Receive second message
+        stream
+            .read_exact(&mut encrypted_len)
+            .expect("read length successful");
+        let msg_len = cipher
+            .decrypt_length(&encrypted_len)
+            .expect("length decryption successful");
+
+        let mut encrypted_msg = vec![0u8; usize::from(msg_len) + MAC_SIZE];
+        stream
+            .read_exact(&mut encrypted_msg)
+            .expect("read message successful");
+        let msg = cipher
+            .decrypt_message(&encrypted_msg)
+            .expect("message decryption successful");
+
+        assert_eq!(msg, b"goodbye");
+    });
+
+    // Connect as initiator using NoiseConnection
+    let mut conn = NoiseConnection::connect(
+        addr,
+        responder_pubkey,
+        initiator_static,
+        initiator_ephemeral,
+        timeout,
+    )
+    .expect("noise connection successful");
+
+    // Send message
+    conn.send_message(b"hello from initiator")
+        .expect("send message successful");
+
+    // Receive response
+    let response = conn.recv_message().expect("receive message successful");
+    assert_eq!(response, b"hello from responder");
+
+    // Send another message
+    conn.send_message(b"goodbye")
+        .expect("send message successful");
+
+    // Wait for responder thread
+    responder_handle
+        .join()
+        .expect("responder thread finished cleanly");
+}
