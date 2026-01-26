@@ -1,3 +1,4 @@
+pub mod bolt;
 pub mod noise;
 pub mod oracles;
 pub mod runners;
