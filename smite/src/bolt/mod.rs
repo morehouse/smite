@@ -9,6 +9,7 @@ mod ping;
 mod pong;
 mod tlv;
 mod types;
+mod warning;
 
 pub use error::BoltError;
 pub use error_msg::Error;
@@ -19,3 +20,4 @@ pub use types::{
     CHANNEL_ID_SIZE, ChannelId, MAX_MESSAGE_SIZE, bigsize_len, decode_bigsize, encode_bigsize,
     read_u16_be, write_u16_be,
 };
+pub use warning::Warning;
