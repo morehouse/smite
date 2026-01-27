@@ -6,6 +6,8 @@ pub enum BoltError {
     // General decoding errors
     /// Not enough bytes to decode (message or field truncated)
     Truncated { expected: usize, actual: usize },
+    /// Unknown even message type (must close connection per BOLT 1)
+    UnknownEvenType(u16),
 
     // BigSize errors
     /// `BigSize` not minimally encoded
@@ -28,6 +30,7 @@ impl std::fmt::Display for BoltError {
             Self::Truncated { expected, actual } => {
                 write!(f, "TRUNCATED expected {expected} got {actual}")
             }
+            Self::UnknownEvenType(t) => write!(f, "UNKNOWN_EVEN_TYPE {t}"),
             Self::BigSizeNotMinimal => write!(f, "BIGSIZE_NOT_MINIMAL"),
             Self::BigSizeTruncated => write!(f, "BIGSIZE_TRUNCATED"),
             Self::TlvNotIncreasing { previous, current } => {
