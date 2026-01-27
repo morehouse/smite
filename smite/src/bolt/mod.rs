@@ -5,6 +5,7 @@
 
 mod error;
 mod error_msg;
+mod init;
 mod ping;
 mod pong;
 mod tlv;
@@ -13,6 +14,7 @@ mod warning;
 
 pub use error::BoltError;
 pub use error_msg::Error;
+pub use init::{Init, InitTlvs};
 pub use ping::Ping;
 pub use pong::Pong;
 pub use tlv::{TlvRecord, TlvStream};
