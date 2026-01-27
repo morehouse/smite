@@ -1,6 +1,6 @@
 //! BOLT 1 init message.
 
-use super::error::BoltError;
+use super::BoltError;
 use super::tlv::TlvStream;
 use super::types::{read_u16_be, write_u16_be};
 

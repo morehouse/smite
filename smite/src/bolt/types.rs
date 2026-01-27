@@ -1,6 +1,6 @@
 //! Fundamental types for BOLT message encoding.
 
-use super::error::BoltError;
+use super::BoltError;
 
 /// Maximum Lightning message size (2-byte length prefix limit).
 pub const MAX_MESSAGE_SIZE: usize = 65535;

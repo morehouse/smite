@@ -1,6 +1,6 @@
 //! BOLT 1 ping message.
 
-use super::error::BoltError;
+use super::BoltError;
 use super::types::{read_u16_be, write_u16_be};
 
 /// BOLT 1 ping message (type 18).

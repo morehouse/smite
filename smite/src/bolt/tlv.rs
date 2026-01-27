@@ -3,7 +3,7 @@
 //! TLV streams are used for optional and extension fields in BOLT messages.
 //! See BOLT 1 for the specification.
 
-use super::error::BoltError;
+use super::BoltError;
 use super::types::{decode_bigsize, encode_bigsize};
 
 /// A single TLV record.

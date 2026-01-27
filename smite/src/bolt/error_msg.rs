@@ -1,6 +1,6 @@
 //! BOLT 1 error message.
 
-use super::error::BoltError;
+use super::BoltError;
 use super::types::{ChannelId, MAX_MESSAGE_SIZE, read_u16_be, write_u16_be};
 
 /// BOLT 1 error message (type 17).

@@ -1,6 +1,6 @@
 //! BOLT 1 pong message.
 
-use super::error::BoltError;
+use super::BoltError;
 use super::ping::Ping;
 use super::types::{read_u16_be, write_u16_be};
 
