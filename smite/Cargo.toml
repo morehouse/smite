@@ -24,5 +24,11 @@ secp256k1 = { version = "0.31", features = ["std"] }
 
 smite-nyx-sys = { path = "../smite-nyx-sys", optional = true }
 
+# Process management (Unix only - Windows not supported)
+nix = { version = "0.30", default-features = false, features = [
+  "signal",
+  "process",
+] }
+
 [dev-dependencies]
 hex = "0.4"
