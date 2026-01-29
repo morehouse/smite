@@ -1,7 +1,9 @@
 //! LND fuzzing scenario binary.
 
-use smite::smite_main;
-use smite_scenarios::scenarios::{RawBytesScenario, RawInput};
+use smite::scenarios::smite_run;
+use smite_scenarios::scenarios::RawBytesScenario;
 use smite_scenarios::targets::LndTarget;
 
-smite_main!(RawBytesScenario<LndTarget>, RawInput);
+fn main() -> std::process::ExitCode {
+    smite_run::<RawBytesScenario<LndTarget>>()
+}

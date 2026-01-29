@@ -2,7 +2,7 @@
 
 mod raw_bytes;
 
-pub use raw_bytes::{RawBytesScenario, RawInput};
+pub use raw_bytes::RawBytesScenario;
 
 use std::time::Duration;
 

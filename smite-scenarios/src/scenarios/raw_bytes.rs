@@ -3,19 +3,10 @@
 use std::time::Duration;
 
 use smite::noise::NoiseConnection;
-use smite::scenarios::{Scenario, ScenarioInput, ScenarioResult};
+use smite::scenarios::{Scenario, ScenarioResult};
 
 use super::{connect_to_target, ping_pong};
 use crate::targets::Target;
-
-/// Raw bytes input - passes fuzz input directly without transformation.
-pub struct RawInput<'a>(pub &'a [u8]);
-
-impl<'a> ScenarioInput<'a> for RawInput<'a> {
-    fn decode(bytes: &'a [u8]) -> Result<Self, String> {
-        Ok(RawInput(bytes))
-    }
-}
 
 /// A scenario that sends raw fuzz input as Lightning messages.
 ///
@@ -27,7 +18,7 @@ pub struct RawBytesScenario<T: Target> {
     conn: NoiseConnection,
 }
 
-impl<'a, T: Target> Scenario<'a, RawInput<'a>> for RawBytesScenario<T> {
+impl<T: Target> Scenario for RawBytesScenario<T> {
     fn new(_args: &[String]) -> Result<Self, String> {
         let config = T::Config::default();
         let target = T::start(config).map_err(|e| e.to_string())?;
@@ -35,8 +26,7 @@ impl<'a, T: Target> Scenario<'a, RawInput<'a>> for RawBytesScenario<T> {
         Ok(Self { target, conn })
     }
 
-    fn run(&mut self, testcase: RawInput<'_>) -> ScenarioResult {
-        let input = testcase.0;
+    fn run(&mut self, input: &[u8]) -> ScenarioResult {
         let start = std::time::Instant::now();
 
         // Send raw fuzz input over the encrypted connection
