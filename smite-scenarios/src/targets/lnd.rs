@@ -4,7 +4,7 @@ use std::fs;
 use std::io::{PipeReader, PipeWriter, Read, Write};
 use std::net::SocketAddr;
 use std::os::unix::io::AsRawFd;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -78,7 +78,7 @@ pub struct LndTarget {
     pubkey: secp256k1::PublicKey,
     addr: SocketAddr,
     #[allow(dead_code)] // TempDir auto-cleans on drop
-    data_dir: tempfile::TempDir,
+    temp_dir: Option<tempfile::TempDir>,
 }
 
 impl LndTarget {
@@ -345,12 +345,21 @@ impl Target for LndTarget {
     type Config = LndConfig;
 
     fn start(config: Self::Config) -> Result<Self, TargetError> {
-        let data_dir = tempfile::tempdir()?;
-        let data_path = data_dir.path();
+        // Check for SMITE_DATA_DIR to preserve data directory for debugging
+        let (data_path, temp_dir) = if let Ok(dir) = std::env::var("SMITE_DATA_DIR") {
+            let path = PathBuf::from(dir);
+            fs::create_dir_all(&path)?;
+            log::info!("Preserving data directory: {}", path.display());
+            (path, None)
+        } else {
+            let temp = tempfile::tempdir()?;
+            let path = temp.path().to_path_buf();
+            (path, Some(temp))
+        };
 
-        let bitcoind = Self::start_bitcoind(&config, data_path)?;
+        let bitcoind = Self::start_bitcoind(&config, &data_path)?;
 
-        let (lnd, coverage_pipes, pubkey) = Self::start_lnd(&config, data_path)?;
+        let (lnd, coverage_pipes, pubkey) = Self::start_lnd(&config, &data_path)?;
 
         let addr = SocketAddr::from(([127, 0, 0, 1], config.lnd_p2p_port));
 
@@ -362,7 +371,7 @@ impl Target for LndTarget {
             coverage_pipes,
             pubkey,
             addr,
-            data_dir,
+            temp_dir,
         })
     }
 
