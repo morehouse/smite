@@ -9,9 +9,15 @@ ARG BITCOIN_VERSION=29.2
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     wget \
+    curl \
     ca-certificates \
     git \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+RUN rustup install nightly && rustup default nightly
 
 # Install Go
 RUN wget https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz && \
@@ -40,12 +46,13 @@ WORKDIR /lnd
 RUN cd cmd/lnd && go build -cover -covermode=count -coverpkg=github.com/lightningnetwork/lnd/...
 RUN cd cmd/lncli && go build
 
-# Build lnd-scenario (uses LocalRunner for coverage, no CGO/nyx needed)
+# Build lnd-scenario (uses LocalRunner for coverage, no nyx feature needed)
 WORKDIR /smite
-COPY bindings/go/ bindings/go/
-COPY workloads/lnd/lnd-scenario/ workloads/lnd/lnd-scenario/
-WORKDIR /smite/workloads/lnd/lnd-scenario
-RUN go build -v -o /lnd-scenario
+COPY Cargo.toml Cargo.lock ./
+COPY smite/ smite/
+COPY smite-scenarios/ smite-scenarios/
+COPY smite-nyx-sys/ smite-nyx-sys/
+RUN cargo build -p smite-scenarios --bin lnd --release
 
 # Runtime image
 FROM debian:bookworm-slim
@@ -73,7 +80,7 @@ COPY --from=builder /usr/local/bin/bitcoind /usr/local/bin/bitcoind
 COPY --from=builder /usr/local/bin/bitcoin-cli /usr/local/bin/bitcoin-cli
 
 # Copy the lnd-scenario binary
-COPY --from=builder /lnd-scenario /lnd-scenario
+COPY --from=builder /smite/target/release/lnd /lnd-scenario
 
 # Copy the init script
 COPY ./workloads/lnd/init.sh /init.sh

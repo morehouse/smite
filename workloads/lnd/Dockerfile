@@ -61,19 +61,13 @@ RUN cd cmd/lncli && go build
 COPY ./workloads/lnd/sancov.go /lnd/sancov.go
 RUN cd cmd/lnd && CGO_ENABLED=1 go build -v -tags=libfuzzer -gcflags=all=-d=libfuzzer
 
-# Copy smite workspace files and build smite-nyx-sys
+# Copy smite workspace files and build the Rust lnd-scenario binary
 WORKDIR /smite
 COPY Cargo.toml Cargo.lock ./
 COPY smite/ smite/
 COPY smite-scenarios/ smite-scenarios/
 COPY smite-nyx-sys/ smite-nyx-sys/
-RUN TARGET_PATH=/lnd/cmd/lnd/lnd cargo build -p smite-nyx-sys --release
-
-# Build the lnd-scenario fuzzing harness with nyx support
-COPY bindings/go/ bindings/go/
-COPY workloads/lnd/lnd-scenario/ workloads/lnd/lnd-scenario/
-WORKDIR /smite/workloads/lnd/lnd-scenario
-RUN CGO_ENABLED=1 go build -v -tags=nyx -o /lnd-scenario
+RUN TARGET_PATH=/lnd/cmd/lnd/lnd cargo build -p smite-scenarios --bin lnd --release --features nyx
 
 # Runtime image
 FROM debian:bookworm-slim
@@ -99,7 +93,7 @@ COPY --from=builder /usr/local/bin/bitcoind /usr/local/bin/bitcoind
 COPY --from=builder /usr/local/bin/bitcoin-cli /usr/local/bin/bitcoin-cli
 
 # Copy the lnd-scenario binary
-COPY --from=builder /lnd-scenario /lnd-scenario
+COPY --from=builder /smite/target/release/lnd /lnd-scenario
 
 # Copy the init script
 COPY ./workloads/lnd/init.sh /init.sh
