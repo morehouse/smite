@@ -45,6 +45,12 @@ impl<T: Target> Scenario for RawBytesScenario<T> {
         // tell whether that is happening.
         if let Err(e) = ping_pong(&mut self.conn) {
             log::debug!("[{:?}] ping_pong: {e}", start.elapsed());
+            if e.is_timeout() {
+                return ScenarioResult::Fail("target hung (ping timeout)".into());
+            }
+            // Non-timeout error likely means the target closed the connection.
+            // This is expected when we send invalid messages, but it could also
+            // mean the target crashed. Use check_alive below to distinguish.
         } else {
             log::debug!("[{:?}] Target responded with pong", start.elapsed());
         }

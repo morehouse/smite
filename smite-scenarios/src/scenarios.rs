@@ -43,6 +43,19 @@ pub enum ScenarioError {
     Protocol(String),
 }
 
+impl ScenarioError {
+    /// Returns true if this error is a timeout (potential hang).
+    #[must_use]
+    pub fn is_timeout(&self) -> bool {
+        use std::io::ErrorKind;
+        if let Self::Connection(ConnectionError::Io(e)) = self {
+            matches!(e.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock)
+        } else {
+            false
+        }
+    }
+}
+
 /// Connect to a target and perform the init handshake.
 ///
 /// # Errors
