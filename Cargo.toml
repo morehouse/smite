@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["smite", "smite-nyx-sys", "smite-scenarios"]
+exclude = ["workloads/ldk"]
 
 [workspace.package]
 version = "0.0.0"

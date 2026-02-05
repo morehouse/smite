@@ -1,0 +1,8 @@
+[package]
+name = "ldk-node-wrapper"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+ldk-node = "0.7"
+libc = "0.2"
