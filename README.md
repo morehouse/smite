@@ -83,11 +83,12 @@ firefox ./coverage-report/coverage.html
 ## Project Structure
 
 ```
-smite/          # Core Rust library
-smite-nyx-sys/  # Nyx FFI bindings
+smite/              # Core Rust library (runners, scenarios, noise protocol, BOLT messages)
+smite-nyx-sys/      # Nyx FFI bindings
+smite-scenarios/    # Scenario implementations and target binaries
 workloads/
-  lnd/          # LND fuzzing workload
-  ldk/          # LDK fuzzing workload
+  lnd/              # LND fuzzing workload (Dockerfile, init script)
+  ldk/              # LDK fuzzing workload (Dockerfile, init script, ldk-node wrapper)
 scripts/
   setup-nyx.sh              # Helper to create Nyx sharedirs
   enable-vmware-backdoor.sh # Enable KVM VMware backdoor for Nyx
