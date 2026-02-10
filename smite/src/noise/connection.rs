@@ -40,6 +40,7 @@ impl NoiseConnection {
         timeout: Duration,
     ) -> Result<Self, ConnectionError> {
         let mut stream = TcpStream::connect_timeout(&addr, timeout)?;
+        stream.set_nodelay(true)?;
         stream.set_read_timeout(Some(timeout))?;
         stream.set_write_timeout(Some(timeout))?;
 
