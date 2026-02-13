@@ -46,7 +46,7 @@ void append_log(const char *msg) {
   if (log == NULL) {
     log_size = 0x10000;
     log = (char *)malloc(log_size);
-    memset(log, 0, log_size);
+    log[0] = '\0';
   } else {
     size_t needed_size =
         strlen(log) + strlen(msg) + 1; // +1 for null terminator
@@ -126,7 +126,6 @@ void panic_with_backtrace(const char *extra_msg) {
 
 #ifdef CUSTOM_BACKTRACE
   char custom_backtrace[0x10000];
-  memset(custom_backtrace, 0, 0x10000);
 
   void *backtrace_buffer[MAX_CUSTOM_BACKTRACE_SIZE];
   int backtrace_size = backtrace(backtrace_buffer, MAX_CUSTOM_BACKTRACE_SIZE);
@@ -165,7 +164,6 @@ OVERRIDE_ABORT(__abort)
 void __assert(const char *func, const char *file, int line,
               const char *failed_expr) {
   char signal_msg[0x1000];
-  memset(signal_msg, 0, 0x1000);
   sprintf(signal_msg, "assertion failed: \"%s\" in %s (%s:%d)", failed_expr,
           func, file, line);
   panic_with_backtrace(signal_msg);
@@ -173,7 +171,6 @@ void __assert(const char *func, const char *file, int line,
 void __assert_fail(const char *assertion, const char *file, unsigned int line,
                    const char *function) {
   char signal_msg[0x1000];
-  memset(signal_msg, 0, 0x1000);
   sprintf(signal_msg, "assertion failed: \"%s\" in %s (%s:%d)", assertion,
           function, file, line);
   panic_with_backtrace(signal_msg);
@@ -181,7 +178,6 @@ void __assert_fail(const char *assertion, const char *file, unsigned int line,
 void __assert_perror_fail(int errnum, const char *file, unsigned int line,
                           const char *function) {
   char signal_msg[0x1000];
-  memset(signal_msg, 0, 0x1000);
   sprintf(signal_msg, "assert_perror: in %s (%s:%d)", function, file, line);
   panic_with_backtrace(signal_msg);
 }
@@ -210,7 +206,6 @@ int sigaction(int signum, const struct sigaction *act,
 
 void fault_handler(int signo, siginfo_t *info, void *extra) {
   char signal_msg[0x1000];
-  memset(signal_msg, 0, 0x1000);
   sprintf(signal_msg, "caught signal: %d\n", signo);
 
   panic_with_backtrace(signal_msg);
@@ -235,7 +230,6 @@ __attribute__((constructor)) void init_handler(void) {
   for (int i = 0; signals[i].signal != 0; i++) {
     if (_sigaction(signals[i].signal, &action, NULL) == -1) {
       char signal_msg[0x10000];
-      memset(signal_msg, 0, 0x10000);
       snprintf(signal_msg, 0x10000,
                "Failed to register signal handler for signal %s (%d): %s\n",
                signals[i].name, signals[i].signal, strerror(errno));
