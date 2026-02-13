@@ -216,7 +216,7 @@ void fault_handler(int signo, siginfo_t *info, void *extra) {
   panic_with_backtrace(signal_msg);
 }
 
-void initialize_crash_handling() {
+__attribute__((constructor)) void init_handler(void) {
   struct sigaction action;
   action.sa_flags = SA_SIGINFO;
   action.sa_sigaction = fault_handler;
@@ -245,10 +245,5 @@ void initialize_crash_handling() {
     }
   }
 }
-#else
-void initialize_crash_handling() {}
-#endif
 
-__attribute__((constructor)) void init_handler(void) {
-  initialize_crash_handling();
-}
+#endif
