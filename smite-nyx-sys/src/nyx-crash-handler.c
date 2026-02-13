@@ -119,6 +119,11 @@ extern void _exit(int);
 #endif
 
 void panic_with_backtrace(const char *extra_msg) {
+  if (extra_msg != NULL) {
+    append_log(extra_msg);
+    append_log("\n");
+  }
+
   append_asan_log();
 
 #ifdef CUSTOM_BACKTRACE
@@ -136,10 +141,6 @@ void panic_with_backtrace(const char *extra_msg) {
 
   if (backtrace_size == MAX_CUSTOM_BACKTRACE_SIZE) {
     current += sprintf(current, "(%s)\n", "backtrace may be truncated");
-  }
-
-  if (extra_msg != NULL) {
-    current += sprintf(current, "Reason: %s\n", extra_msg);
   }
 
   for (int i = 0; i < backtrace_size; ++i) {
