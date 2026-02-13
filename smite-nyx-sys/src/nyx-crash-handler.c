@@ -11,6 +11,7 @@
 ///   compiling with sanitizers (e.g. ASan), as they provide their own signal
 ///   handlers.
 /// - -DENABLE_NYX: Use nyx hypercalls to let nyx know that a crash has occured.
+///   If not set, crash reports are written to /tmp/smite-crash.log.
 /// - -DASAN_LOG_PATH=<path>: Path to the ASan log file.
 /// - -DCUSTOM_BACKTRACE: Enable custom backtrace.
 ///
@@ -101,9 +102,15 @@ extern void _exit(int);
 
 #else
 
+// Write the crash log to a file so the scenario can read it. The scenario must
+// specifically check this file to detect crashes.
 #define EXIT_WITH_LOG()                                                        \
   do {                                                                         \
-    printf("%s\n", log);                                                       \
+    FILE *f = fopen("/tmp/smite-crash.log", "w");                              \
+    if (f) {                                                                   \
+      fprintf(f, "%s\n", log);                                                 \
+      fclose(f);                                                               \
+    }                                                                          \
     _exit(1);                                                                  \
   } while (0)
 
