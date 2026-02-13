@@ -19,9 +19,14 @@ fn main() {
     let mut build = cc::Build::new();
     build.file("src/nyx-agent.c").define("NO_PT_NYX", None);
 
-    let map_size = std::env::var("TARGET_PATH")
-        .ok()
-        .and_then(|path| get_map_size(Path::new(&path)));
+    // TARGET_MAP_SIZE can be set directly (e.g., for CLN LTO where the total
+    // map size spans multiple binaries), or computed from TARGET_PATH by
+    // querying a single binary via AFL_DUMP_MAP_SIZE.
+    let map_size = std::env::var("TARGET_MAP_SIZE").ok().or_else(|| {
+        std::env::var("TARGET_PATH")
+            .ok()
+            .and_then(|path| get_map_size(Path::new(&path)))
+    });
 
     if let Some(ref size) = map_size {
         build.define("TARGET_MAP_SIZE", size.as_str());
@@ -30,5 +35,6 @@ fn main() {
     build.compile("nyx_agent");
 
     println!("cargo:rerun-if-changed=src/nyx-agent.c");
+    println!("cargo:rerun-if-env-changed=TARGET_MAP_SIZE");
     println!("cargo:rerun-if-env-changed=TARGET_PATH");
 }
