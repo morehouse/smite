@@ -7,9 +7,8 @@
 /// - `abort_on_error=1`: ASan will call abort() on errors.
 ///
 /// Compile-time options:
-/// - -DCATCH_SIGNALS: Catch signals and print a backtrace. Do not use this when
-///   compiling with sanitizers (e.g. ASan), as they provide their own signal
-///   handlers.
+/// - -DCATCH_SIGNALS: Install our own signal handler for fatal signals, and
+///   block any attempts to override our signal handler.
 /// - -DENABLE_NYX: Use nyx hypercalls to let nyx know that a crash has occured.
 ///   If not set, crash reports are written to /tmp/smite-crash.log.
 /// - -DASAN_LOG_PATH=<path>: Path to the ASan log file.
