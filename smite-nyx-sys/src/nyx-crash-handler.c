@@ -195,7 +195,6 @@ int sigaction(int signum, const struct sigaction *act,
   case SIGILL:
   case SIGBUS:
   case SIGABRT:
-  case SIGTRAP:
   case SIGSYS:
   case SIGSEGV:
     return 0;
@@ -223,9 +222,10 @@ __attribute__((constructor)) void init_handler(void) {
   struct {
     int signal;
     const char *name;
-  } signals[] = {{SIGSEGV, "sigsegv"}, {SIGFPE, "sigfpe"},   {SIGBUS, "sigbus"},
-                 {SIGILL, "sigill"},   {SIGABRT, "sigabrt"}, {SIGIOT, "sigiot"},
-                 {SIGTRAP, "sigtrap"}, {SIGSYS, "sigsys"},   {0, NULL}};
+  } signals[] = {{SIGSEGV, "sigsegv"}, {SIGFPE, "sigfpe"},
+                 {SIGBUS, "sigbus"},   {SIGILL, "sigill"},
+                 {SIGABRT, "sigabrt"}, {SIGIOT, "sigiot"},
+                 {SIGSYS, "sigsys"},   {0, NULL}};
 
   for (int i = 0; signals[i].signal != 0; i++) {
     if (_sigaction(signals[i].signal, &action, NULL) == -1) {
