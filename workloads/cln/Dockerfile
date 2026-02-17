@@ -41,8 +41,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
-# Create unversioned lld symlink, needed by AFL++ for LTO support.
-RUN ln -sf /usr/bin/ld.lld-${LLVM_V} /usr/bin/ld.lld
+# Create unversioned symlinks for LLVM tools. lld is needed by AFL++ for LTO
+# support; llvm-symbolizer is used by the crash symbolization script.
+RUN ln -sf /usr/bin/ld.lld-${LLVM_V} /usr/bin/ld.lld && \
+    ln -sf /usr/bin/llvm-symbolizer-${LLVM_V} /usr/bin/llvm-symbolizer
 
 # Install AFL++ from source (need afl-clang-lto for LTO instrumentation).
 # Builds just the compiler wrappers, not QEMU/Nyx support.
