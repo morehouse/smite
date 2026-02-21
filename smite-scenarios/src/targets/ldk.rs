@@ -6,11 +6,12 @@
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::Duration;
 
 use smite::process::ManagedProcess;
+
+use crate::bitcoind::{self, BitcoindConfig};
 
 use super::{Target, TargetError};
 
@@ -34,6 +35,17 @@ impl Default for LdkConfig {
     }
 }
 
+impl LdkConfig {
+    fn bitcoind_config(&self) -> BitcoindConfig {
+        BitcoindConfig {
+            rpc_port: self.bitcoind_rpc_port,
+            p2p_port: self.bitcoind_p2p_port,
+            zmq_block_port: None,
+            zmq_tx_port: None,
+        }
+    }
+}
+
 /// LDK Lightning node target.
 ///
 /// Field order matters: `ldk` is declared before `bitcoind` so it drops first,
@@ -49,99 +61,6 @@ pub struct LdkTarget {
 }
 
 impl LdkTarget {
-    /// Starts bitcoind and waits for it to be ready.
-    fn start_bitcoind(config: &LdkConfig, data_dir: &Path) -> Result<ManagedProcess, TargetError> {
-        log::info!("Starting bitcoind...");
-
-        let bitcoind_dir = data_dir.join("bitcoind");
-        fs::create_dir_all(&bitcoind_dir)?;
-
-        // LDK uses bitcoind RPC directly, no ZMQ needed
-        let mut cmd = Command::new("bitcoind");
-        cmd.arg("-regtest")
-            .arg(format!("-datadir={}", bitcoind_dir.display()))
-            .arg(format!("-port={}", config.bitcoind_p2p_port))
-            .arg(format!("-rpcport={}", config.bitcoind_rpc_port))
-            .arg("-rpcuser=rpcuser")
-            .arg("-rpcpassword=rpcpass")
-            .arg("-fallbackfee=0.00001")
-            .arg("-txindex=1")
-            .arg("-server=1")
-            .arg("-rest=1")
-            .arg("-printtoconsole=0")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-
-        let bitcoind = ManagedProcess::spawn(&mut cmd, "bitcoind")?;
-
-        // Wait for bitcoind to be ready
-        log::info!("Waiting for bitcoind to be ready...");
-        for _ in 0..30 {
-            let status = Command::new("bitcoin-cli")
-                .arg("-regtest")
-                .arg(format!("-datadir={}", bitcoind_dir.display()))
-                .arg(format!("-rpcport={}", config.bitcoind_rpc_port))
-                .arg("-rpcuser=rpcuser")
-                .arg("-rpcpassword=rpcpass")
-                .arg("getblockchaininfo")
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-
-            if status.is_ok_and(|s| s.success()) {
-                log::info!("bitcoind is ready");
-                return Self::setup_wallet(config, &bitcoind_dir, bitcoind);
-            }
-
-            std::thread::sleep(Duration::from_secs(1));
-        }
-
-        Err(TargetError::StartFailed(
-            "bitcoind failed to become ready".into(),
-        ))
-    }
-
-    /// Creates wallet and generates initial blocks.
-    fn setup_wallet(
-        config: &LdkConfig,
-        bitcoind_dir: &Path,
-        bitcoind: ManagedProcess,
-    ) -> Result<ManagedProcess, TargetError> {
-        // Create wallet (ignore error if already exists)
-        let _ = Command::new("bitcoin-cli")
-            .arg("-regtest")
-            .arg(format!("-datadir={}", bitcoind_dir.display()))
-            .arg(format!("-rpcport={}", config.bitcoind_rpc_port))
-            .arg("-rpcuser=rpcuser")
-            .arg("-rpcpassword=rpcpass")
-            .arg("createwallet")
-            .arg("default")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-
-        // Generate 101 blocks for coinbase maturity
-        let status = Command::new("bitcoin-cli")
-            .arg("-regtest")
-            .arg(format!("-datadir={}", bitcoind_dir.display()))
-            .arg(format!("-rpcport={}", config.bitcoind_rpc_port))
-            .arg("-rpcuser=rpcuser")
-            .arg("-rpcpassword=rpcpass")
-            .arg("-generate")
-            .arg("101")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()?;
-
-        if !status.success() {
-            return Err(TargetError::StartFailed(
-                "failed to generate initial blocks".into(),
-            ));
-        }
-
-        Ok(bitcoind)
-    }
-
     /// Starts ldk-node-wrapper and waits for it to be ready.
     /// Returns the process and LDK's identity pubkey.
     fn start_ldk(
@@ -200,19 +119,9 @@ impl Target for LdkTarget {
     type Config = LdkConfig;
 
     fn start(config: Self::Config) -> Result<Self, TargetError> {
-        // Check for SMITE_DATA_DIR to preserve data directory for debugging
-        let (data_path, temp_dir) = if let Ok(dir) = std::env::var("SMITE_DATA_DIR") {
-            let path = PathBuf::from(dir);
-            fs::create_dir_all(&path)?;
-            log::info!("Preserving data directory: {}", path.display());
-            (path, None)
-        } else {
-            let temp = tempfile::tempdir()?;
-            let path = temp.path().to_path_buf();
-            (path, Some(temp))
-        };
+        let (data_path, temp_dir) = bitcoind::resolve_data_dir()?;
 
-        let bitcoind = Self::start_bitcoind(&config, &data_path)?;
+        let bitcoind = bitcoind::start(&config.bitcoind_config(), &data_path)?;
         let (ldk, pubkey) = Self::start_ldk(&config, &data_path)?;
         let addr = SocketAddr::from(([127, 0, 0, 1], config.ldk_p2p_port));
 

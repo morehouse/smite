@@ -4,12 +4,14 @@ use std::fs;
 use std::io::{PipeReader, PipeWriter, Read, Write};
 use std::net::SocketAddr;
 use std::os::unix::io::AsRawFd;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use serde::Deserialize;
 use smite::process::ManagedProcess;
+
+use crate::bitcoind::{self, BitcoindConfig};
 
 use super::{Target, TargetError};
 
@@ -38,6 +40,17 @@ impl Default for LndConfig {
             lnd_rpc_port: 10009,
             zmq_block_port: 28332,
             zmq_tx_port: 28333,
+        }
+    }
+}
+
+impl LndConfig {
+    fn bitcoind_config(&self) -> BitcoindConfig {
+        BitcoindConfig {
+            rpc_port: self.bitcoind_rpc_port,
+            p2p_port: self.bitcoind_p2p_port,
+            zmq_block_port: Some(self.zmq_block_port),
+            zmq_tx_port: Some(self.zmq_tx_port),
         }
     }
 }
@@ -82,106 +95,6 @@ pub struct LndTarget {
 }
 
 impl LndTarget {
-    /// Starts bitcoind and waits for it to be ready.
-    fn start_bitcoind(config: &LndConfig, data_dir: &Path) -> Result<ManagedProcess, TargetError> {
-        log::info!("Starting bitcoind...");
-
-        let bitcoind_dir = data_dir.join("bitcoind");
-        fs::create_dir_all(&bitcoind_dir)?;
-
-        let mut cmd = Command::new("bitcoind");
-        cmd.arg("-regtest")
-            .arg(format!("-datadir={}", bitcoind_dir.display()))
-            .arg(format!("-port={}", config.bitcoind_p2p_port))
-            .arg(format!("-rpcport={}", config.bitcoind_rpc_port))
-            .arg("-rpcuser=rpcuser")
-            .arg("-rpcpassword=rpcpass")
-            .arg("-fallbackfee=0.00001")
-            .arg("-txindex=1")
-            .arg("-server=1")
-            .arg("-rest=1")
-            .arg("-printtoconsole=0")
-            .arg(format!(
-                "-zmqpubrawblock=tcp://127.0.0.1:{}",
-                config.zmq_block_port
-            ))
-            .arg(format!(
-                "-zmqpubrawtx=tcp://127.0.0.1:{}",
-                config.zmq_tx_port
-            ))
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-
-        let bitcoind = ManagedProcess::spawn(&mut cmd, "bitcoind")?;
-
-        // Wait for bitcoind to be ready
-        log::info!("Waiting for bitcoind to be ready...");
-        for _ in 0..30 {
-            let status = Command::new("bitcoin-cli")
-                .arg("-regtest")
-                .arg(format!("-datadir={}", bitcoind_dir.display()))
-                .arg(format!("-rpcport={}", config.bitcoind_rpc_port))
-                .arg("-rpcuser=rpcuser")
-                .arg("-rpcpassword=rpcpass")
-                .arg("getblockchaininfo")
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-
-            if status.is_ok_and(|s| s.success()) {
-                log::info!("bitcoind is ready");
-                return Self::setup_wallet(config, &bitcoind_dir, bitcoind);
-            }
-
-            std::thread::sleep(Duration::from_secs(1));
-        }
-
-        Err(TargetError::StartFailed(
-            "bitcoind failed to become ready".into(),
-        ))
-    }
-
-    /// Creates wallet and generates initial blocks.
-    fn setup_wallet(
-        config: &LndConfig,
-        bitcoind_dir: &Path,
-        bitcoind: ManagedProcess,
-    ) -> Result<ManagedProcess, TargetError> {
-        // Create wallet (ignore error if already exists)
-        let _ = Command::new("bitcoin-cli")
-            .arg("-regtest")
-            .arg(format!("-datadir={}", bitcoind_dir.display()))
-            .arg(format!("-rpcport={}", config.bitcoind_rpc_port))
-            .arg("-rpcuser=rpcuser")
-            .arg("-rpcpassword=rpcpass")
-            .arg("createwallet")
-            .arg("default")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-
-        // Generate 101 blocks for coinbase maturity
-        let status = Command::new("bitcoin-cli")
-            .arg("-regtest")
-            .arg(format!("-datadir={}", bitcoind_dir.display()))
-            .arg(format!("-rpcport={}", config.bitcoind_rpc_port))
-            .arg("-rpcuser=rpcuser")
-            .arg("-rpcpassword=rpcpass")
-            .arg("-generate")
-            .arg("101")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()?;
-
-        if !status.success() {
-            return Err(TargetError::StartFailed(
-                "failed to generate initial blocks".into(),
-            ));
-        }
-
-        Ok(bitcoind)
-    }
-
     /// Starts LND and waits for it to be ready. Returns the process, coverage
     /// pipes (if in fuzzing mode), and LND's identity pubkey.
     fn start_lnd(
@@ -345,22 +258,10 @@ impl Target for LndTarget {
     type Config = LndConfig;
 
     fn start(config: Self::Config) -> Result<Self, TargetError> {
-        // Check for SMITE_DATA_DIR to preserve data directory for debugging
-        let (data_path, temp_dir) = if let Ok(dir) = std::env::var("SMITE_DATA_DIR") {
-            let path = PathBuf::from(dir);
-            fs::create_dir_all(&path)?;
-            log::info!("Preserving data directory: {}", path.display());
-            (path, None)
-        } else {
-            let temp = tempfile::tempdir()?;
-            let path = temp.path().to_path_buf();
-            (path, Some(temp))
-        };
+        let (data_path, temp_dir) = bitcoind::resolve_data_dir()?;
 
-        let bitcoind = Self::start_bitcoind(&config, &data_path)?;
-
+        let bitcoind = bitcoind::start(&config.bitcoind_config(), &data_path)?;
         let (lnd, coverage_pipes, pubkey) = Self::start_lnd(&config, &data_path)?;
-
         let addr = SocketAddr::from(([127, 0, 0, 1], config.lnd_p2p_port));
 
         log::info!("Both daemons are running, ready to fuzz");
