@@ -1,10 +1,12 @@
 //! Target trait and implementations for Lightning nodes.
 
 mod cln;
+mod eclair;
 mod ldk;
 mod lnd;
 
 pub use cln::{ClnConfig, ClnTarget};
+pub use eclair::{EclairConfig, EclairTarget};
 pub use ldk::{LdkConfig, LdkTarget};
 pub use lnd::{LndConfig, LndTarget};
 
@@ -51,7 +53,8 @@ pub trait Target: Sized {
     ///
     /// Implementation varies by target:
     /// - LND: Pipe-based coverage sync (Go can't write to AFL shm directly)
-    /// - CLN/LDK/Eclair: Process liveness check (they write coverage directly)
+    /// - CLN/LDK: Process liveness check (C/Rust AFL instrumentation writes directly)
+    /// - Eclair: Process liveness check (Java agent writes directly via JNI shmat)
     ///
     /// # Errors
     ///
