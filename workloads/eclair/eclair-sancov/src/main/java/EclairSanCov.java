@@ -22,14 +22,19 @@ import org.objectweb.asm.Opcodes;
 // Java agent that provides AFL coverage feedback for Eclair.
 //
 // When loaded via -javaagent:eclair-sancov.jar, this agent maps the AFL shared
-// memory region and instruments Eclair's classes to record basic-block-level
-// coverage. Each instrumented method receives:
+// memory region and instruments classes to record basic-block-level coverage.
+// Each instrumented method receives:
 //   - One probe at method entry
 //   - One probe after each conditional jump (fall-through arc)
 //   - One probe at each label / basic-block entry (taken arc)
 //
-// Edge IDs are pre-assigned by scanning all Eclair JARs on the classpath before
-// any class is loaded, sorted by class name then declaration order within each
+// Instrumented packages:
+//   - fr/acinq/  (Eclair, bitcoin-lib, secp256k1)
+//   - scala/     (collections, Option, pattern matching runtime)
+//   - scodec/    (binary codec used for BOLT wire message serialization)
+//
+// Edge IDs are pre-assigned by scanning all JARs on the classpath before any
+// class is loaded, sorted by class name then declaration order within each
 // class. This gives stable IDs across restarts, which is required for afl-cmin
 // and cross-session coverage comparisons to work correctly.
 public class EclairSanCov {
@@ -37,6 +42,11 @@ public class EclairSanCov {
   // Map from "InternalClassName#methodName#descriptor" to pre-assigned edge ID.
   // Populated by prescan() before any class transformation occurs.
   static Map<String, Integer> edgeIds = null;
+
+  // Map from class name to superclass name, built from all classes on the
+  // classpath during prescan. Used by NonLoadingClassWriter to resolve type
+  // hierarchies without Class.forName().
+  static Map<String, String> superclassMap = null;
 
   // Direct ByteBuffer pointing at the AFL shared memory region.
   static volatile ByteBuffer shmBuffer = null;
@@ -68,13 +78,29 @@ public class EclairSanCov {
     shmBuffer.put(edgeId, (byte)(shmBuffer.get(edgeId) + 1));
   }
 
-  // Scans all Eclair JARs on the classpath and assigns sequential probe IDs to
-  // every non-abstract, non-native method in fr/acinq/eclair/ classes. Each
-  // method receives one ID for its entry probe plus one ID per body probe
-  // (conditional fall-throughs and label/basic-block entries). Classes are
-  // processed in sorted order by internal name; methods and their instructions
-  // are processed in declaration/bytecode order (as visited by ASM). This gives
-  // deterministic IDs independent of class loading order at runtime.
+  // Package prefixes to instrument. A class is instrumented if its internal
+  // name starts with any of these prefixes.
+  static final String[] INSTRUMENTED_PREFIXES = {
+      "fr/acinq/", // Eclair, bitcoin-lib, secp256k1-kmp
+      "scala/",    // collections, Option, pattern matching runtime
+      "scodec/",   // binary codec for BOLT wire message serialization
+  };
+
+  static boolean shouldInstrument(String className) {
+    for (String prefix : INSTRUMENTED_PREFIXES) {
+      if (className.startsWith(prefix))
+        return true;
+    }
+    return false;
+  }
+
+  // Scans all JARs on the classpath and assigns sequential probe IDs to every
+  // non-abstract, non-native method in instrumented classes. Each method
+  // receives one ID for its entry probe plus one ID per body probe (conditional
+  // fall-throughs and label/basic-block entries). Classes are processed in
+  // sorted order by internal name; methods and their instructions are processed
+  // in declaration/bytecode order (as visited by ASM). This gives deterministic
+  // IDs independent of class loading order at runtime.
   static Map<String, Integer> prescan() {
     // Collect the set of JAR files to scan. java.class.path contains the
     // explicit -cp arguments, which may include JAR files and directories.
@@ -96,9 +122,11 @@ public class EclairSanCov {
       }
     }
 
-    // Collect all fr/acinq/eclair/ class files from classpath JARs, sorted by
-    // class name for deterministic ordering.
+    // Scan all classes in all JARs. Instrumented classes go into sortedClasses
+    // for probe ID assignment; all classes contribute to superclassMap for
+    // type hierarchy resolution.
     TreeMap<String, byte[]> sortedClasses = new TreeMap<>();
+    superclassMap = new HashMap<>();
 
     for (String entry : jarPaths) {
       try (JarFile jar = new JarFile(entry)) {
@@ -106,14 +134,22 @@ public class EclairSanCov {
         while (entries.hasMoreElements()) {
           JarEntry je = entries.nextElement();
           String name = je.getName();
-          if (!name.startsWith("fr/acinq/eclair/") ||
-              !name.endsWith(".class")) {
+          if (!name.endsWith(".class")) {
             continue;
           }
           String className =
               name.substring(0, name.length() - 6); // strip .class
           try (InputStream is = jar.getInputStream(je)) {
-            sortedClasses.put(className, is.readAllBytes());
+            byte[] bytecode = is.readAllBytes();
+            // Record superclass for every class on the classpath.
+            ClassReader cr = new ClassReader(bytecode);
+            String superName = cr.getSuperName();
+            if (superName != null) {
+              superclassMap.put(className, superName);
+            }
+            if (shouldInstrument(name)) {
+              sortedClasses.put(className, bytecode);
+            }
           }
         }
       } catch (Exception e) {
@@ -176,11 +212,9 @@ public class EclairSanCov {
   }
 
   // ASM ClassFileTransformer that instruments every non-abstract, non-native
-  // method in Eclair classes with edge() probes at the method entry, each
+  // method in instrumented classes with edge() probes at the method entry, each
   // conditional branch fall-through, and each basic-block entry label.
   static class EclairTransformer implements ClassFileTransformer {
-
-    private static final String ECLAIR_PREFIX = "fr/acinq/eclair/";
 
     @Override
     public byte[] transform(ClassLoader loader, String className,
@@ -188,7 +222,7 @@ public class EclairSanCov {
                             ProtectionDomain protectionDomain,
                             byte[] classfileBuffer) {
 
-      if (className == null || !className.startsWith(ECLAIR_PREFIX)) {
+      if (className == null || !shouldInstrument(className)) {
         return null; // null = no transformation
       }
 
@@ -199,7 +233,7 @@ public class EclairSanCov {
         // depth). SKIP_DEBUG | SKIP_FRAMES must match the prescan() flags so
         // both passes see the same label set and probe counts agree.
         ClassWriter writer =
-            new ClassWriter(reader, ClassWriter.COMPUTE_FRAMES);
+            new NonLoadingClassWriter(reader, ClassWriter.COMPUTE_FRAMES);
         reader.accept(new EclairClassVisitor(writer, className),
                       ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
         return writer.toByteArray();
@@ -208,6 +242,47 @@ public class EclairSanCov {
                            ": " + e);
         return null;
       }
+    }
+  }
+
+  // Returns the superclass of an internal class name. Checks superclassMap
+  // (classpath JARs) first, then falls back to Class.forName() for JDK classes
+  // not present in those JARs. The fallback is safe because JDK classes don't
+  // match INSTRUMENTED_PREFIXES, so the transformer returns null immediately
+  // for them -- no recursive transformation, no ClassCircularityError.
+  static String superOf(String type) {
+    String s = superclassMap.get(type);
+    if (s != null)
+      return s;
+    try {
+      Class<?> c = Class.forName(type.replace('/', '.'), false, null);
+      Class<?> p = c.getSuperclass();
+      return p != null ? p.getName().replace('.', '/') : null;
+    } catch (Exception e) {
+      return null;
+    }
+  }
+
+  // ClassWriter that resolves type hierarchies via superclassMap instead of
+  // the default Class.forName(). The default getCommonSuperClass() triggers
+  // class loading, which causes ClassCircularityError in deep hierarchies like
+  // scala/collection/ where transforming class A requires loading class B and
+  // vice versa.
+  static class NonLoadingClassWriter extends ClassWriter {
+
+    NonLoadingClassWriter(ClassReader reader, int flags) {
+      super(reader, flags);
+    }
+
+    @Override
+    protected String getCommonSuperClass(String type1, String type2) {
+      java.util.Set<String> ancestors = new java.util.HashSet<>();
+      for (String t = type1; t != null && ancestors.add(t); t = superOf(t))
+        ;
+      for (String t = type2; t != null; t = superOf(t))
+        if (ancestors.contains(t))
+          return t;
+      return "java/lang/Object";
     }
   }
 

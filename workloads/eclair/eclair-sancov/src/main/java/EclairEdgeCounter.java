@@ -8,18 +8,33 @@ import org.objectweb.asm.Label;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 
-// Counts the total number of instrumentation probes in Eclair JARs.
+// Counts the total number of instrumentation probes across all instrumented
+// packages (fr/acinq/, scala/, scodec/).
 //
 // Used at Docker build time to determine TARGET_MAP_SIZE for the smite scenario
 // binary. Counts the same probes that EclairSanCov.prescan() assigns IDs to:
-// one entry probe per non-abstract, non-native method in fr/acinq/eclair/
-// classes, plus one probe per conditional branch fall-through and one per
-// label/basic-block entry within each method.
+// one entry probe per non-abstract, non-native method, plus one probe per
+// conditional branch fall-through and one per label/basic-block entry within
+// each method.
 //
 // Usage: java -cp eclair-sancov.jar EclairEdgeCounter <jar1> [<jar2> ...]
 //
 // Prints the total probe count to stdout.
 public class EclairEdgeCounter {
+
+  static final String[] INSTRUMENTED_PREFIXES = {
+      "fr/acinq/",
+      "scala/",
+      "scodec/",
+  };
+
+  static boolean shouldInstrument(String name) {
+    for (String prefix : INSTRUMENTED_PREFIXES) {
+      if (name.startsWith(prefix))
+        return true;
+    }
+    return false;
+  }
 
   public static void main(String[] args) throws Exception {
     if (args.length == 0) {
@@ -40,8 +55,7 @@ public class EclairEdgeCounter {
         while (entries.hasMoreElements()) {
           JarEntry je = entries.nextElement();
           String name = je.getName();
-          if (!name.startsWith("fr/acinq/eclair/") ||
-              !name.endsWith(".class")) {
+          if (!name.endsWith(".class") || !shouldInstrument(name)) {
             continue;
           }
           try (InputStream is = jar.getInputStream(je)) {
