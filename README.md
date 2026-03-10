@@ -81,15 +81,11 @@ docker run --rm -v $PWD/crash:/input.bin -e SMITE_INPUT=/input.bin smite-eclair 
 Generate an HTML coverage report showing which parts of the target were exercised by a fuzzing corpus:
 
 ```bash
-# Generate coverage report from a fuzzing corpus
-./scripts/lnd-coverage-report.sh /tmp/smite-out/default/queue/ ./coverage-report   # for LND
-./scripts/ldk-coverage-report.sh /tmp/smite-out/default/queue/ ./coverage-report   # for LDK
-./scripts/cln-coverage-report.sh /tmp/smite-out/default/queue/ ./coverage-report   # for CLN
-./scripts/eclair-coverage-report.sh /tmp/smite-out/default/queue/ ./coverage-report   # for Eclair
+# Generate coverage report from a fuzzing corpus (target: lnd, cln, ldk, eclair)
+./scripts/coverage-report.sh <target> /tmp/smite-out/default/queue/
 
 # View the report
-firefox ./coverage-report/coverage.html           # for LND
-firefox ./coverage-report/html/index.html         # for LDK, CLN, or Eclair
+firefox ./<target>-coverage-report/html/index.html
 ```
 
 ## Project Structure
@@ -106,9 +102,6 @@ workloads/
 scripts/
   setup-nyx.sh              # Helper to create Nyx sharedirs
   enable-vmware-backdoor.sh # Enable KVM VMware backdoor for Nyx
-  lnd-coverage-report.sh    # Generate an LND coverage report
-  ldk-coverage-report.sh    # Generate an LDK coverage report
-  cln-coverage-report.sh    # Generate a CLN coverage report
-  eclair-coverage-report.sh # Generate an Eclair coverage report
+  coverage-report.sh        # Generate a coverage report for any target
   symbolize-crash.sh        # Symbolize CLN crash report stack traces
 ```
