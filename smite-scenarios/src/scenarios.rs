@@ -1,11 +1,9 @@
 //! Scenario implementations and helpers.
 
 mod encrypted_bytes;
-mod init;
 mod noise;
 
 pub use encrypted_bytes::EncryptedBytesScenario;
-pub use init::InitScenario;
 pub use noise::NoiseScenario;
 
 use std::time::Duration;
