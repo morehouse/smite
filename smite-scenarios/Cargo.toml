@@ -6,6 +6,26 @@ license.workspace = true
 
 [features]
 nyx = ["smite/nyx", "dep:smite-nyx-sys"]
+active-scenario = []
+encrypted-bytes = ["active-scenario"]
+noise = ["active-scenario"]
+
+
+[[bin]]
+name = "cln"
+required-features = ["active-scenario"]
+
+[[bin]]
+name = "lnd"
+required-features = ["active-scenario"]
+
+[[bin]]
+name = "ldk"
+required-features = ["active-scenario"]
+
+[[bin]]
+name = "eclair"
+required-features = ["active-scenario"]
 
 [lints]
 workspace = true

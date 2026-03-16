@@ -6,6 +6,15 @@ mod noise;
 pub use encrypted_bytes::EncryptedBytesScenario;
 pub use noise::NoiseScenario;
 
+// Active fuzzing scenario selected at compile time via Cargo feature flags.
+// Exactly one scenario feature must be enabled. Based on the enabled feature,
+// `ActiveScenario` is aliased to the corresponding scenario implementation.
+#[cfg(feature = "encrypted-bytes")]
+pub type ActiveScenario<T> = EncryptedBytesScenario<T>;
+
+#[cfg(feature = "noise")]
+pub type ActiveScenario<T> = NoiseScenario<T>;
+
 use std::time::Duration;
 
 use secp256k1::SecretKey;
