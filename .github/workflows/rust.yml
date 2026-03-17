@@ -36,11 +36,17 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: Build
-        run: cargo build --verbose
+      - name: Build encrypted-bytes scenario
+        run: cargo build --verbose --features encrypted-bytes
 
-      - name: Build with nyx feature
-        run: cargo build --verbose --features nyx
+      - name: Build encrypted-bytes scenario with nyx feature
+        run: cargo build --verbose --features nyx,encrypted-bytes
+
+      - name: Build noise scenario
+        run: cargo build --verbose --features noise
+
+      - name: Build noise scenario with nyx feature
+        run: cargo build --verbose --features nyx,noise
 
       - name: Run tests
         run: cargo test --verbose
