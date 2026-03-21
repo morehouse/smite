@@ -1,7 +1,8 @@
 //! BOLT 1 ping message.
 
 use super::BoltError;
-use super::types::{read_u16_be, read_var_bytes, write_u16_be};
+use super::types::{read_var_bytes, write_var_bytes};
+use super::wire::WireFormat;
 
 /// BOLT 1 ping message (type 18).
 ///
@@ -37,10 +38,8 @@ impl Ping {
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
-        write_u16_be(self.num_pong_bytes, &mut out);
-        #[allow(clippy::cast_possible_truncation)] // Vec length is bounded by u16 padding_len
-        write_u16_be(self.ignored.len() as u16, &mut out);
-        out.extend_from_slice(&self.ignored);
+        self.num_pong_bytes.write(&mut out);
+        write_var_bytes(&self.ignored, &mut out);
         out
     }
 
@@ -51,7 +50,7 @@ impl Ping {
     /// Returns `Truncated` if the payload is too short.
     pub fn decode(payload: &[u8]) -> Result<Self, BoltError> {
         let mut cursor = payload;
-        let num_pong_bytes = read_u16_be(&mut cursor)?;
+        let num_pong_bytes = u16::read(&mut cursor)?;
         let ignored = read_var_bytes(&mut cursor)?;
 
         Ok(Self {

@@ -29,6 +29,4 @@ nix = { version = "0.30", default-features = false, features = [
   "signal",
   "process",
 ] }
-
-[dev-dependencies]
 hex = "0.4"

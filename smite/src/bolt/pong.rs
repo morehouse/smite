@@ -2,7 +2,7 @@
 
 use super::BoltError;
 use super::ping::Ping;
-use super::types::{read_var_bytes, write_u16_be};
+use super::types::{read_var_bytes, write_var_bytes};
 
 /// BOLT 1 pong message (type 19).
 ///
@@ -32,9 +32,7 @@ impl Pong {
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
-        #[allow(clippy::cast_possible_truncation)] // Vec length bounded by u16 from new()
-        write_u16_be(self.ignored.len() as u16, &mut out);
-        out.extend_from_slice(&self.ignored);
+        write_var_bytes(&self.ignored, &mut out);
         out
     }
 

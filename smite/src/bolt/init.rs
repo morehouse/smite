@@ -2,7 +2,7 @@
 
 use super::BoltError;
 use super::tlv::TlvStream;
-use super::types::{read_var_bytes, write_u16_be};
+use super::types::{read_var_bytes, write_var_bytes};
 
 /// TLV type for chain hash list.
 const TLV_NETWORKS: u64 = 1;
@@ -72,14 +72,10 @@ impl Init {
         let mut out = Vec::new();
 
         // Encode globalfeatures
-        #[allow(clippy::cast_possible_truncation)] // Feature vecs are bounded by u16
-        write_u16_be(self.globalfeatures.len() as u16, &mut out);
-        out.extend_from_slice(&self.globalfeatures);
+        write_var_bytes(&self.globalfeatures, &mut out);
 
         // Encode features
-        #[allow(clippy::cast_possible_truncation)] // Feature vecs are bounded by u16
-        write_u16_be(self.features.len() as u16, &mut out);
-        out.extend_from_slice(&self.features);
+        write_var_bytes(&self.features, &mut out);
 
         // Encode TLVs
         let mut tlv_stream = TlvStream::new();

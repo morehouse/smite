@@ -10,6 +10,7 @@ mod pong;
 mod tlv;
 mod types;
 mod warning;
+mod wire;
 
 pub use error::Error;
 pub use init::{Init, InitTlvs};
@@ -18,9 +19,9 @@ pub use pong::Pong;
 pub use tlv::{TlvRecord, TlvStream};
 pub use types::{
     CHANNEL_ID_SIZE, ChannelId, MAX_MESSAGE_SIZE, bigsize_len, decode_bigsize, encode_bigsize,
-    read_u16_be, write_u16_be,
 };
 pub use warning::Warning;
+pub use wire::WireFormat;
 
 /// Errors that can occur during BOLT message encoding/decoding.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +31,8 @@ pub enum BoltError {
     Truncated { expected: usize, actual: usize },
     /// Unknown even message type (must close connection per BOLT 1)
     UnknownEvenType(u16),
+    /// The bytes do not represent a valid compressed secp256k1 public key
+    InvalidPublicKey([u8; 33]),
 
     // BigSize errors
     /// `BigSize` not minimally encoded
@@ -53,6 +56,7 @@ impl std::fmt::Display for BoltError {
                 write!(f, "TRUNCATED expected {expected} got {actual}")
             }
             Self::UnknownEvenType(t) => write!(f, "UNKNOWN_EVEN_TYPE {t}"),
+            Self::InvalidPublicKey(pk) => write!(f, "INVALID_PUBLIC_KEY {}", hex::encode(pk)),
             Self::BigSizeNotMinimal => write!(f, "BIGSIZE_NOT_MINIMAL"),
             Self::BigSizeTruncated => write!(f, "BIGSIZE_TRUNCATED"),
             Self::TlvNotIncreasing { previous, current } => {
@@ -126,7 +130,7 @@ impl Message {
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
-        write_u16_be(self.msg_type(), &mut out);
+        self.msg_type().write(&mut out);
         match self {
             Self::Warning(m) => out.extend(m.encode()),
             Self::Init(m) => out.extend(m.encode()),
@@ -147,7 +151,7 @@ impl Message {
     /// specific message type.
     pub fn decode(data: &[u8]) -> Result<Self, BoltError> {
         let mut cursor = data;
-        let msg_type = read_u16_be(&mut cursor)?;
+        let msg_type = u16::read(&mut cursor)?;
 
         match msg_type {
             msg_type::WARNING => Ok(Self::Warning(Warning::decode(cursor)?)),
@@ -177,7 +181,7 @@ impl Message {
 #[must_use]
 pub fn message_with_type(msg_type: u16, payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
-    write_u16_be(msg_type, &mut out);
+    msg_type.write(&mut out);
     out.extend_from_slice(payload);
     out
 }

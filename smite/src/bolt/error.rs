@@ -1,7 +1,7 @@
 //! BOLT 1 error message.
 
 use super::BoltError;
-use super::types::{ChannelId, MAX_MESSAGE_SIZE, read_var_bytes, write_u16_be};
+use super::types::{ChannelId, MAX_MESSAGE_SIZE, read_var_bytes, write_var_bytes};
 
 /// BOLT 1 error message (type 17).
 ///
@@ -58,9 +58,7 @@ impl Error {
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
         self.channel_id.encode(&mut out);
-        #[allow(clippy::cast_possible_truncation)] // Checked in constructors
-        write_u16_be(self.data.len() as u16, &mut out);
-        out.extend_from_slice(&self.data);
+        write_var_bytes(&self.data, &mut out);
         out
     }
 

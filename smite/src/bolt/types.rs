@@ -1,6 +1,7 @@
 //! Fundamental types for BOLT message encoding.
 
 use super::BoltError;
+use super::wire::WireFormat;
 
 /// Maximum Lightning message size (2-byte length prefix limit).
 pub const MAX_MESSAGE_SIZE: usize = 65535;
@@ -147,30 +148,13 @@ pub const fn bigsize_len(value: u64) -> usize {
     }
 }
 
-/// Reads a u16 big-endian from bytes, advancing the slice past the read bytes.
-///
-/// # Errors
-///
-/// Returns `Truncated` if there are fewer than 2 bytes.
-pub fn read_u16_be(data: &mut &[u8]) -> Result<u16, BoltError> {
-    if data.len() < 2 {
-        return Err(BoltError::Truncated {
-            expected: 2,
-            actual: data.len(),
-        });
-    }
-    let value = u16::from_be_bytes([data[0], data[1]]);
-    *data = &data[2..];
-    Ok(value)
-}
-
 /// Reads a `[u16:len][len*byte]` variable-length field, advancing past both.
 ///
 /// # Errors
 ///
 /// Returns `Truncated` if there are fewer bytes than the declared length.
 pub fn read_var_bytes(data: &mut &[u8]) -> Result<Vec<u8>, BoltError> {
-    let len = read_u16_be(data)? as usize;
+    let len = u16::read(data)? as usize;
     if data.len() < len {
         return Err(BoltError::Truncated {
             expected: len,
@@ -182,9 +166,11 @@ pub fn read_var_bytes(data: &mut &[u8]) -> Result<Vec<u8>, BoltError> {
     Ok(bytes)
 }
 
-/// Writes a u16 big-endian to a vector.
-pub fn write_u16_be(value: u16, out: &mut Vec<u8>) {
-    out.extend_from_slice(&value.to_be_bytes());
+/// Writes a `[u16:len][len*byte]` variable-length field.
+pub fn write_var_bytes(data: &[u8], out: &mut Vec<u8>) {
+    #[allow(clippy::cast_possible_truncation)] // Checked in constructors
+    (data.len() as u16).write(out);
+    out.extend_from_slice(data);
 }
 
 #[cfg(test)]
@@ -315,36 +301,6 @@ mod tests {
     }
 
     #[test]
-    fn read_u16_be_valid() {
-        let mut data: &[u8] = &[0x00, 0x00, 0x00, 0x01];
-        assert_eq!(read_u16_be(&mut data).unwrap(), 0);
-        assert_eq!(data, &[0x00, 0x01]); // Slice advanced
-        assert_eq!(read_u16_be(&mut data).unwrap(), 1);
-        assert!(data.is_empty()); // Fully consumed
-    }
-
-    #[test]
-    fn read_u16_be_truncated() {
-        let mut empty: &[u8] = &[];
-        assert_eq!(
-            read_u16_be(&mut empty),
-            Err(BoltError::Truncated {
-                expected: 2,
-                actual: 0
-            })
-        );
-
-        let mut one_byte: &[u8] = &[0x00];
-        assert_eq!(
-            read_u16_be(&mut one_byte),
-            Err(BoltError::Truncated {
-                expected: 2,
-                actual: 1
-            })
-        );
-    }
-
-    #[test]
     fn read_var_bytes_empty_field() {
         let mut data: &[u8] = &[0x00, 0x00];
         let result = read_var_bytes(&mut data).unwrap();
@@ -393,14 +349,15 @@ mod tests {
     }
 
     #[test]
-    fn write_u16_be_roundtrip() {
-        for value in [0u16, 1, 255, 256, 65535] {
-            let mut buf = Vec::new();
-            write_u16_be(value, &mut buf);
-            assert_eq!(buf.len(), 2);
-            let mut cursor: &[u8] = &buf;
-            assert_eq!(read_u16_be(&mut cursor).unwrap(), value);
-        }
+    fn write_var_bytes_roundtrip() {
+        let original = vec![0xaa, 0xbb];
+        let mut out = Vec::new();
+        write_var_bytes(&original, &mut out);
+
+        let mut cursor: &[u8] = &out;
+        let decoded = read_var_bytes(&mut cursor).unwrap();
+        assert_eq!(decoded, original);
+        assert!(cursor.is_empty());
     }
 
     #[test]
