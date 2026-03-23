@@ -1,7 +1,7 @@
 //! BOLT 1 ping message.
 
 use super::BoltError;
-use super::types::{read_u16_be, write_u16_be};
+use super::types::{read_u16_be, read_var_bytes, write_u16_be};
 
 /// BOLT 1 ping message (type 18).
 ///
@@ -52,18 +52,11 @@ impl Ping {
     pub fn decode(payload: &[u8]) -> Result<Self, BoltError> {
         let mut cursor = payload;
         let num_pong_bytes = read_u16_be(&mut cursor)?;
-        let byteslen = read_u16_be(&mut cursor)? as usize;
-
-        if cursor.len() < byteslen {
-            return Err(BoltError::Truncated {
-                expected: byteslen,
-                actual: cursor.len(),
-            });
-        }
+        let ignored = read_var_bytes(&mut cursor)?;
 
         Ok(Self {
             num_pong_bytes,
-            ignored: cursor[..byteslen].to_vec(),
+            ignored,
         })
     }
 }

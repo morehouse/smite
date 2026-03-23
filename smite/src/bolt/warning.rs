@@ -1,7 +1,7 @@
 //! BOLT 1 warning message.
 
 use super::BoltError;
-use super::types::{ChannelId, MAX_MESSAGE_SIZE, read_u16_be, write_u16_be};
+use super::types::{ChannelId, MAX_MESSAGE_SIZE, read_var_bytes, write_u16_be};
 
 /// BOLT 1 warning message (type 1).
 ///
@@ -72,19 +72,9 @@ impl Warning {
     pub fn decode(payload: &[u8]) -> Result<Self, BoltError> {
         let mut cursor = payload;
         let channel_id = ChannelId::decode(&mut cursor)?;
-        let data_len = read_u16_be(&mut cursor)? as usize;
+        let data = read_var_bytes(&mut cursor)?;
 
-        if cursor.len() < data_len {
-            return Err(BoltError::Truncated {
-                expected: data_len,
-                actual: cursor.len(),
-            });
-        }
-
-        Ok(Self {
-            channel_id,
-            data: cursor[..data_len].to_vec(),
-        })
+        Ok(Self { channel_id, data })
     }
 
     /// Returns data as a string if it's valid UTF-8.

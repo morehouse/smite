@@ -164,6 +164,24 @@ pub fn read_u16_be(data: &mut &[u8]) -> Result<u16, BoltError> {
     Ok(value)
 }
 
+/// Reads a `[u16:len][len*byte]` variable-length field, advancing past both.
+///
+/// # Errors
+///
+/// Returns `Truncated` if there are fewer bytes than the declared length.
+pub fn read_var_bytes(data: &mut &[u8]) -> Result<Vec<u8>, BoltError> {
+    let len = read_u16_be(data)? as usize;
+    if data.len() < len {
+        return Err(BoltError::Truncated {
+            expected: len,
+            actual: data.len(),
+        });
+    }
+    let bytes = data[..len].to_vec();
+    *data = &data[len..];
+    Ok(bytes)
+}
+
 /// Writes a u16 big-endian to a vector.
 pub fn write_u16_be(value: u16, out: &mut Vec<u8>) {
     out.extend_from_slice(&value.to_be_bytes());
@@ -322,6 +340,54 @@ mod tests {
             Err(BoltError::Truncated {
                 expected: 2,
                 actual: 1
+            })
+        );
+    }
+
+    #[test]
+    fn read_var_bytes_empty_field() {
+        let mut data: &[u8] = &[0x00, 0x00];
+        let result = read_var_bytes(&mut data).unwrap();
+        assert_eq!(result, Vec::<u8>::new());
+        assert!(data.is_empty());
+    }
+
+    #[test]
+    fn read_var_bytes_valid() {
+        let mut data: &[u8] = &[0x00, 0x03, 0xaa, 0xbb, 0xcc];
+        let result = read_var_bytes(&mut data).unwrap();
+        assert_eq!(result, vec![0xaa, 0xbb, 0xcc]);
+        assert!(data.is_empty());
+    }
+
+    #[test]
+    fn read_var_bytes_advances_cursor() {
+        let mut data: &[u8] = &[0x00, 0x02, 0xaa, 0xbb, 0xff, 0xff];
+        let result = read_var_bytes(&mut data).unwrap();
+        assert_eq!(result, vec![0xaa, 0xbb]);
+        assert_eq!(data, &[0xff, 0xff]);
+    }
+
+    #[test]
+    fn read_var_bytes_truncated_length() {
+        let mut data: &[u8] = &[0x00];
+        assert_eq!(
+            read_var_bytes(&mut data),
+            Err(BoltError::Truncated {
+                expected: 2,
+                actual: 1
+            })
+        );
+    }
+
+    #[test]
+    fn read_var_bytes_truncated_data() {
+        let mut data: &[u8] = &[0x00, 0x05, 0xaa, 0xbb];
+        assert_eq!(
+            read_var_bytes(&mut data),
+            Err(BoltError::Truncated {
+                expected: 5,
+                actual: 2
             })
         );
     }

@@ -2,7 +2,7 @@
 
 use super::BoltError;
 use super::ping::Ping;
-use super::types::{read_u16_be, write_u16_be};
+use super::types::{read_var_bytes, write_u16_be};
 
 /// BOLT 1 pong message (type 19).
 ///
@@ -45,18 +45,9 @@ impl Pong {
     /// Returns `Truncated` if the payload is too short.
     pub fn decode(payload: &[u8]) -> Result<Self, BoltError> {
         let mut cursor = payload;
-        let byteslen = read_u16_be(&mut cursor)? as usize;
+        let ignored = read_var_bytes(&mut cursor)?;
 
-        if cursor.len() < byteslen {
-            return Err(BoltError::Truncated {
-                expected: byteslen,
-                actual: cursor.len(),
-            });
-        }
-
-        Ok(Self {
-            ignored: cursor[..byteslen].to_vec(),
-        })
+        Ok(Self { ignored })
     }
 }
 

@@ -2,7 +2,7 @@
 
 use super::BoltError;
 use super::tlv::TlvStream;
-use super::types::{read_u16_be, write_u16_be};
+use super::types::{read_var_bytes, write_u16_be};
 
 /// TLV type for chain hash list.
 const TLV_NETWORKS: u64 = 1;
@@ -108,26 +108,10 @@ impl Init {
         let mut cursor = payload;
 
         // Decode globalfeatures
-        let gflen = read_u16_be(&mut cursor)? as usize;
-        if cursor.len() < gflen {
-            return Err(BoltError::Truncated {
-                expected: gflen,
-                actual: cursor.len(),
-            });
-        }
-        let globalfeatures = cursor[..gflen].to_vec();
-        cursor = &cursor[gflen..];
+        let globalfeatures = read_var_bytes(&mut cursor)?;
 
         // Decode features
-        let flen = read_u16_be(&mut cursor)? as usize;
-        if cursor.len() < flen {
-            return Err(BoltError::Truncated {
-                expected: flen,
-                actual: cursor.len(),
-            });
-        }
-        let features = cursor[..flen].to_vec();
-        cursor = &cursor[flen..];
+        let features = read_var_bytes(&mut cursor)?;
 
         // Decode TLVs (remaining bytes)
         // Init TLVs are all odd (1, 3), so no known even types
