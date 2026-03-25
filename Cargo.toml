@@ -19,3 +19,4 @@ warnings = "deny"
 log = "0.4"
 simple_logger = { version = "5", default-features = false }
 secp256k1 = { version = "0.31", features = ["std"] }
+serde = { version = "1", features = ["derive"] }
