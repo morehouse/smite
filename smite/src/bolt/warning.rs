@@ -1,7 +1,7 @@
 //! BOLT 1 warning message.
 
 use super::BoltError;
-use super::types::{ChannelId, MAX_MESSAGE_SIZE, read_var_bytes, write_var_bytes};
+use super::types::{ChannelId, MAX_MESSAGE_SIZE};
 use super::wire::WireFormat;
 
 /// BOLT 1 warning message (type 1).
@@ -59,7 +59,7 @@ impl Warning {
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
         self.channel_id.write(&mut out);
-        write_var_bytes(&self.data, &mut out);
+        self.data.write(&mut out);
         out
     }
 
@@ -71,7 +71,7 @@ impl Warning {
     pub fn decode(payload: &[u8]) -> Result<Self, BoltError> {
         let mut cursor = payload;
         let channel_id = ChannelId::read(&mut cursor)?;
-        let data = read_var_bytes(&mut cursor)?;
+        let data = Vec::<u8>::read(&mut cursor)?;
 
         Ok(Self { channel_id, data })
     }

@@ -1,7 +1,6 @@
 //! BOLT 1 ping message.
 
 use super::BoltError;
-use super::types::{read_var_bytes, write_var_bytes};
 use super::wire::WireFormat;
 
 /// BOLT 1 ping message (type 18).
@@ -39,7 +38,7 @@ impl Ping {
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
         self.num_pong_bytes.write(&mut out);
-        write_var_bytes(&self.ignored, &mut out);
+        self.ignored.write(&mut out);
         out
     }
 
@@ -51,7 +50,7 @@ impl Ping {
     pub fn decode(payload: &[u8]) -> Result<Self, BoltError> {
         let mut cursor = payload;
         let num_pong_bytes = u16::read(&mut cursor)?;
-        let ignored = read_var_bytes(&mut cursor)?;
+        let ignored = Vec::<u8>::read(&mut cursor)?;
 
         Ok(Self {
             num_pong_bytes,

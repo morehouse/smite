@@ -2,7 +2,8 @@
 
 use super::BoltError;
 use super::tlv::TlvStream;
-use super::types::{CHAIN_HASH_SIZE, read_var_bytes, write_var_bytes};
+use super::types::CHAIN_HASH_SIZE;
+use super::wire::WireFormat;
 
 /// TLV type for chain hash list.
 const TLV_NETWORKS: u64 = 1;
@@ -69,10 +70,10 @@ impl Init {
         let mut out = Vec::new();
 
         // Encode globalfeatures
-        write_var_bytes(&self.globalfeatures, &mut out);
+        self.globalfeatures.write(&mut out);
 
         // Encode features
-        write_var_bytes(&self.features, &mut out);
+        self.features.write(&mut out);
 
         // Encode TLVs
         let mut tlv_stream = TlvStream::new();
@@ -101,10 +102,10 @@ impl Init {
         let mut cursor = payload;
 
         // Decode globalfeatures
-        let globalfeatures = read_var_bytes(&mut cursor)?;
+        let globalfeatures = Vec::<u8>::read(&mut cursor)?;
 
         // Decode features
-        let features = read_var_bytes(&mut cursor)?;
+        let features = Vec::<u8>::read(&mut cursor)?;
 
         // Decode TLVs (remaining bytes)
         // Init TLVs are all odd (1, 3), so no known even types

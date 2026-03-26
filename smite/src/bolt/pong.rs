@@ -2,7 +2,7 @@
 
 use super::BoltError;
 use super::ping::Ping;
-use super::types::{read_var_bytes, write_var_bytes};
+use super::wire::WireFormat;
 
 /// BOLT 1 pong message (type 19).
 ///
@@ -32,7 +32,7 @@ impl Pong {
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
-        write_var_bytes(&self.ignored, &mut out);
+        self.ignored.write(&mut out);
         out
     }
 
@@ -43,7 +43,7 @@ impl Pong {
     /// Returns `Truncated` if the payload is too short.
     pub fn decode(payload: &[u8]) -> Result<Self, BoltError> {
         let mut cursor = payload;
-        let ignored = read_var_bytes(&mut cursor)?;
+        let ignored = Vec::<u8>::read(&mut cursor)?;
 
         Ok(Self { ignored })
     }

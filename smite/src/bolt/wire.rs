@@ -142,6 +142,33 @@ impl WireFormat for BigSize {
     }
 }
 
+impl WireFormat for Vec<u8> {
+    /// Reads a `[u16:len][len*byte]` variable-length field, advancing past both.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Truncated` if there are fewer bytes than the declared length.
+    fn read(data: &mut &[u8]) -> Result<Self, BoltError> {
+        let len = u16::read(data)? as usize;
+        if data.len() < len {
+            return Err(BoltError::Truncated {
+                expected: len,
+                actual: data.len(),
+            });
+        }
+        let bytes = data[..len].to_vec();
+        *data = &data[len..];
+        Ok(bytes)
+    }
+
+    /// Writes a `[u16:len][len*byte]` variable-length field.
+    #[allow(clippy::cast_possible_truncation)]
+    fn write(&self, out: &mut Vec<u8>) {
+        (self.len() as u16).write(out);
+        out.extend_from_slice(self);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,6 +450,66 @@ mod tests {
         let id = ChannelId::read(&mut data).unwrap();
         assert_eq!(id, ChannelId::new([0x11; CHANNEL_ID_SIZE]));
         assert_eq!(data.len(), 8); // 8 bytes remaining
+    }
+
+    #[test]
+    fn vec_u8_read_empty_field() {
+        let mut data: &[u8] = &[0x00, 0x00];
+        let result = Vec::<u8>::read(&mut data).unwrap();
+        assert_eq!(result, Vec::<u8>::new());
+        assert!(data.is_empty());
+    }
+
+    #[test]
+    fn vec_u8_read_valid() {
+        let mut data: &[u8] = &[0x00, 0x03, 0xaa, 0xbb, 0xcc];
+        let result = Vec::<u8>::read(&mut data).unwrap();
+        assert_eq!(result, vec![0xaa, 0xbb, 0xcc]);
+        assert!(data.is_empty());
+    }
+
+    #[test]
+    fn vec_u8_read_truncated_length() {
+        let mut data: &[u8] = &[0x00];
+        assert_eq!(
+            Vec::<u8>::read(&mut data),
+            Err(BoltError::Truncated {
+                expected: 2,
+                actual: 1
+            })
+        );
+    }
+
+    #[test]
+    fn vec_u8_read_truncated_data() {
+        let mut data: &[u8] = &[0x00, 0x05, 0xaa, 0xbb];
+        assert_eq!(
+            Vec::<u8>::read(&mut data),
+            Err(BoltError::Truncated {
+                expected: 5,
+                actual: 2
+            })
+        );
+    }
+
+    #[test]
+    fn vec_u8_read_advances_cursor() {
+        let mut data: &[u8] = &[0x00, 0x02, 0xaa, 0xbb, 0xff, 0xff];
+        let result = Vec::<u8>::read(&mut data).unwrap();
+        assert_eq!(result, vec![0xaa, 0xbb]);
+        assert_eq!(data, &[0xff, 0xff]);
+    }
+
+    #[test]
+    fn vec_u8_write_roundtrip() {
+        let original = vec![0xaa, 0xbb];
+        let mut buf = Vec::new();
+        original.write(&mut buf);
+
+        let mut cursor: &[u8] = &buf;
+        let decoded = Vec::<u8>::read(&mut cursor).unwrap();
+        assert_eq!(decoded, original);
+        assert!(cursor.is_empty());
     }
 
     // Test vectors from BOLT 1 Appendix A
