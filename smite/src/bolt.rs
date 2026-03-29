@@ -3,6 +3,7 @@
 //! This module implements encoding and decoding for Lightning Network
 //! protocol messages as specified in the BOLT specifications.
 
+mod accept_channel;
 mod error;
 mod gossip_timestamp_filter;
 mod init;
@@ -15,6 +16,7 @@ mod types;
 mod warning;
 mod wire;
 
+pub use accept_channel::{AcceptChannel, AcceptChannelTlvs};
 pub use error::Error;
 pub use gossip_timestamp_filter::GossipTimestampFilter;
 pub use init::{Init, InitTlvs};
@@ -91,6 +93,8 @@ pub mod msg_type {
     pub const PONG: u16 = 19;
     /// `open_channel` message (BOLT 2).
     pub const OPEN_CHANNEL: u16 = 32;
+    /// `accept_channel` message (BOLT 2).
+    pub const ACCEPT_CHANNEL: u16 = 33;
     /// Shutdown message (BOLT 2).
     pub const SHUTDOWN: u16 = 38;
     /// Gossip timestamp filter message (BOLT 7).
@@ -113,6 +117,8 @@ pub enum Message {
     Pong(Pong),
     /// `open_channel` message (type 32).
     OpenChannel(OpenChannel),
+    /// `accept_channel` message (type 33).
+    AcceptChannel(AcceptChannel),
     /// Shutdown message (type 38).
     Shutdown(Shutdown),
     /// Gossip timestamp filter message (type 265).
@@ -140,6 +146,7 @@ impl Message {
             Self::Ping(_) => msg_type::PING,
             Self::Pong(_) => msg_type::PONG,
             Self::OpenChannel(_) => msg_type::OPEN_CHANNEL,
+            Self::AcceptChannel(_) => msg_type::ACCEPT_CHANNEL,
             Self::Shutdown(_) => msg_type::SHUTDOWN,
             Self::GossipTimestampFilter(_) => msg_type::GOSSIP_TIMESTAMP_FILTER,
             Self::Unknown { msg_type, .. } => *msg_type,
@@ -158,6 +165,7 @@ impl Message {
             Self::Ping(m) => out.extend(m.encode()),
             Self::Pong(m) => out.extend(m.encode()),
             Self::OpenChannel(m) => out.extend(m.encode()),
+            Self::AcceptChannel(m) => out.extend(m.encode()),
             Self::Shutdown(m) => out.extend(m.encode()),
             Self::GossipTimestampFilter(m) => out.extend(m.encode()),
             Self::Unknown { payload, .. } => out.extend(payload),
@@ -183,6 +191,7 @@ impl Message {
             msg_type::PING => Ok(Self::Ping(Ping::decode(cursor)?)),
             msg_type::PONG => Ok(Self::Pong(Pong::decode(cursor)?)),
             msg_type::OPEN_CHANNEL => Ok(Self::OpenChannel(OpenChannel::decode(cursor)?)),
+            msg_type::ACCEPT_CHANNEL => Ok(Self::AcceptChannel(AcceptChannel::decode(cursor)?)),
             msg_type::SHUTDOWN => Ok(Self::Shutdown(Shutdown::decode(cursor)?)),
             msg_type::GOSSIP_TIMESTAMP_FILTER => Ok(Self::GossipTimestampFilter(
                 GossipTimestampFilter::decode(cursor)?,
@@ -305,6 +314,40 @@ mod tests {
         assert_eq!(decoded, Message::OpenChannel(open));
     }
 
+    /// Valid `AcceptChannel` message for testing.
+    fn sample_accept_channel() -> AcceptChannel {
+        let secp = Secp256k1::new();
+        let sk = SecretKey::from_byte_array([0x11; 32]).expect("valid secret");
+        let pk = PublicKey::from_secret_key(&secp, &sk);
+
+        AcceptChannel {
+            temporary_channel_id: ChannelId::new([0xbb; 32]),
+            dust_limit_satoshis: 546,
+            max_htlc_value_in_flight_msat: 100_000_000,
+            channel_reserve_satoshis: 10_000,
+            htlc_minimum_msat: 1_000,
+            minimum_depth: 3,
+            to_self_delay: 144,
+            max_accepted_htlcs: 483,
+            funding_pubkey: pk,
+            revocation_basepoint: pk,
+            payment_basepoint: pk,
+            delayed_payment_basepoint: pk,
+            htlc_basepoint: pk,
+            first_per_commitment_point: pk,
+            tlvs: AcceptChannelTlvs::default(),
+        }
+    }
+
+    #[test]
+    fn message_accept_channel_roundtrip() {
+        let accept = sample_accept_channel();
+        let msg = Message::AcceptChannel(accept.clone());
+        let encoded = msg.encode();
+        let decoded = Message::decode(&encoded).unwrap();
+        assert_eq!(decoded, Message::AcceptChannel(accept));
+    }
+
     #[test]
     fn message_gossip_timestamp_filter_roundtrip() {
         let chain_hash = [0x6f; 32];
@@ -351,6 +394,10 @@ mod tests {
         assert_eq!(
             Message::OpenChannel(sample_open_channel()).msg_type(),
             msg_type::OPEN_CHANNEL
+        );
+        assert_eq!(
+            Message::AcceptChannel(sample_accept_channel()).msg_type(),
+            msg_type::ACCEPT_CHANNEL
         );
         assert_eq!(
             Message::Shutdown(Shutdown::for_channel(ChannelId([0; 32]), vec![])).msg_type(),
