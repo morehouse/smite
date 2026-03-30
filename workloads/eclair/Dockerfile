@@ -66,6 +66,7 @@ WORKDIR /smite
 COPY Cargo.toml Cargo.lock ./
 COPY smite/ smite/
 COPY smite-scenarios/ smite-scenarios/
+COPY smite-ir/ smite-ir/
 COPY smite-nyx-sys/ smite-nyx-sys/
 RUN TARGET_MAP_SIZE=$(cat /tmp/eclair-edge-count.txt) \
     cargo build -p smite-scenarios --bin eclair_${SCENARIO} --release --features nyx

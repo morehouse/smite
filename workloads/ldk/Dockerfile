@@ -58,6 +58,7 @@ WORKDIR /smite
 COPY Cargo.toml Cargo.lock ./
 COPY smite/ smite/
 COPY smite-scenarios/ smite-scenarios/
+COPY smite-ir/ smite-ir/
 COPY smite-nyx-sys/ smite-nyx-sys/
 RUN TARGET_PATH=/ldk-wrapper/target/release/ldk-node-wrapper \
     cargo build -p smite-scenarios --bin ldk_${SCENARIO} --release --features nyx
