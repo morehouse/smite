@@ -107,6 +107,26 @@ impl fmt::Display for AcceptChannelField {
 }
 
 impl AcceptChannelField {
+    /// All variants. Keep in sync with the enum definition.
+    pub const ALL: &[Self] = &[
+        Self::TemporaryChannelId,
+        Self::DustLimitSatoshis,
+        Self::MaxHtlcValueInFlightMsat,
+        Self::ChannelReserveSatoshis,
+        Self::HtlcMinimumMsat,
+        Self::MinimumDepth,
+        Self::ToSelfDelay,
+        Self::MaxAcceptedHtlcs,
+        Self::FundingPubkey,
+        Self::RevocationBasepoint,
+        Self::PaymentBasepoint,
+        Self::DelayedPaymentBasepoint,
+        Self::HtlcBasepoint,
+        Self::FirstPerCommitmentPoint,
+        Self::UpfrontShutdownScript,
+        Self::ChannelType,
+    ];
+
     /// Returns the variable type produced by extracting this field.
     #[must_use]
     pub fn output_type(self) -> VariableType {
@@ -238,6 +258,22 @@ impl Operation {
                 VariableType::Bytes,        // upfront_shutdown_script
                 VariableType::Features,     // channel_type
             ],
+        }
+    }
+
+    /// Returns extraction operations for compound variable types.
+    ///
+    /// For example, `RecvAcceptChannel` produces an `AcceptChannel` compound
+    /// variable, so this returns `ExtractAcceptChannel` operations for each
+    /// field.  Non-compound operations return an empty vec.
+    #[must_use]
+    pub fn extractable_fields(&self) -> Vec<(Operation, VariableType)> {
+        match self {
+            Self::RecvAcceptChannel => AcceptChannelField::ALL
+                .iter()
+                .map(|&f| (Self::ExtractAcceptChannel(f), f.output_type()))
+                .collect(),
+            _ => vec![],
         }
     }
 

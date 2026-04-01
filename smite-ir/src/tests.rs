@@ -242,3 +242,35 @@ fn postcard_roundtrip() {
     let decoded: Program = postcard::from_bytes(&bytes).expect("postcard deserialization");
     assert_eq!(program, decoded);
 }
+
+// Ensure AcceptChannelField and AcceptChannelField::ALL stay in sync. The
+// exhaustive match in this test will fail to compile if a variant is added
+// without updating it, and the assertion will fail if the match is updated
+// without updating AcceptChannelField::ALL.
+#[test]
+fn accept_channel_field_all_is_complete() {
+    let variant_count = |f: AcceptChannelField| -> usize {
+        match f {
+            AcceptChannelField::TemporaryChannelId
+            | AcceptChannelField::DustLimitSatoshis
+            | AcceptChannelField::MaxHtlcValueInFlightMsat
+            | AcceptChannelField::ChannelReserveSatoshis
+            | AcceptChannelField::HtlcMinimumMsat
+            | AcceptChannelField::MinimumDepth
+            | AcceptChannelField::ToSelfDelay
+            | AcceptChannelField::MaxAcceptedHtlcs
+            | AcceptChannelField::FundingPubkey
+            | AcceptChannelField::RevocationBasepoint
+            | AcceptChannelField::PaymentBasepoint
+            | AcceptChannelField::DelayedPaymentBasepoint
+            | AcceptChannelField::HtlcBasepoint
+            | AcceptChannelField::FirstPerCommitmentPoint
+            | AcceptChannelField::UpfrontShutdownScript
+            | AcceptChannelField::ChannelType => 16,
+        }
+    };
+    assert_eq!(
+        AcceptChannelField::ALL.len(),
+        variant_count(AcceptChannelField::ALL[0]),
+    );
+}
