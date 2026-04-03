@@ -2,9 +2,11 @@
 
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
+use smite::bolt::MAX_MESSAGE_SIZE;
 
 use super::*;
 use generators::OpenChannelGenerator;
+use mutators::{InputSwapMutator, OperationParamMutator};
 use operation::AcceptChannelField;
 
 /// Helper to build a private key with a single distinguishing byte.
@@ -416,4 +418,203 @@ fn append_type_mismatch_panics() {
     let mut builder = ProgramBuilder::new();
     let amount = builder.generate_fresh(VariableType::Amount, &mut rng);
     builder.append(Operation::DerivePoint, &[amount]);
+}
+
+// -- OperationParamMutator tests --
+
+#[test]
+fn param_mutator_changes_values() {
+    let original = generate_program(0);
+    let mut program = original.clone();
+    let mutator = OperationParamMutator;
+    let mut rng = SmallRng::seed_from_u64(0);
+
+    for _ in 0..100 {
+        mutator.mutate(&mut program, &mut rng);
+    }
+    assert_ne!(
+        program, original,
+        "OperationParamMutator never changed the program"
+    );
+}
+
+#[test]
+fn param_mutator_returns_false_on_empty_program() {
+    let mut program = Program {
+        instructions: vec![],
+    };
+    let mutator = OperationParamMutator;
+    let mut rng = SmallRng::seed_from_u64(0);
+    assert!(!mutator.mutate(&mut program, &mut rng));
+}
+
+#[test]
+fn param_mutator_returns_false_for_singleton_extract_field() {
+    // TemporaryChannelId is the only AcceptChannelField with output type
+    // ChannelId, so ExtractAcceptChannel(TemporaryChannelId) has no type-
+    // compatible alternative to swap to. With it as the only mutable op, the
+    // mutator must report no change.
+    let mut program = Program {
+        instructions: vec![
+            Instruction {
+                operation: Operation::RecvAcceptChannel,
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::ExtractAcceptChannel(AcceptChannelField::TemporaryChannelId),
+                inputs: vec![0],
+            },
+        ],
+    };
+    let mutator = OperationParamMutator;
+    let mut rng = SmallRng::seed_from_u64(0);
+    assert!(!mutator.mutate(&mut program, &mut rng));
+}
+
+#[test]
+fn param_mutator_caps_byte_length() {
+    // Start at exactly MAX_MESSAGE_SIZE so any growth would exceed the cap.
+    let mut program = Program {
+        instructions: vec![Instruction {
+            operation: Operation::LoadBytes(vec![0; MAX_MESSAGE_SIZE]),
+            inputs: vec![],
+        }],
+    };
+
+    let mutator = OperationParamMutator;
+    let mut rng = SmallRng::seed_from_u64(0);
+
+    for _ in 0..10_000 {
+        mutator.mutate(&mut program, &mut rng);
+        let Operation::LoadBytes(b) = &program.instructions[0].operation else {
+            panic!("operation type changed");
+        };
+        assert!(
+            b.len() <= MAX_MESSAGE_SIZE,
+            "bytes exceeded MAX_MESSAGE_SIZE: got {}",
+            b.len(),
+        );
+    }
+}
+
+#[test]
+fn param_mutator_preserves_extract_field_type() {
+    // One ExtractAcceptChannel instruction per field variant.
+    let mut instructions = vec![Instruction {
+        operation: Operation::RecvAcceptChannel,
+        inputs: vec![],
+    }];
+    for &field in AcceptChannelField::ALL {
+        instructions.push(Instruction {
+            operation: Operation::ExtractAcceptChannel(field),
+            inputs: vec![0],
+        });
+    }
+
+    let mut program = Program { instructions };
+    let original_types: Vec<VariableType> = AcceptChannelField::ALL
+        .iter()
+        .map(|f| f.output_type())
+        .collect();
+
+    let mutator = OperationParamMutator;
+    let mut rng = SmallRng::seed_from_u64(0);
+
+    for _ in 0..100 {
+        mutator.mutate(&mut program, &mut rng);
+
+        for (i, &expected_type) in original_types.iter().enumerate() {
+            let field = match &program.instructions[i + 1].operation {
+                Operation::ExtractAcceptChannel(f) => *f,
+                other => panic!("expected ExtractAcceptChannel, got {other:?}"),
+            };
+            assert_eq!(
+                field.output_type(),
+                expected_type,
+                "{field:?} has type {:?}, expected {expected_type:?}",
+                field.output_type(),
+            );
+        }
+    }
+}
+
+// -- InputSwapMutator tests --
+
+#[test]
+fn input_swap_changes_references() {
+    let original = generate_program(0);
+    let mut program = original.clone();
+    let mutator = InputSwapMutator;
+    let mut rng = SmallRng::seed_from_u64(0);
+
+    for _ in 0..100 {
+        mutator.mutate(&mut program, &mut rng);
+    }
+    assert_ne!(
+        program, original,
+        "InputSwapMutator never changed the program"
+    );
+}
+
+#[test]
+fn input_swap_returns_false_on_empty_program() {
+    let mut program = Program {
+        instructions: vec![],
+    };
+    let mutator = InputSwapMutator;
+    let mut rng = SmallRng::seed_from_u64(0);
+    assert!(!mutator.mutate(&mut program, &mut rng));
+}
+
+#[test]
+fn input_swap_returns_false_when_no_alternatives() {
+    // DerivePoint consumes the only PrivateKey -- no alternative to swap to.
+    let mut program = Program {
+        instructions: vec![
+            Instruction {
+                operation: Operation::LoadPrivateKey(key(1)),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::DerivePoint,
+                inputs: vec![0],
+            },
+        ],
+    };
+    let mutator = InputSwapMutator;
+    let mut rng = SmallRng::seed_from_u64(0);
+    assert!(!mutator.mutate(&mut program, &mut rng));
+}
+
+#[test]
+fn input_swap_preserves_types() {
+    let original = generate_program(0);
+    let mutator = InputSwapMutator;
+    let mut rng = SmallRng::seed_from_u64(0);
+
+    for _ in 0..100 {
+        let mut program = original.clone();
+        if mutator.mutate(&mut program, &mut rng) {
+            for (i, instr) in program.instructions.iter().enumerate() {
+                let expected_types = instr.operation.input_types();
+                for (j, &input_idx) in instr.inputs.iter().enumerate() {
+                    assert!(
+                        input_idx < i,
+                        "instruction {i} input {j}: references undefined variable {input_idx}",
+                    );
+                    let actual_type = program.instructions[input_idx]
+                        .operation
+                        .output_type()
+                        .unwrap_or_else(|| {
+                            panic!("instruction {i} input {j}: references void at {input_idx}")
+                        });
+                    assert_eq!(
+                        actual_type, expected_types[j],
+                        "instruction {i} input {j}: expected {:?}, got {actual_type:?}",
+                        expected_types[j],
+                    );
+                }
+            }
+        }
+    }
 }
