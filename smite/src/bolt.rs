@@ -14,6 +14,7 @@ mod ping;
 mod pong;
 mod shutdown;
 mod tlv;
+mod tx_abort;
 mod tx_complete;
 mod types;
 mod warning;
@@ -30,6 +31,7 @@ pub use ping::Ping;
 pub use pong::Pong;
 pub use shutdown::Shutdown;
 pub use tlv::{TlvRecord, TlvStream};
+pub use tx_abort::TxAbort;
 pub use tx_complete::TxComplete;
 pub use types::{
     BigSize, CHANNEL_ID_SIZE, COMPACT_SIGNATURE_SIZE, ChannelId, MAX_MESSAGE_SIZE, TXID_SIZE, Txid,
@@ -114,6 +116,8 @@ pub mod msg_type {
     pub const SHUTDOWN: u16 = 38;
     /// `tx_complete` message (BOLT 2).
     pub const TX_COMPLETE: u16 = 70;
+    /// `tx_abort` message (BOLT 2).
+    pub const TX_ABORT: u16 = 74;
     /// Gossip timestamp filter message (BOLT 7).
     pub const GOSSIP_TIMESTAMP_FILTER: u16 = 265;
 }
@@ -144,6 +148,8 @@ pub enum Message {
     Shutdown(Shutdown),
     /// `tx_complete` message (type 70).
     TxComplete(TxComplete),
+    /// `tx_abort` message (type 74).
+    TxAbort(TxAbort),
     /// Gossip timestamp filter message (type 265).
     GossipTimestampFilter(GossipTimestampFilter),
     /// Unknown message type.
@@ -174,6 +180,7 @@ impl Message {
             Self::FundingSigned(_) => msg_type::FUNDING_SIGNED,
             Self::Shutdown(_) => msg_type::SHUTDOWN,
             Self::TxComplete(_) => msg_type::TX_COMPLETE,
+            Self::TxAbort(_) => msg_type::TX_ABORT,
             Self::GossipTimestampFilter(_) => msg_type::GOSSIP_TIMESTAMP_FILTER,
             Self::Unknown { msg_type, .. } => *msg_type,
         }
@@ -196,6 +203,7 @@ impl Message {
             Self::FundingSigned(m) => out.extend(m.encode()),
             Self::Shutdown(m) => out.extend(m.encode()),
             Self::TxComplete(m) => out.extend(m.encode()),
+            Self::TxAbort(m) => out.extend(m.encode()),
             Self::GossipTimestampFilter(m) => out.extend(m.encode()),
             Self::Unknown { payload, .. } => out.extend(payload),
         }
@@ -225,6 +233,7 @@ impl Message {
             msg_type::FUNDING_SIGNED => Ok(Self::FundingSigned(FundingSigned::decode(cursor)?)),
             msg_type::SHUTDOWN => Ok(Self::Shutdown(Shutdown::decode(cursor)?)),
             msg_type::TX_COMPLETE => Ok(Self::TxComplete(TxComplete::decode(cursor)?)),
+            msg_type::TX_ABORT => Ok(Self::TxAbort(TxAbort::decode(cursor)?)),
             msg_type::GOSSIP_TIMESTAMP_FILTER => Ok(Self::GossipTimestampFilter(
                 GossipTimestampFilter::decode(cursor)?,
             )),
@@ -458,6 +467,15 @@ mod tests {
     }
 
     #[test]
+    fn message_tx_abort_roundtrip() {
+        let tx_abort = TxAbort::new(ChannelId::new([0xcd; CHANNEL_ID_SIZE]), "abort reason");
+        let msg = Message::TxAbort(tx_abort.clone());
+        let encoded = msg.encode();
+        let decoded = Message::decode(&encoded).unwrap();
+        assert_eq!(decoded, Message::TxAbort(tx_abort));
+    }
+
+    #[test]
     fn message_unknown_roundtrip() {
         let msg = Message::Unknown {
             msg_type: 101,
@@ -507,6 +525,10 @@ mod tests {
             })
             .msg_type(),
             msg_type::TX_COMPLETE
+        );
+        assert_eq!(
+            Message::TxAbort(TxAbort::new(ChannelId::new([0; CHANNEL_ID_SIZE]), "")).msg_type(),
+            msg_type::TX_ABORT
         );
         assert_eq!(
             Message::GossipTimestampFilter(GossipTimestampFilter::no_gossip([0u8; 32])).msg_type(),
