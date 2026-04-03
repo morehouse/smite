@@ -3,8 +3,10 @@
 //! Mutators transform programs to explore new protocol states while preserving
 //! structural validity. Each mutator makes a small, targeted change.
 
+mod input_swap;
 mod operation_param;
 
+pub use input_swap::InputSwapMutator;
 pub use operation_param::OperationParamMutator;
 
 use rand::Rng;
