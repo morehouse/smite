@@ -15,6 +15,8 @@ mod pong;
 mod shutdown;
 mod tlv;
 mod tx_complete;
+mod tx_remove_input;
+mod tx_remove_output;
 mod types;
 mod warning;
 mod wire;
@@ -31,6 +33,8 @@ pub use pong::Pong;
 pub use shutdown::Shutdown;
 pub use tlv::{TlvRecord, TlvStream};
 pub use tx_complete::TxComplete;
+pub use tx_remove_input::TxRemoveInput;
+pub use tx_remove_output::TxRemoveOutput;
 pub use types::{
     BigSize, CHANNEL_ID_SIZE, COMPACT_SIGNATURE_SIZE, ChannelId, MAX_MESSAGE_SIZE, TXID_SIZE, Txid,
 };
@@ -112,6 +116,10 @@ pub mod msg_type {
     pub const FUNDING_SIGNED: u16 = 35;
     /// Shutdown message (BOLT 2).
     pub const SHUTDOWN: u16 = 38;
+    /// `tx_remove_input` message (BOLT 2).
+    pub const TX_REMOVE_INPUT: u16 = 68;
+    /// `tx_remove_output` message (BOLT 2).
+    pub const TX_REMOVE_OUTPUT: u16 = 69;
     /// `tx_complete` message (BOLT 2).
     pub const TX_COMPLETE: u16 = 70;
     /// Gossip timestamp filter message (BOLT 7).
@@ -142,6 +150,10 @@ pub enum Message {
     FundingSigned(FundingSigned),
     /// Shutdown message (type 38).
     Shutdown(Shutdown),
+    /// `tx_remove_input` message (type 68).
+    TxRemoveInput(TxRemoveInput),
+    /// `tx_remove_output` message (type 69).
+    TxRemoveOutput(TxRemoveOutput),
     /// `tx_complete` message (type 70).
     TxComplete(TxComplete),
     /// Gossip timestamp filter message (type 265).
@@ -173,6 +185,8 @@ impl Message {
             Self::FundingCreated(_) => msg_type::FUNDING_CREATED,
             Self::FundingSigned(_) => msg_type::FUNDING_SIGNED,
             Self::Shutdown(_) => msg_type::SHUTDOWN,
+            Self::TxRemoveInput(_) => msg_type::TX_REMOVE_INPUT,
+            Self::TxRemoveOutput(_) => msg_type::TX_REMOVE_OUTPUT,
             Self::TxComplete(_) => msg_type::TX_COMPLETE,
             Self::GossipTimestampFilter(_) => msg_type::GOSSIP_TIMESTAMP_FILTER,
             Self::Unknown { msg_type, .. } => *msg_type,
@@ -195,6 +209,8 @@ impl Message {
             Self::FundingCreated(m) => out.extend(m.encode()),
             Self::FundingSigned(m) => out.extend(m.encode()),
             Self::Shutdown(m) => out.extend(m.encode()),
+            Self::TxRemoveInput(m) => out.extend(m.encode()),
+            Self::TxRemoveOutput(m) => out.extend(m.encode()),
             Self::TxComplete(m) => out.extend(m.encode()),
             Self::GossipTimestampFilter(m) => out.extend(m.encode()),
             Self::Unknown { payload, .. } => out.extend(payload),
@@ -224,6 +240,8 @@ impl Message {
             msg_type::FUNDING_CREATED => Ok(Self::FundingCreated(FundingCreated::decode(cursor)?)),
             msg_type::FUNDING_SIGNED => Ok(Self::FundingSigned(FundingSigned::decode(cursor)?)),
             msg_type::SHUTDOWN => Ok(Self::Shutdown(Shutdown::decode(cursor)?)),
+            msg_type::TX_REMOVE_INPUT => Ok(Self::TxRemoveInput(TxRemoveInput::decode(cursor)?)),
+            msg_type::TX_REMOVE_OUTPUT => Ok(Self::TxRemoveOutput(TxRemoveOutput::decode(cursor)?)),
             msg_type::TX_COMPLETE => Ok(Self::TxComplete(TxComplete::decode(cursor)?)),
             msg_type::GOSSIP_TIMESTAMP_FILTER => Ok(Self::GossipTimestampFilter(
                 GossipTimestampFilter::decode(cursor)?,
@@ -447,6 +465,30 @@ mod tests {
     }
 
     #[test]
+    fn message_tx_remove_input_roundtrip() {
+        let tx_remove_input = TxRemoveInput {
+            channel_id: ChannelId::new([0xab; CHANNEL_ID_SIZE]),
+            serial_id: 42,
+        };
+        let msg = Message::TxRemoveInput(tx_remove_input.clone());
+        let encoded = msg.encode();
+        let decoded = Message::decode(&encoded).unwrap();
+        assert_eq!(decoded, Message::TxRemoveInput(tx_remove_input));
+    }
+
+    #[test]
+    fn message_tx_remove_output_roundtrip() {
+        let tx_remove_output = TxRemoveOutput {
+            channel_id: ChannelId::new([0xab; CHANNEL_ID_SIZE]),
+            serial_id: 99,
+        };
+        let msg = Message::TxRemoveOutput(tx_remove_output.clone());
+        let encoded = msg.encode();
+        let decoded = Message::decode(&encoded).unwrap();
+        assert_eq!(decoded, Message::TxRemoveOutput(tx_remove_output));
+    }
+
+    #[test]
     fn message_tx_complete_roundtrip() {
         let tx_complete = TxComplete {
             channel_id: ChannelId::new([0xab; CHANNEL_ID_SIZE]),
@@ -500,6 +542,22 @@ mod tests {
         assert_eq!(
             Message::Shutdown(Shutdown::for_channel(ChannelId([0; 32]), vec![])).msg_type(),
             msg_type::SHUTDOWN
+        );
+        assert_eq!(
+            Message::TxRemoveInput(TxRemoveInput {
+                channel_id: ChannelId::new([0; CHANNEL_ID_SIZE]),
+                serial_id: 0
+            })
+            .msg_type(),
+            msg_type::TX_REMOVE_INPUT
+        );
+        assert_eq!(
+            Message::TxRemoveOutput(TxRemoveOutput {
+                channel_id: ChannelId::new([0; CHANNEL_ID_SIZE]),
+                serial_id: 0
+            })
+            .msg_type(),
+            msg_type::TX_REMOVE_OUTPUT
         );
         assert_eq!(
             Message::TxComplete(TxComplete {
