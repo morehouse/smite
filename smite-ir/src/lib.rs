@@ -14,6 +14,7 @@
 pub mod builder;
 pub mod generators;
 pub mod instruction;
+pub mod mutators;
 pub mod operation;
 pub mod program;
 pub mod variable;
@@ -21,6 +22,7 @@ pub mod variable;
 pub use builder::ProgramBuilder;
 pub use generators::Generator;
 pub use instruction::Instruction;
+pub use mutators::Mutator;
 pub use operation::Operation;
 pub use program::Program;
 pub use variable::{Variable, VariableType};
