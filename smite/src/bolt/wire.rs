@@ -2,7 +2,9 @@
 
 use crate::bolt::BoltError;
 use crate::bolt::types::{
-    BigSize, CHANNEL_ID_SIZE, COMPACT_SIGNATURE_SIZE, ChannelId, TXID_SIZE, Txid,
+    BigSize, CHAIN_HASH_SIZE, CHANNEL_ID_SIZE, COMPACT_SIGNATURE_SIZE, ChainHash, ChannelId,
+    NODE_ID_SIZE, NodeId, SIGNATURE_SIZE, ShortChannelId, Signature as BoltSignature, TXID_SIZE,
+    Txid,
 };
 use secp256k1::PublicKey;
 use secp256k1::ecdsa::Signature;
@@ -78,6 +80,49 @@ impl WireFormat for ChannelId {
     fn read(data: &mut &[u8]) -> Result<Self, BoltError> {
         let bytes: [u8; CHANNEL_ID_SIZE] = WireFormat::read(data)?;
         Ok(Self(bytes))
+    }
+
+    fn write(&self, out: &mut Vec<u8>) {
+        self.as_bytes().write(out);
+    }
+}
+
+impl WireFormat for ChainHash {
+    fn read(data: &mut &[u8]) -> Result<Self, BoltError> {
+        let bytes: [u8; CHAIN_HASH_SIZE] = WireFormat::read(data)?;
+        Ok(Self::new(bytes))
+    }
+
+    fn write(&self, out: &mut Vec<u8>) {
+        self.as_bytes().write(out);
+    }
+}
+
+impl WireFormat for NodeId {
+    fn read(data: &mut &[u8]) -> Result<Self, BoltError> {
+        let bytes: [u8; NODE_ID_SIZE] = WireFormat::read(data)?;
+        Ok(Self::new(bytes))
+    }
+
+    fn write(&self, out: &mut Vec<u8>) {
+        self.as_bytes().write(out);
+    }
+}
+
+impl WireFormat for ShortChannelId {
+    fn read(data: &mut &[u8]) -> Result<Self, BoltError> {
+        Ok(Self::new(u64::read(data)?))
+    }
+
+    fn write(&self, out: &mut Vec<u8>) {
+        self.value().write(out);
+    }
+}
+
+impl WireFormat for BoltSignature {
+    fn read(data: &mut &[u8]) -> Result<Self, BoltError> {
+        let bytes: [u8; SIGNATURE_SIZE] = WireFormat::read(data)?;
+        Ok(Self::new(bytes))
     }
 
     fn write(&self, out: &mut Vec<u8>) {
