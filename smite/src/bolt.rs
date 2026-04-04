@@ -20,6 +20,7 @@ mod shutdown;
 mod tlv;
 mod tx_abort;
 mod tx_ack_rbf;
+mod tx_add_output;
 mod tx_complete;
 mod tx_init_rbf;
 mod tx_remove_input;
@@ -48,6 +49,7 @@ pub use shutdown::Shutdown;
 pub use tlv::{TlvRecord, TlvStream};
 pub use tx_abort::TxAbort;
 pub use tx_ack_rbf::{TxAckRbf, TxAckRbfTlvs};
+pub use tx_add_output::TxAddOutput;
 pub use tx_complete::TxComplete;
 pub use tx_init_rbf::{TxInitRbf, TxInitRbfTlvs};
 pub use tx_remove_input::TxRemoveInput;
@@ -127,6 +129,8 @@ pub mod msg_type {
     pub const OPEN_CHANNEL2: u16 = 64;
     /// `accept_channel2` message (BOLT 2).
     pub const ACCEPT_CHANNEL2: u16 = 65;
+    /// `tx_add_output` message (BOLT 2).
+    pub const TX_ADD_OUTPUT: u16 = 67;
     /// `tx_remove_input` message (BOLT 2).
     pub const TX_REMOVE_INPUT: u16 = 68;
     /// `tx_remove_output` message (BOLT 2).
@@ -179,6 +183,8 @@ pub enum Message {
     OpenChannel2(OpenChannel2),
     /// `accept_channel2` message (type 65).
     AcceptChannel2(AcceptChannel2),
+    /// `tx_add_output` message (type 67).
+    TxAddOutput(TxAddOutput),
     /// `tx_remove_input` message (type 68).
     TxRemoveInput(TxRemoveInput),
     /// `tx_remove_output` message (type 69).
@@ -229,6 +235,7 @@ impl Message {
             Self::Shutdown(_) => msg_type::SHUTDOWN,
             Self::OpenChannel2(_) => msg_type::OPEN_CHANNEL2,
             Self::AcceptChannel2(_) => msg_type::ACCEPT_CHANNEL2,
+            Self::TxAddOutput(_) => msg_type::TX_ADD_OUTPUT,
             Self::TxRemoveInput(_) => msg_type::TX_REMOVE_INPUT,
             Self::TxRemoveOutput(_) => msg_type::TX_REMOVE_OUTPUT,
             Self::TxComplete(_) => msg_type::TX_COMPLETE,
@@ -262,6 +269,7 @@ impl Message {
             Self::Shutdown(m) => out.extend(m.encode()),
             Self::OpenChannel2(m) => out.extend(m.encode()),
             Self::AcceptChannel2(m) => out.extend(m.encode()),
+            Self::TxAddOutput(m) => out.extend(m.encode()),
             Self::TxRemoveInput(m) => out.extend(m.encode()),
             Self::TxRemoveOutput(m) => out.extend(m.encode()),
             Self::TxComplete(m) => out.extend(m.encode()),
@@ -302,6 +310,7 @@ impl Message {
             msg_type::SHUTDOWN => Ok(Self::Shutdown(Shutdown::decode(cursor)?)),
             msg_type::OPEN_CHANNEL2 => Ok(Self::OpenChannel2(OpenChannel2::decode(cursor)?)),
             msg_type::ACCEPT_CHANNEL2 => Ok(Self::AcceptChannel2(AcceptChannel2::decode(cursor)?)),
+            msg_type::TX_ADD_OUTPUT => Ok(Self::TxAddOutput(TxAddOutput::decode(cursor)?)),
             msg_type::TX_REMOVE_INPUT => Ok(Self::TxRemoveInput(TxRemoveInput::decode(cursor)?)),
             msg_type::TX_REMOVE_OUTPUT => Ok(Self::TxRemoveOutput(TxRemoveOutput::decode(cursor)?)),
             msg_type::TX_COMPLETE => Ok(Self::TxComplete(TxComplete::decode(cursor)?)),
@@ -630,6 +639,25 @@ mod tests {
         assert_eq!(decoded, Message::AcceptChannel2(accept2));
     }
 
+    /// Valid `TxAddOutput` message for testing.
+    fn sample_tx_add_output() -> TxAddOutput {
+        TxAddOutput {
+            channel_id: ChannelId::new([0xab; CHANNEL_ID_SIZE]),
+            serial_id: 42,
+            sats: 100_000,
+            script: vec![0x76, 0xa9, 0x14, 0xab, 0xcd],
+        }
+    }
+
+    #[test]
+    fn message_tx_add_output_roundtrip() {
+        let tx_add_output = sample_tx_add_output();
+        let msg = Message::TxAddOutput(tx_add_output.clone());
+        let encoded = msg.encode();
+        let decoded = Message::decode(&encoded).unwrap();
+        assert_eq!(decoded, Message::TxAddOutput(tx_add_output));
+    }
+
     #[test]
     fn message_tx_remove_input_roundtrip() {
         let tx_remove_input = TxRemoveInput {
@@ -805,6 +833,10 @@ mod tests {
         assert_eq!(
             Message::AcceptChannel2(sample_accept_channel2(None)).msg_type(),
             msg_type::ACCEPT_CHANNEL2
+        );
+        assert_eq!(
+            Message::TxAddOutput(sample_tx_add_output()).msg_type(),
+            msg_type::TX_ADD_OUTPUT
         );
         assert_eq!(
             Message::TxRemoveInput(TxRemoveInput {
