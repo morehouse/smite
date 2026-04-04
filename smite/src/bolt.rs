@@ -11,6 +11,7 @@ mod funding_signed;
 mod gossip_timestamp_filter;
 mod init;
 mod open_channel;
+mod open_channel2;
 mod ping;
 mod pong;
 mod shutdown;
@@ -31,6 +32,7 @@ pub use funding_signed::FundingSigned;
 pub use gossip_timestamp_filter::GossipTimestampFilter;
 pub use init::{Init, InitTlvs};
 pub use open_channel::{OpenChannel, OpenChannelTlvs};
+pub use open_channel2::{OpenChannel2, OpenChannel2Tlvs};
 pub use ping::Ping;
 pub use pong::Pong;
 pub use shutdown::Shutdown;
@@ -123,6 +125,8 @@ pub mod msg_type {
     pub const CHANNEL_READY: u16 = 36;
     /// Shutdown message (BOLT 2).
     pub const SHUTDOWN: u16 = 38;
+    /// `open_channel2` message (BOLT 2).
+    pub const OPEN_CHANNEL2: u16 = 64;
     /// `tx_remove_input` message (BOLT 2).
     pub const TX_REMOVE_INPUT: u16 = 68;
     /// `tx_remove_output` message (BOLT 2).
@@ -161,6 +165,8 @@ pub enum Message {
     ChannelReady(ChannelReady),
     /// Shutdown message (type 38).
     Shutdown(Shutdown),
+    /// `open_channel2` message (type 64).
+    OpenChannel2(OpenChannel2),
     /// `tx_remove_input` message (type 68).
     TxRemoveInput(TxRemoveInput),
     /// `tx_remove_output` message (type 69).
@@ -199,6 +205,7 @@ impl Message {
             Self::FundingSigned(_) => msg_type::FUNDING_SIGNED,
             Self::ChannelReady(_) => msg_type::CHANNEL_READY,
             Self::Shutdown(_) => msg_type::SHUTDOWN,
+            Self::OpenChannel2(_) => msg_type::OPEN_CHANNEL2,
             Self::TxRemoveInput(_) => msg_type::TX_REMOVE_INPUT,
             Self::TxRemoveOutput(_) => msg_type::TX_REMOVE_OUTPUT,
             Self::TxComplete(_) => msg_type::TX_COMPLETE,
@@ -225,6 +232,7 @@ impl Message {
             Self::FundingSigned(m) => out.extend(m.encode()),
             Self::ChannelReady(m) => out.extend(m.encode()),
             Self::Shutdown(m) => out.extend(m.encode()),
+            Self::OpenChannel2(m) => out.extend(m.encode()),
             Self::TxRemoveInput(m) => out.extend(m.encode()),
             Self::TxRemoveOutput(m) => out.extend(m.encode()),
             Self::TxComplete(m) => out.extend(m.encode()),
@@ -258,6 +266,7 @@ impl Message {
             msg_type::FUNDING_SIGNED => Ok(Self::FundingSigned(FundingSigned::decode(cursor)?)),
             msg_type::CHANNEL_READY => Ok(Self::ChannelReady(ChannelReady::decode(cursor)?)),
             msg_type::SHUTDOWN => Ok(Self::Shutdown(Shutdown::decode(cursor)?)),
+            msg_type::OPEN_CHANNEL2 => Ok(Self::OpenChannel2(OpenChannel2::decode(cursor)?)),
             msg_type::TX_REMOVE_INPUT => Ok(Self::TxRemoveInput(TxRemoveInput::decode(cursor)?)),
             msg_type::TX_REMOVE_OUTPUT => Ok(Self::TxRemoveOutput(TxRemoveOutput::decode(cursor)?)),
             msg_type::TX_COMPLETE => Ok(Self::TxComplete(TxComplete::decode(cursor)?)),
@@ -505,6 +514,45 @@ mod tests {
         assert_eq!(decoded, Message::Shutdown(shutdown));
     }
 
+    /// Valid `OpenChannel2` message for testing.
+    fn sample_open_channel2() -> OpenChannel2 {
+        let secp = Secp256k1::new();
+        let sk = SecretKey::from_byte_array([0x11; 32]).expect("valid secret");
+        let pk = PublicKey::from_secret_key(&secp, &sk);
+
+        OpenChannel2 {
+            chain_hash: [0xaa; CHAIN_HASH_SIZE],
+            temporary_channel_id: ChannelId::new([0xbb; 32]),
+            funding_feerate_perkw: 2_500,
+            commitment_feerate_perkw: 253,
+            funding_satoshis: 100_000,
+            dust_limit_satoshis: 546,
+            max_htlc_value_in_flight_msat: 100_000_000,
+            htlc_minimum_msat: 1_000,
+            to_self_delay: 144,
+            max_accepted_htlcs: 483,
+            locktime: 800_000,
+            funding_pubkey: pk,
+            revocation_basepoint: pk,
+            payment_basepoint: pk,
+            delayed_payment_basepoint: pk,
+            htlc_basepoint: pk,
+            first_per_commitment_point: pk,
+            second_per_commitment_point: pk,
+            channel_flags: 0x01,
+            tlvs: OpenChannel2Tlvs::default(),
+        }
+    }
+
+    #[test]
+    fn message_open_channel2_roundtrip() {
+        let open = sample_open_channel2();
+        let msg = Message::OpenChannel2(open.clone());
+        let encoded = msg.encode();
+        let decoded = Message::decode(&encoded).unwrap();
+        assert_eq!(decoded, Message::OpenChannel2(open));
+    }
+
     #[test]
     fn message_tx_remove_input_roundtrip() {
         let tx_remove_input = TxRemoveInput {
@@ -596,6 +644,10 @@ mod tests {
         assert_eq!(
             Message::Shutdown(Shutdown::for_channel(ChannelId([0; 32]), vec![])).msg_type(),
             msg_type::SHUTDOWN
+        );
+        assert_eq!(
+            Message::OpenChannel2(sample_open_channel2()).msg_type(),
+            msg_type::OPEN_CHANNEL2
         );
         assert_eq!(
             Message::TxRemoveInput(TxRemoveInput {
