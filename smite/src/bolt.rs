@@ -14,6 +14,7 @@ mod open_channel;
 mod open_channel2;
 mod ping;
 mod pong;
+mod revoke_and_ack;
 mod shutdown;
 mod tlv;
 mod tx_abort;
@@ -35,6 +36,7 @@ pub use open_channel::{OpenChannel, OpenChannelTlvs};
 pub use open_channel2::{OpenChannel2, OpenChannel2Tlvs};
 pub use ping::Ping;
 pub use pong::Pong;
+pub use revoke_and_ack::RevokeAndAck;
 pub use shutdown::Shutdown;
 pub use tlv::{TlvRecord, TlvStream};
 pub use tx_abort::TxAbort;
@@ -135,6 +137,8 @@ pub mod msg_type {
     pub const TX_COMPLETE: u16 = 70;
     /// `tx_abort` message (BOLT 2).
     pub const TX_ABORT: u16 = 74;
+    /// `revoke_and_ack` message (BOLT 2).
+    pub const REVOKE_AND_ACK: u16 = 133;
     /// Gossip timestamp filter message (BOLT 7).
     pub const GOSSIP_TIMESTAMP_FILTER: u16 = 265;
 }
@@ -175,6 +179,8 @@ pub enum Message {
     TxComplete(TxComplete),
     /// `tx_abort` message (type 74).
     TxAbort(TxAbort),
+    /// `revoke_and_ack` message (type 133).
+    RevokeAndAck(RevokeAndAck),
     /// Gossip timestamp filter message (type 265).
     GossipTimestampFilter(GossipTimestampFilter),
     /// Unknown message type.
@@ -210,6 +216,7 @@ impl Message {
             Self::TxRemoveOutput(_) => msg_type::TX_REMOVE_OUTPUT,
             Self::TxComplete(_) => msg_type::TX_COMPLETE,
             Self::TxAbort(_) => msg_type::TX_ABORT,
+            Self::RevokeAndAck(_) => msg_type::REVOKE_AND_ACK,
             Self::GossipTimestampFilter(_) => msg_type::GOSSIP_TIMESTAMP_FILTER,
             Self::Unknown { msg_type, .. } => *msg_type,
         }
@@ -237,6 +244,7 @@ impl Message {
             Self::TxRemoveOutput(m) => out.extend(m.encode()),
             Self::TxComplete(m) => out.extend(m.encode()),
             Self::TxAbort(m) => out.extend(m.encode()),
+            Self::RevokeAndAck(m) => out.extend(m.encode()),
             Self::GossipTimestampFilter(m) => out.extend(m.encode()),
             Self::Unknown { payload, .. } => out.extend(payload),
         }
@@ -271,6 +279,7 @@ impl Message {
             msg_type::TX_REMOVE_OUTPUT => Ok(Self::TxRemoveOutput(TxRemoveOutput::decode(cursor)?)),
             msg_type::TX_COMPLETE => Ok(Self::TxComplete(TxComplete::decode(cursor)?)),
             msg_type::TX_ABORT => Ok(Self::TxAbort(TxAbort::decode(cursor)?)),
+            msg_type::REVOKE_AND_ACK => Ok(Self::RevokeAndAck(RevokeAndAck::decode(cursor)?)),
             msg_type::GOSSIP_TIMESTAMP_FILTER => Ok(Self::GossipTimestampFilter(
                 GossipTimestampFilter::decode(cursor)?,
             )),
