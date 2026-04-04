@@ -4,11 +4,14 @@
 //! protocol messages as specified in the BOLT specifications.
 
 mod accept_channel;
+mod channel_announcement;
+mod channel_update;
 mod error;
 mod funding_created;
 mod funding_signed;
 mod gossip_timestamp_filter;
 mod init;
+mod node_announcement;
 mod open_channel;
 mod ping;
 mod pong;
@@ -23,11 +26,14 @@ mod warning;
 mod wire;
 
 pub use accept_channel::{AcceptChannel, AcceptChannelTlvs};
+pub use channel_announcement::ChannelAnnouncement;
+pub use channel_update::ChannelUpdate;
 pub use error::Error;
 pub use funding_created::FundingCreated;
 pub use funding_signed::FundingSigned;
 pub use gossip_timestamp_filter::GossipTimestampFilter;
 pub use init::{Init, InitTlvs};
+pub use node_announcement::NodeAnnouncement;
 pub use open_channel::{OpenChannel, OpenChannelTlvs};
 pub use ping::Ping;
 pub use pong::Pong;
@@ -38,7 +44,9 @@ pub use tx_complete::TxComplete;
 pub use tx_remove_input::TxRemoveInput;
 pub use tx_remove_output::TxRemoveOutput;
 pub use types::{
-    BigSize, CHANNEL_ID_SIZE, COMPACT_SIGNATURE_SIZE, ChannelId, MAX_MESSAGE_SIZE, TXID_SIZE, Txid,
+    BigSize, CHAIN_HASH_SIZE, CHANNEL_ID_SIZE, COMPACT_SIGNATURE_SIZE, ChainHash, ChannelId,
+    MAX_MESSAGE_SIZE, NODE_ID_SIZE, NodeId, SIGNATURE_SIZE, ShortChannelId, Signature, TXID_SIZE,
+    Txid,
 };
 pub use warning::Warning;
 pub use wire::WireFormat;
@@ -126,6 +134,12 @@ pub mod msg_type {
     pub const TX_COMPLETE: u16 = 70;
     /// `tx_abort` message (BOLT 2).
     pub const TX_ABORT: u16 = 74;
+    /// `channel_announcement` message (BOLT 7).
+    pub const CHANNEL_ANNOUNCEMENT: u16 = 256;
+    /// `node_announcement` message (BOLT 7).
+    pub const NODE_ANNOUNCEMENT: u16 = 257;
+    /// `channel_update` message (BOLT 7).
+    pub const CHANNEL_UPDATE: u16 = 258;
     /// Gossip timestamp filter message (BOLT 7).
     pub const GOSSIP_TIMESTAMP_FILTER: u16 = 265;
 }
@@ -162,6 +176,12 @@ pub enum Message {
     TxComplete(TxComplete),
     /// `tx_abort` message (type 74).
     TxAbort(TxAbort),
+    /// `channel_announcement` message (type 256).
+    ChannelAnnouncement(ChannelAnnouncement),
+    /// `node_announcement` message (type 257).
+    NodeAnnouncement(NodeAnnouncement),
+    /// `channel_update` message (type 258).
+    ChannelUpdate(ChannelUpdate),
     /// Gossip timestamp filter message (type 265).
     GossipTimestampFilter(GossipTimestampFilter),
     /// Unknown message type.
@@ -195,6 +215,9 @@ impl Message {
             Self::TxRemoveOutput(_) => msg_type::TX_REMOVE_OUTPUT,
             Self::TxComplete(_) => msg_type::TX_COMPLETE,
             Self::TxAbort(_) => msg_type::TX_ABORT,
+            Self::ChannelAnnouncement(_) => msg_type::CHANNEL_ANNOUNCEMENT,
+            Self::NodeAnnouncement(_) => msg_type::NODE_ANNOUNCEMENT,
+            Self::ChannelUpdate(_) => msg_type::CHANNEL_UPDATE,
             Self::GossipTimestampFilter(_) => msg_type::GOSSIP_TIMESTAMP_FILTER,
             Self::Unknown { msg_type, .. } => *msg_type,
         }
@@ -220,6 +243,9 @@ impl Message {
             Self::TxRemoveOutput(m) => out.extend(m.encode()),
             Self::TxComplete(m) => out.extend(m.encode()),
             Self::TxAbort(m) => out.extend(m.encode()),
+            Self::ChannelAnnouncement(m) => out.extend(m.encode()),
+            Self::NodeAnnouncement(m) => out.extend(m.encode()),
+            Self::ChannelUpdate(m) => out.extend(m.encode()),
             Self::GossipTimestampFilter(m) => out.extend(m.encode()),
             Self::Unknown { payload, .. } => out.extend(payload),
         }
@@ -252,6 +278,13 @@ impl Message {
             msg_type::TX_REMOVE_OUTPUT => Ok(Self::TxRemoveOutput(TxRemoveOutput::decode(cursor)?)),
             msg_type::TX_COMPLETE => Ok(Self::TxComplete(TxComplete::decode(cursor)?)),
             msg_type::TX_ABORT => Ok(Self::TxAbort(TxAbort::decode(cursor)?)),
+            msg_type::CHANNEL_ANNOUNCEMENT => {
+                Ok(Self::ChannelAnnouncement(ChannelAnnouncement::decode(cursor)?))
+            }
+            msg_type::NODE_ANNOUNCEMENT => {
+                Ok(Self::NodeAnnouncement(NodeAnnouncement::decode(cursor)?))
+            }
+            msg_type::CHANNEL_UPDATE => Ok(Self::ChannelUpdate(ChannelUpdate::decode(cursor)?)),
             msg_type::GOSSIP_TIMESTAMP_FILTER => Ok(Self::GossipTimestampFilter(
                 GossipTimestampFilter::decode(cursor)?,
             )),
@@ -445,6 +478,60 @@ mod tests {
         }
     }
 
+    /// Valid `ChannelAnnouncement` message for testing.
+    fn sample_channel_announcement() -> ChannelAnnouncement {
+        ChannelAnnouncement {
+            node_signature_1: Signature::new([0x01; SIGNATURE_SIZE]),
+            node_signature_2: Signature::new([0x02; SIGNATURE_SIZE]),
+            bitcoin_signature_1: Signature::new([0x03; SIGNATURE_SIZE]),
+            bitcoin_signature_2: Signature::new([0x04; SIGNATURE_SIZE]),
+            features: vec![0x80, 0x00],
+            chain_hash: ChainHash::new([0xaa; CHAIN_HASH_SIZE]),
+            short_channel_id: ShortChannelId::new(0x0001_0002_0003),
+            node_id_1: NodeId::new([0x02; NODE_ID_SIZE]),
+            node_id_2: NodeId::new([0x03; NODE_ID_SIZE]),
+            bitcoin_key_1: NodeId::new([0x04; NODE_ID_SIZE]),
+            bitcoin_key_2: NodeId::new([0x05; NODE_ID_SIZE]),
+        }
+    }
+
+    /// Valid `NodeAnnouncement` message for testing.
+    fn sample_node_announcement() -> NodeAnnouncement {
+        let mut alias = [0u8; 32];
+        alias[..9].copy_from_slice(b"test-node");
+
+        NodeAnnouncement {
+            signature: Signature::new([0x11; SIGNATURE_SIZE]),
+            features: vec![0x80, 0x00],
+            timestamp: 1_700_000_000,
+            node_id: NodeId::new([0x22; NODE_ID_SIZE]),
+            rgb_color: [0xff, 0x80, 0x00],
+            alias,
+            addresses: vec![
+                0x01, // type: IPv4
+                127, 0, 0, 1,
+                0x23, 0x28,
+            ],
+        }
+    }
+
+    /// Valid `ChannelUpdate` message for testing.
+    fn sample_channel_update() -> ChannelUpdate {
+        ChannelUpdate {
+            signature: Signature::new([0x33; SIGNATURE_SIZE]),
+            chain_hash: ChainHash::new([0xaa; CHAIN_HASH_SIZE]),
+            short_channel_id: ShortChannelId::new(0x1234_5678_9abc),
+            timestamp: 1_700_000_000,
+            message_flags: 0x01,
+            channel_flags: 0x01,
+            cltv_expiry_delta: 40,
+            htlc_minimum_msat: 1_000,
+            fee_base_msat: 1_000,
+            fee_proportional_millionths: 100,
+            htlc_maximum_msat: Some(100_000_000),
+        }
+    }
+
     #[test]
     fn message_funding_signed_roundtrip() {
         let fs = sample_funding_signed();
@@ -452,6 +539,33 @@ mod tests {
         let encoded = msg.encode();
         let decoded = Message::decode(&encoded).unwrap();
         assert_eq!(decoded, Message::FundingSigned(fs));
+    }
+
+    #[test]
+    fn message_channel_announcement_roundtrip() {
+        let channel_announcement = sample_channel_announcement();
+        let msg = Message::ChannelAnnouncement(channel_announcement.clone());
+        let encoded = msg.encode();
+        let decoded = Message::decode(&encoded).unwrap();
+        assert_eq!(decoded, Message::ChannelAnnouncement(channel_announcement));
+    }
+
+    #[test]
+    fn message_node_announcement_roundtrip() {
+        let node_announcement = sample_node_announcement();
+        let msg = Message::NodeAnnouncement(node_announcement.clone());
+        let encoded = msg.encode();
+        let decoded = Message::decode(&encoded).unwrap();
+        assert_eq!(decoded, Message::NodeAnnouncement(node_announcement));
+    }
+
+    #[test]
+    fn message_channel_update_roundtrip() {
+        let channel_update = sample_channel_update();
+        let msg = Message::ChannelUpdate(channel_update.clone());
+        let encoded = msg.encode();
+        let decoded = Message::decode(&encoded).unwrap();
+        assert_eq!(decoded, Message::ChannelUpdate(channel_update));
     }
 
     #[test]
@@ -587,6 +701,18 @@ mod tests {
         assert_eq!(
             Message::TxAbort(TxAbort::new(ChannelId::new([0; CHANNEL_ID_SIZE]), "")).msg_type(),
             msg_type::TX_ABORT
+        );
+        assert_eq!(
+            Message::ChannelAnnouncement(sample_channel_announcement()).msg_type(),
+            msg_type::CHANNEL_ANNOUNCEMENT
+        );
+        assert_eq!(
+            Message::NodeAnnouncement(sample_node_announcement()).msg_type(),
+            msg_type::NODE_ANNOUNCEMENT
+        );
+        assert_eq!(
+            Message::ChannelUpdate(sample_channel_update()).msg_type(),
+            msg_type::CHANNEL_UPDATE
         );
         assert_eq!(
             Message::GossipTimestampFilter(GossipTimestampFilter::no_gossip([0u8; 32])).msg_type(),

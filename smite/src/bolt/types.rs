@@ -17,6 +17,12 @@ pub const TXID_SIZE: usize = 32;
 /// Size of a compact ECDSA signature in bytes.
 pub const COMPACT_SIGNATURE_SIZE: usize = 64;
 
+/// Size of a node ID (compressed public key bytes) in bytes.
+pub const NODE_ID_SIZE: usize = 33;
+
+/// Size of a gossip signature in bytes.
+pub const SIGNATURE_SIZE: usize = COMPACT_SIGNATURE_SIZE;
+
 /// A 32-byte channel identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ChannelId(pub [u8; CHANNEL_ID_SIZE]);
@@ -36,6 +42,78 @@ impl ChannelId {
     #[must_use]
     pub fn as_bytes(&self) -> &[u8; CHANNEL_ID_SIZE] {
         &self.0
+    }
+}
+
+/// A 32-byte chain hash (genesis block hash of the chain).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ChainHash(pub [u8; CHAIN_HASH_SIZE]);
+
+impl ChainHash {
+    /// Creates a chain hash from a byte array.
+    #[must_use]
+    pub const fn new(bytes: [u8; CHAIN_HASH_SIZE]) -> Self {
+        Self(bytes)
+    }
+
+    /// Returns the chain hash as a byte slice.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8; CHAIN_HASH_SIZE] {
+        &self.0
+    }
+}
+
+/// A 64-byte compact gossip signature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Signature(pub [u8; SIGNATURE_SIZE]);
+
+impl Signature {
+    /// Creates a signature from compact bytes.
+    #[must_use]
+    pub const fn new(bytes: [u8; SIGNATURE_SIZE]) -> Self {
+        Self(bytes)
+    }
+
+    /// Returns compact signature bytes.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8; SIGNATURE_SIZE] {
+        &self.0
+    }
+}
+
+/// A 33-byte node identifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NodeId(pub [u8; NODE_ID_SIZE]);
+
+impl NodeId {
+    /// Creates a node ID from compressed public key bytes.
+    #[must_use]
+    pub const fn new(bytes: [u8; NODE_ID_SIZE]) -> Self {
+        Self(bytes)
+    }
+
+    /// Returns node ID bytes.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8; NODE_ID_SIZE] {
+        &self.0
+    }
+}
+
+/// Compact channel identifier containing block, tx, and output indexes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ShortChannelId(pub u64);
+
+impl ShortChannelId {
+    /// Creates a short channel ID from its encoded 64-bit representation.
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Returns the encoded 64-bit representation.
+    #[must_use]
+    pub const fn value(self) -> u64 {
+        self.0
     }
 }
 
@@ -112,5 +190,36 @@ mod tests {
     #[test]
     fn channel_id_default_is_all() {
         assert_eq!(ChannelId::default(), ChannelId::ALL);
+    }
+
+    #[test]
+    fn chain_hash_new() {
+        let bytes = [0x11u8; CHAIN_HASH_SIZE];
+        let hash = ChainHash::new(bytes);
+        assert_eq!(hash.0, bytes);
+        assert_eq!(hash.as_bytes(), &bytes);
+    }
+
+    #[test]
+    fn signature_new() {
+        let bytes = [0x22u8; SIGNATURE_SIZE];
+        let sig = Signature::new(bytes);
+        assert_eq!(sig.0, bytes);
+        assert_eq!(sig.as_bytes(), &bytes);
+    }
+
+    #[test]
+    fn node_id_new() {
+        let bytes = [0x02u8; NODE_ID_SIZE];
+        let id = NodeId::new(bytes);
+        assert_eq!(id.0, bytes);
+        assert_eq!(id.as_bytes(), &bytes);
+    }
+
+    #[test]
+    fn short_channel_id_new() {
+        let scid = ShortChannelId::new(0x0001_0002_0003);
+        assert_eq!(scid.0, 0x0001_0002_0003);
+        assert_eq!(scid.value(), 0x0001_0002_0003);
     }
 }
