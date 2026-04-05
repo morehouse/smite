@@ -157,6 +157,7 @@ impl AcceptChannelTlvs {
 
 #[cfg(test)]
 mod tests {
+    use super::super::PUBLIC_KEY_SIZE;
     use super::*;
     use secp256k1::{Secp256k1, SecretKey};
 
@@ -266,9 +267,6 @@ mod tests {
     /// encoding: 32 + 8×4 + 4 + 2 + 2 = 72 bytes of scalar fields.
     const FIRST_PUBKEY_OFFSET: usize = 72;
 
-    /// Size of a compressed secp256k1 public key.
-    const PUBKEY_SIZE: usize = 33;
-
     #[test]
     fn decode_truncated_funding_pubkey() {
         // Provide all scalar fields (72 bytes) but only 10 bytes into
@@ -277,7 +275,7 @@ mod tests {
         assert_eq!(
             AcceptChannel::decode(&data),
             Err(BoltError::Truncated {
-                expected: PUBKEY_SIZE,
+                expected: PUBLIC_KEY_SIZE,
                 actual: 10
             })
         );
@@ -293,7 +291,7 @@ mod tests {
         assert_eq!(
             AcceptChannel::decode(data),
             Err(BoltError::Truncated {
-                expected: PUBKEY_SIZE,
+                expected: PUBLIC_KEY_SIZE,
                 actual: 15
             })
         );
@@ -309,7 +307,7 @@ mod tests {
         assert_eq!(
             AcceptChannel::decode(data),
             Err(BoltError::Truncated {
-                expected: PUBKEY_SIZE,
+                expected: PUBLIC_KEY_SIZE,
                 actual: 20
             })
         );
@@ -321,8 +319,8 @@ mod tests {
         let mut encoded = accept.encode();
 
         let offset = FIRST_PUBKEY_OFFSET; // first pubkey
-        let bad_key = [0x00; PUBKEY_SIZE];
-        encoded[offset..offset + PUBKEY_SIZE].copy_from_slice(&bad_key);
+        let bad_key = [0x00; PUBLIC_KEY_SIZE];
+        encoded[offset..offset + PUBLIC_KEY_SIZE].copy_from_slice(&bad_key);
 
         assert_eq!(
             AcceptChannel::decode(&encoded),
@@ -335,9 +333,9 @@ mod tests {
         let accept = sample_accept_channel(None);
         let mut encoded = accept.encode();
 
-        let offset = FIRST_PUBKEY_OFFSET + PUBKEY_SIZE; // second pubkey
-        let bad_key = [0x00; PUBKEY_SIZE];
-        encoded[offset..offset + PUBKEY_SIZE].copy_from_slice(&bad_key);
+        let offset = FIRST_PUBKEY_OFFSET + PUBLIC_KEY_SIZE; // second pubkey
+        let bad_key = [0x00; PUBLIC_KEY_SIZE];
+        encoded[offset..offset + PUBLIC_KEY_SIZE].copy_from_slice(&bad_key);
 
         assert_eq!(
             AcceptChannel::decode(&encoded),
@@ -350,9 +348,9 @@ mod tests {
         let accept = sample_accept_channel(None);
         let mut encoded = accept.encode();
 
-        let offset = FIRST_PUBKEY_OFFSET + PUBKEY_SIZE * 2; // third pubkey
-        let bad_key = [0x00; PUBKEY_SIZE];
-        encoded[offset..offset + PUBKEY_SIZE].copy_from_slice(&bad_key);
+        let offset = FIRST_PUBKEY_OFFSET + PUBLIC_KEY_SIZE * 2; // third pubkey
+        let bad_key = [0x00; PUBLIC_KEY_SIZE];
+        encoded[offset..offset + PUBLIC_KEY_SIZE].copy_from_slice(&bad_key);
 
         assert_eq!(
             AcceptChannel::decode(&encoded),
@@ -365,9 +363,9 @@ mod tests {
         let accept = sample_accept_channel(None);
         let mut encoded = accept.encode();
 
-        let offset = FIRST_PUBKEY_OFFSET + PUBKEY_SIZE * 3; // fourth pubkey
-        let bad_key = [0x00; PUBKEY_SIZE];
-        encoded[offset..offset + PUBKEY_SIZE].copy_from_slice(&bad_key);
+        let offset = FIRST_PUBKEY_OFFSET + PUBLIC_KEY_SIZE * 3; // fourth pubkey
+        let bad_key = [0x00; PUBLIC_KEY_SIZE];
+        encoded[offset..offset + PUBLIC_KEY_SIZE].copy_from_slice(&bad_key);
 
         assert_eq!(
             AcceptChannel::decode(&encoded),
@@ -380,9 +378,9 @@ mod tests {
         let accept = sample_accept_channel(None);
         let mut encoded = accept.encode();
 
-        let offset = FIRST_PUBKEY_OFFSET + PUBKEY_SIZE * 4; // fifth pubkey
-        let bad_key = [0x00; PUBKEY_SIZE];
-        encoded[offset..offset + PUBKEY_SIZE].copy_from_slice(&bad_key);
+        let offset = FIRST_PUBKEY_OFFSET + PUBLIC_KEY_SIZE * 4; // fifth pubkey
+        let bad_key = [0x00; PUBLIC_KEY_SIZE];
+        encoded[offset..offset + PUBLIC_KEY_SIZE].copy_from_slice(&bad_key);
 
         assert_eq!(
             AcceptChannel::decode(&encoded),
@@ -395,9 +393,9 @@ mod tests {
         let accept = sample_accept_channel(None);
         let mut encoded = accept.encode();
 
-        let offset = FIRST_PUBKEY_OFFSET + PUBKEY_SIZE * 5; // sixth pubkey
-        let bad_key = [0x00; PUBKEY_SIZE];
-        encoded[offset..offset + PUBKEY_SIZE].copy_from_slice(&bad_key);
+        let offset = FIRST_PUBKEY_OFFSET + PUBLIC_KEY_SIZE * 5; // sixth pubkey
+        let bad_key = [0x00; PUBLIC_KEY_SIZE];
+        encoded[offset..offset + PUBLIC_KEY_SIZE].copy_from_slice(&bad_key);
 
         assert_eq!(
             AcceptChannel::decode(&encoded),

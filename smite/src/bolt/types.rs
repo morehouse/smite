@@ -17,6 +17,9 @@ pub const TXID_SIZE: usize = 32;
 /// Size of a compact ECDSA signature in bytes.
 pub const COMPACT_SIGNATURE_SIZE: usize = 64;
 
+/// Size of a compressed secp256k1 public key.
+pub const PUBLIC_KEY_SIZE: usize = 33;
+
 /// A 32-byte channel identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ChannelId(pub [u8; CHANNEL_ID_SIZE]);

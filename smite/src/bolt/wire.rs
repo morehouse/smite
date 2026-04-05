@@ -2,7 +2,7 @@
 
 use crate::bolt::BoltError;
 use crate::bolt::types::{
-    BigSize, CHANNEL_ID_SIZE, COMPACT_SIGNATURE_SIZE, ChannelId, TXID_SIZE, Txid,
+    BigSize, CHANNEL_ID_SIZE, COMPACT_SIGNATURE_SIZE, ChannelId, PUBLIC_KEY_SIZE, TXID_SIZE, Txid,
 };
 use secp256k1::PublicKey;
 use secp256k1::ecdsa::Signature;
@@ -63,7 +63,6 @@ impl_wire_format_int!(u64);
 
 impl WireFormat for PublicKey {
     fn read(data: &mut &[u8]) -> Result<Self, BoltError> {
-        const PUBLIC_KEY_SIZE: usize = 33;
         let buf: [u8; PUBLIC_KEY_SIZE] = WireFormat::read(data)?;
         let pubkey = PublicKey::from_slice(&buf).map_err(|_| BoltError::InvalidPublicKey(buf))?;
         Ok(pubkey)
@@ -405,7 +404,7 @@ mod tests {
         assert_eq!(
             PublicKey::read(&mut empty),
             Err(BoltError::Truncated {
-                expected: 33,
+                expected: PUBLIC_KEY_SIZE,
                 actual: 0
             })
         );
@@ -414,7 +413,7 @@ mod tests {
         assert_eq!(
             PublicKey::read(&mut short),
             Err(BoltError::Truncated {
-                expected: 33,
+                expected: PUBLIC_KEY_SIZE,
                 actual: 20
             })
         );
@@ -422,7 +421,7 @@ mod tests {
 
     #[test]
     fn pubkey_read_invalid() {
-        let invalid = [0x00; 33];
+        let invalid = [0x00; PUBLIC_KEY_SIZE];
         let mut data: &[u8] = &invalid;
         assert_eq!(
             PublicKey::read(&mut data),
@@ -438,7 +437,7 @@ mod tests {
 
         let mut buf = Vec::new();
         pk.write(&mut buf);
-        assert_eq!(buf.len(), 33);
+        assert_eq!(buf.len(), PUBLIC_KEY_SIZE);
         let mut cursor: &[u8] = &buf;
         let decoded = PublicKey::read(&mut cursor).unwrap();
         assert_eq!(decoded, pk);

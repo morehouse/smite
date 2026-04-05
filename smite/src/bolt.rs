@@ -32,7 +32,8 @@ pub use pong::Pong;
 pub use shutdown::Shutdown;
 pub use tlv::{TlvRecord, TlvStream};
 pub use types::{
-    BigSize, CHANNEL_ID_SIZE, COMPACT_SIGNATURE_SIZE, ChannelId, MAX_MESSAGE_SIZE, TXID_SIZE, Txid,
+    BigSize, CHANNEL_ID_SIZE, COMPACT_SIGNATURE_SIZE, ChannelId, MAX_MESSAGE_SIZE, PUBLIC_KEY_SIZE,
+    TXID_SIZE, Txid,
 };
 pub use warning::Warning;
 pub use wire::WireFormat;
@@ -46,7 +47,7 @@ pub enum BoltError {
     /// Unknown even message type (must close connection per BOLT 1)
     UnknownEvenType(u16),
     /// The bytes do not represent a valid compressed secp256k1 public key
-    InvalidPublicKey([u8; 33]),
+    InvalidPublicKey([u8; PUBLIC_KEY_SIZE]),
     /// The bytes do not represent a valid compact ECDSA signature
     InvalidSignature([u8; COMPACT_SIGNATURE_SIZE]),
 

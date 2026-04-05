@@ -95,14 +95,10 @@ impl ChannelReadyTlvs {
 }
 
 #[cfg(test)]
-#[allow(clippy::cast_possible_truncation)] // Test constants are known to fit in u8
 mod tests {
-    use super::super::CHANNEL_ID_SIZE;
+    use super::super::{CHANNEL_ID_SIZE, PUBLIC_KEY_SIZE};
     use super::*;
     use secp256k1::{Secp256k1, SecretKey};
-
-    /// Size of a compressed secp256k1 public key.
-    const PUBKEY_SIZE: usize = 33;
 
     /// Valid `ChannelReady` message for testing.
     fn sample_channel_ready(tlvs: Option<ChannelReadyTlvs>) -> ChannelReady {
@@ -121,7 +117,7 @@ mod tests {
     fn encode_fixed_field_size() {
         let msg = sample_channel_ready(None);
         let encoded = msg.encode();
-        // 32 + 33 = 65
+        // channel_id(32) + second_per_commitment_point(33) = 65
         assert_eq!(encoded.len(), 65);
     }
 
@@ -151,7 +147,7 @@ mod tests {
         assert_eq!(
             ChannelReady::decode(&data),
             Err(BoltError::Truncated {
-                expected: PUBKEY_SIZE,
+                expected: PUBLIC_KEY_SIZE,
                 actual: 10
             })
         );
@@ -163,7 +159,7 @@ mod tests {
         let data = [0x00; 65];
         assert_eq!(
             ChannelReady::decode(&data),
-            Err(BoltError::InvalidPublicKey([0x00; PUBKEY_SIZE]))
+            Err(BoltError::InvalidPublicKey([0x00; PUBLIC_KEY_SIZE]))
         );
     }
 
@@ -208,6 +204,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cast_possible_truncation)] // Test constants are known to fit in u8
     fn decode_short_channel_id_invalid_length() {
         let msg = sample_channel_ready(None);
         let mut encoded = msg.encode();
