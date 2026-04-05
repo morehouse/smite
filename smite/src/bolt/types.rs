@@ -17,6 +17,9 @@ pub const TXID_SIZE: usize = 32;
 /// Size of a compact ECDSA signature in bytes.
 pub const COMPACT_SIGNATURE_SIZE: usize = 64;
 
+/// Size of a compact gossip signature in bytes.
+pub const SIGNATURE_SIZE: usize = COMPACT_SIGNATURE_SIZE;
+
 /// A 32-byte channel identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ChannelId(pub [u8; CHANNEL_ID_SIZE]);
@@ -35,6 +38,42 @@ impl ChannelId {
     /// Returns the channel ID as a byte slice.
     #[must_use]
     pub fn as_bytes(&self) -> &[u8; CHANNEL_ID_SIZE] {
+        &self.0
+    }
+}
+
+/// Compact channel identifier containing block, tx, and output indexes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ShortChannelId(pub u64);
+
+impl ShortChannelId {
+    /// Creates a short channel ID from its encoded 64-bit representation.
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Returns the encoded 64-bit representation.
+    #[must_use]
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+}
+
+/// A 64-byte compact gossip signature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Signature(pub [u8; SIGNATURE_SIZE]);
+
+impl Signature {
+    /// Creates a signature from compact bytes.
+    #[must_use]
+    pub const fn new(bytes: [u8; SIGNATURE_SIZE]) -> Self {
+        Self(bytes)
+    }
+
+    /// Returns compact signature bytes.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8; SIGNATURE_SIZE] {
         &self.0
     }
 }
@@ -112,5 +151,20 @@ mod tests {
     #[test]
     fn channel_id_default_is_all() {
         assert_eq!(ChannelId::default(), ChannelId::ALL);
+    }
+
+    #[test]
+    fn short_channel_id_new() {
+        let scid = ShortChannelId::new(0x0001_0002_0003);
+        assert_eq!(scid.0, 0x0001_0002_0003);
+        assert_eq!(scid.value(), 0x0001_0002_0003);
+    }
+
+    #[test]
+    fn signature_new() {
+        let bytes = [0x22u8; SIGNATURE_SIZE];
+        let sig = Signature::new(bytes);
+        assert_eq!(sig.0, bytes);
+        assert_eq!(sig.as_bytes(), &bytes);
     }
 }
