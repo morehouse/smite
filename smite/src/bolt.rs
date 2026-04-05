@@ -4,6 +4,7 @@
 //! protocol messages as specified in the BOLT specifications.
 
 mod accept_channel;
+mod announcement_signature;
 mod error;
 mod funding_created;
 mod funding_signed;
@@ -23,6 +24,7 @@ mod warning;
 mod wire;
 
 pub use accept_channel::{AcceptChannel, AcceptChannelTlvs};
+pub use announcement_signature::AnnouncementSignatures;
 pub use error::Error;
 pub use funding_created::FundingCreated;
 pub use funding_signed::FundingSigned;
@@ -38,7 +40,8 @@ pub use tx_complete::TxComplete;
 pub use tx_remove_input::TxRemoveInput;
 pub use tx_remove_output::TxRemoveOutput;
 pub use types::{
-    BigSize, CHANNEL_ID_SIZE, COMPACT_SIGNATURE_SIZE, ChannelId, MAX_MESSAGE_SIZE, TXID_SIZE, Txid,
+    BigSize, CHANNEL_ID_SIZE, COMPACT_SIGNATURE_SIZE, ChannelId, MAX_MESSAGE_SIZE, SIGNATURE_SIZE,
+    ShortChannelId, Signature, TXID_SIZE, Txid,
 };
 pub use warning::Warning;
 pub use wire::WireFormat;
@@ -126,6 +129,8 @@ pub mod msg_type {
     pub const TX_COMPLETE: u16 = 70;
     /// `tx_abort` message (BOLT 2).
     pub const TX_ABORT: u16 = 74;
+    /// `announcement_signatures` message (BOLT 7).
+    pub const ANNOUNCEMENT_SIGNATURES: u16 = 259;
     /// Gossip timestamp filter message (BOLT 7).
     pub const GOSSIP_TIMESTAMP_FILTER: u16 = 265;
 }
@@ -162,6 +167,8 @@ pub enum Message {
     TxComplete(TxComplete),
     /// `tx_abort` message (type 74).
     TxAbort(TxAbort),
+    /// `announcement_signatures` message (type 259).
+    AnnouncementSignatures(AnnouncementSignatures),
     /// Gossip timestamp filter message (type 265).
     GossipTimestampFilter(GossipTimestampFilter),
     /// Unknown message type.
@@ -195,6 +202,7 @@ impl Message {
             Self::TxRemoveOutput(_) => msg_type::TX_REMOVE_OUTPUT,
             Self::TxComplete(_) => msg_type::TX_COMPLETE,
             Self::TxAbort(_) => msg_type::TX_ABORT,
+            Self::AnnouncementSignatures(_) => msg_type::ANNOUNCEMENT_SIGNATURES,
             Self::GossipTimestampFilter(_) => msg_type::GOSSIP_TIMESTAMP_FILTER,
             Self::Unknown { msg_type, .. } => *msg_type,
         }
@@ -220,6 +228,7 @@ impl Message {
             Self::TxRemoveOutput(m) => out.extend(m.encode()),
             Self::TxComplete(m) => out.extend(m.encode()),
             Self::TxAbort(m) => out.extend(m.encode()),
+            Self::AnnouncementSignatures(m) => out.extend(m.encode()),
             Self::GossipTimestampFilter(m) => out.extend(m.encode()),
             Self::Unknown { payload, .. } => out.extend(payload),
         }
@@ -252,6 +261,9 @@ impl Message {
             msg_type::TX_REMOVE_OUTPUT => Ok(Self::TxRemoveOutput(TxRemoveOutput::decode(cursor)?)),
             msg_type::TX_COMPLETE => Ok(Self::TxComplete(TxComplete::decode(cursor)?)),
             msg_type::TX_ABORT => Ok(Self::TxAbort(TxAbort::decode(cursor)?)),
+            msg_type::ANNOUNCEMENT_SIGNATURES => Ok(Self::AnnouncementSignatures(
+                AnnouncementSignatures::decode(cursor)?,
+            )),
             msg_type::GOSSIP_TIMESTAMP_FILTER => Ok(Self::GossipTimestampFilter(
                 GossipTimestampFilter::decode(cursor)?,
             )),
@@ -445,6 +457,16 @@ mod tests {
         }
     }
 
+    /// Valid `AnnouncementSignatures` message for testing.
+    fn sample_announcement_signatures() -> AnnouncementSignatures {
+        AnnouncementSignatures {
+            channel_id: ChannelId::new([0xaa; CHANNEL_ID_SIZE]),
+            short_channel_id: ShortChannelId::new(0x0001_0002_0003),
+            node_signature: Signature::new([0x01; SIGNATURE_SIZE]),
+            bitcoin_signature: Signature::new([0x02; SIGNATURE_SIZE]),
+        }
+    }
+
     #[test]
     fn message_funding_signed_roundtrip() {
         let fs = sample_funding_signed();
@@ -452,6 +474,15 @@ mod tests {
         let encoded = msg.encode();
         let decoded = Message::decode(&encoded).unwrap();
         assert_eq!(decoded, Message::FundingSigned(fs));
+    }
+
+    #[test]
+    fn message_announcement_signatures_roundtrip() {
+        let announcement_signatures = sample_announcement_signatures();
+        let msg = Message::AnnouncementSignatures(announcement_signatures.clone());
+        let encoded = msg.encode();
+        let decoded = Message::decode(&encoded).unwrap();
+        assert_eq!(decoded, Message::AnnouncementSignatures(announcement_signatures));
     }
 
     #[test]
@@ -587,6 +618,10 @@ mod tests {
         assert_eq!(
             Message::TxAbort(TxAbort::new(ChannelId::new([0; CHANNEL_ID_SIZE]), "")).msg_type(),
             msg_type::TX_ABORT
+        );
+        assert_eq!(
+            Message::AnnouncementSignatures(sample_announcement_signatures()).msg_type(),
+            msg_type::ANNOUNCEMENT_SIGNATURES
         );
         assert_eq!(
             Message::GossipTimestampFilter(GossipTimestampFilter::no_gossip([0u8; 32])).msg_type(),
