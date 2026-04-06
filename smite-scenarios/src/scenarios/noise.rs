@@ -9,7 +9,7 @@ use smite::bolt::{Init, Message};
 use smite::noise::{
     ACT_TWO_SIZE, ENCRYPTED_LENGTH_SIZE, MAC_SIZE, NoiseCipher, NoiseConnection, NoiseHandshake,
 };
-use smite::scenarios::{Scenario, ScenarioResult};
+use smite::scenarios::{Scenario, ScenarioError, ScenarioResult, TargetError};
 
 use super::{EPHEMERAL_KEY, connect_to_target, ping_pong};
 use crate::targets::Target;
@@ -225,27 +225,27 @@ fn recv_message(stream: &mut TcpStream, cipher: &mut NoiseCipher) -> Vec<u8> {
 }
 
 impl<T: Target> Scenario for NoiseScenario<T> {
-    fn new(_args: &[String]) -> Result<Self, String> {
+    fn new(_args: &[String]) -> Result<Self, ScenarioError> {
         let config = T::Config::default();
-        let target = T::start(config).map_err(|e| e.to_string())?;
+        let target = T::start(config)?;
 
         // Establish a connection for ping-pong synchronization. This also warms
         // up the target's message handling code paths before the Nyx snapshot,
         // improving fuzzing efficiency for JVM targets.
-        let mut sync_conn = connect_to_target(&target, TIMEOUT).map_err(|e| e.to_string())?;
-        ping_pong(&mut sync_conn).map_err(|e| e.to_string())?;
+        let mut sync_conn = connect_to_target(&target, TIMEOUT)?;
+        ping_pong(&mut sync_conn)?;
 
         // Establish the fuzz connection that will be snapshotted in its
         // pre-handshake state.
-        let stream = TcpStream::connect_timeout(&target.addr(), TIMEOUT)
-            .map_err(|e| format!("TCP connect: {e}"))?;
-        stream.set_nodelay(true).map_err(|e| e.to_string())?;
+        let stream =
+            TcpStream::connect_timeout(&target.addr(), TIMEOUT).map_err(TargetError::Io)?;
+        stream.set_nodelay(true).map_err(TargetError::Io)?;
         stream
             .set_read_timeout(Some(TIMEOUT))
-            .map_err(|e| e.to_string())?;
+            .map_err(TargetError::Io)?;
         stream
             .set_write_timeout(Some(TIMEOUT))
-            .map_err(|e| e.to_string())?;
+            .map_err(TargetError::Io)?;
 
         Ok(Self {
             target,

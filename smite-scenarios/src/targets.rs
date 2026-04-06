@@ -10,6 +10,7 @@ pub use cln::{ClnConfig, ClnTarget};
 pub use eclair::{EclairConfig, EclairTarget};
 pub use ldk::{LdkConfig, LdkTarget};
 pub use lnd::{LndConfig, LndTarget};
+use smite::scenarios::TargetError;
 
 use std::net::SocketAddr;
 
@@ -36,22 +37,6 @@ pub fn check_crash_log() -> Result<(), TargetError> {
         return Err(TargetError::Crashed);
     }
     Ok(())
-}
-
-/// Error from target operations.
-#[derive(Debug, thiserror::Error)]
-pub enum TargetError {
-    /// Target failed to start.
-    #[error("failed to start: {0}")]
-    StartFailed(String),
-
-    /// Target crashed.
-    #[error("target crashed")]
-    Crashed,
-
-    /// I/O error.
-    #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
 }
 
 /// A Lightning implementation that can be fuzzed.

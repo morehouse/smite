@@ -7,14 +7,15 @@ mod noise;
 pub use encrypted_bytes::EncryptedBytesScenario;
 pub use init::InitScenario;
 pub use noise::NoiseScenario;
+use smite::scenarios::ScenarioError;
 
 use std::time::Duration;
 
 use secp256k1::SecretKey;
-use smite::bolt::{BoltError, Init, Message, Ping};
-use smite::noise::{ConnectionError, NoiseConnection};
+use smite::bolt::{Init, Message, Ping};
+use smite::noise::NoiseConnection;
 
-use crate::targets::{Target, TargetError};
+use crate::targets::Target;
 
 /// Static keys for Noise handshake. Using fixed keys ensures reproducibility
 /// of fuzz failures across runs.
@@ -26,39 +27,6 @@ const EPHEMERAL_KEY: [u8; 32] = [
     0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12,
     0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12,
 ];
-
-/// Error from scenario operations.
-#[derive(Debug, thiserror::Error)]
-pub enum ScenarioError {
-    /// Target failed to start or crashed.
-    #[error("target error: {0}")]
-    Target(#[from] TargetError),
-
-    /// Connection or handshake failed.
-    #[error("connection failed: {0}")]
-    Connection(#[from] ConnectionError),
-
-    /// Failed to decode a BOLT message.
-    #[error("decode error: {0}")]
-    Decode(#[from] BoltError),
-
-    /// Protocol error (e.g., unexpected message).
-    #[error("protocol error: {0}")]
-    Protocol(String),
-}
-
-impl ScenarioError {
-    /// Returns true if this error is a timeout (potential hang).
-    #[must_use]
-    pub fn is_timeout(&self) -> bool {
-        use std::io::ErrorKind;
-        if let Self::Connection(ConnectionError::Io(e)) = self {
-            matches!(e.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock)
-        } else {
-            false
-        }
-    }
-}
 
 /// Connect to a target and perform the init handshake.
 ///

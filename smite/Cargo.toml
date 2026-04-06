@@ -30,3 +30,4 @@ nix = { version = "0.30", default-features = false, features = [
   "process",
 ] }
 hex = "0.4"
+thiserror = "2"

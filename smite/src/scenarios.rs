@@ -1,3 +1,5 @@
+use crate::{bolt::BoltError, noise::ConnectionError};
+
 /// `ScenarioResult` describes the outcomes of running a scenario
 pub enum ScenarioResult {
     /// Scenario ran successfully
@@ -8,13 +10,62 @@ pub enum ScenarioResult {
     Fail(String),
 }
 
+/// Error from scenario operations.
+#[derive(Debug, thiserror::Error)]
+pub enum ScenarioError {
+    /// Target failed to start or crashed.
+    #[error("target error: {0}")]
+    Target(#[from] TargetError),
+
+    /// Connection or handshake failed.
+    #[error("connection failed: {0}")]
+    Connection(#[from] ConnectionError),
+
+    /// Failed to decode a BOLT message.
+    #[error("decode error: {0}")]
+    Decode(#[from] BoltError),
+
+    /// Protocol error (e.g., unexpected message).
+    #[error("protocol error: {0}")]
+    Protocol(String),
+}
+
+impl ScenarioError {
+    /// Returns true if this error is a timeout (potential hang).
+    #[must_use]
+    pub fn is_timeout(&self) -> bool {
+        use std::io::ErrorKind;
+        if let Self::Connection(ConnectionError::Io(e)) = self {
+            matches!(e.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock)
+        } else {
+            false
+        }
+    }
+}
+
+/// Error from target operations.
+#[derive(Debug, thiserror::Error)]
+pub enum TargetError {
+    /// Target failed to start.
+    #[error("failed to start: {0}")]
+    StartFailed(String),
+
+    /// Target crashed.
+    #[error("target crashed")]
+    Crashed,
+
+    /// I/O error.
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+}
+
 /// `Scenario` is the interface for test scenarios that can be run against a target node
 pub trait Scenario: Sized {
     /// Create a new instance of the scenario, preparing the initial state of the test
     ///
     /// # Errors
     /// Returns an error if scenario initialization fails.
-    fn new(args: &[String]) -> Result<Self, String>;
+    fn new(args: &[String]) -> Result<Self, ScenarioError>;
 
     /// Run the test with the given fuzz input
     fn run(&mut self, input: &[u8]) -> ScenarioResult;

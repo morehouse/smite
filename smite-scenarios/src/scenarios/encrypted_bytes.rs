@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use smite::noise::NoiseConnection;
-use smite::scenarios::{Scenario, ScenarioResult};
+use smite::scenarios::{Scenario, ScenarioError, ScenarioResult};
 
 use super::{connect_to_target, ping_pong};
 use crate::targets::Target;
@@ -19,17 +19,16 @@ pub struct EncryptedBytesScenario<T: Target> {
 }
 
 impl<T: Target> Scenario for EncryptedBytesScenario<T> {
-    fn new(_args: &[String]) -> Result<Self, String> {
+    fn new(_args: &[String]) -> Result<Self, ScenarioError> {
         let config = T::Config::default();
-        let target = T::start(config).map_err(|e| e.to_string())?;
-        let mut conn =
-            connect_to_target(&target, Duration::from_secs(5)).map_err(|e| e.to_string())?;
+        let target = T::start(config)?;
+        let mut conn = connect_to_target(&target, Duration::from_secs(5))?;
 
         // Warm up the target's message handling path before the Nyx snapshot.
         // For JVM-based targets (i.e. Eclair), this  causes the necessary
         // classes to load and be JIT compiled before we take the snapshot,
         // speeding up every subsequent iteration.
-        ping_pong(&mut conn).map_err(|e| e.to_string())?;
+        ping_pong(&mut conn)?;
 
         Ok(Self { target, conn })
     }
