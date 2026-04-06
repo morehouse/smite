@@ -23,6 +23,7 @@ mod tx_init_rbf;
 mod tx_remove_input;
 mod tx_remove_output;
 mod types;
+mod update_fail_malformed_htlc;
 mod warning;
 mod wire;
 
@@ -47,8 +48,9 @@ pub use tx_remove_input::TxRemoveInput;
 pub use tx_remove_output::TxRemoveOutput;
 pub use types::{
     BigSize, CHANNEL_ID_SIZE, COMPACT_SIGNATURE_SIZE, ChannelId, MAX_MESSAGE_SIZE, PUBLIC_KEY_SIZE,
-    TXID_SIZE, Txid,
+    SHA256_HASH_SIZE, TXID_SIZE, Txid,
 };
+pub use update_fail_malformed_htlc::UpdateFailMalformedHtlc;
 pub use warning::Warning;
 pub use wire::WireFormat;
 
@@ -127,6 +129,8 @@ pub mod msg_type {
     pub const TX_ACK_RBF: u16 = 73;
     /// `tx_abort` message (BOLT 2).
     pub const TX_ABORT: u16 = 74;
+    /// `update_fail_malformed_htlc` message (BOLT 2).
+    pub const UPDATE_FAIL_MALFORMED_HTLC: u16 = 135;
     /// Gossip timestamp filter message (BOLT 7).
     pub const GOSSIP_TIMESTAMP_FILTER: u16 = 265;
 }
@@ -171,6 +175,8 @@ pub enum Message {
     TxAckRbf(TxAckRbf),
     /// `tx_abort` message (type 74).
     TxAbort(TxAbort),
+    /// `update_fail_malformed_htlc` message (type 135).
+    UpdateFailMalformedHtlc(UpdateFailMalformedHtlc),
     /// Gossip timestamp filter message (type 265).
     GossipTimestampFilter(GossipTimestampFilter),
     /// Unknown message type.
@@ -208,6 +214,7 @@ impl Message {
             Self::TxInitRbf(_) => msg_type::TX_INIT_RBF,
             Self::TxAckRbf(_) => msg_type::TX_ACK_RBF,
             Self::TxAbort(_) => msg_type::TX_ABORT,
+            Self::UpdateFailMalformedHtlc(_) => msg_type::UPDATE_FAIL_MALFORMED_HTLC,
             Self::GossipTimestampFilter(_) => msg_type::GOSSIP_TIMESTAMP_FILTER,
             Self::Unknown { msg_type, .. } => *msg_type,
         }
@@ -237,6 +244,7 @@ impl Message {
             Self::TxInitRbf(m) => out.extend(m.encode()),
             Self::TxAckRbf(m) => out.extend(m.encode()),
             Self::TxAbort(m) => out.extend(m.encode()),
+            Self::UpdateFailMalformedHtlc(m) => out.extend(m.encode()),
             Self::GossipTimestampFilter(m) => out.extend(m.encode()),
             Self::Unknown { payload, .. } => out.extend(payload),
         }
@@ -273,6 +281,9 @@ impl Message {
             msg_type::TX_INIT_RBF => Ok(Self::TxInitRbf(TxInitRbf::decode(cursor)?)),
             msg_type::TX_ACK_RBF => Ok(Self::TxAckRbf(TxAckRbf::decode(cursor)?)),
             msg_type::TX_ABORT => Ok(Self::TxAbort(TxAbort::decode(cursor)?)),
+            msg_type::UPDATE_FAIL_MALFORMED_HTLC => Ok(Self::UpdateFailMalformedHtlc(
+                UpdateFailMalformedHtlc::decode(cursor)?,
+            )),
             msg_type::GOSSIP_TIMESTAMP_FILTER => Ok(Self::GossipTimestampFilter(
                 GossipTimestampFilter::decode(cursor)?,
             )),
@@ -306,7 +317,7 @@ pub fn message_with_type(msg_type: u16, payload: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use secp256k1::hashes::Hash;
+    use secp256k1::hashes::{Hash, sha256};
     use secp256k1::{PublicKey, Secp256k1, SecretKey};
     use types::CHAIN_HASH_SIZE;
 
@@ -616,6 +627,19 @@ mod tests {
     }
 
     #[test]
+    fn message_update_fail_malformed_htlc_roundtrip() {
+        let msg = UpdateFailMalformedHtlc {
+            channel_id: ChannelId::new([0x42; CHANNEL_ID_SIZE]),
+            id: 12345,
+            sha256_of_onion: sha256::Hash::from_byte_array([0xaa; SHA256_HASH_SIZE]),
+            failure_code: 0x8001,
+        };
+        let encoded = Message::UpdateFailMalformedHtlc(msg.clone()).encode();
+        let decoded = Message::decode(&encoded).unwrap();
+        assert_eq!(decoded, Message::UpdateFailMalformedHtlc(msg));
+    }
+
+    #[test]
     fn message_gossip_timestamp_filter_roundtrip() {
         let chain_hash = [0x6f; 32];
         let filter = GossipTimestampFilter::new(chain_hash, 1_000_000, 86400);
@@ -637,6 +661,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn message_type_values() {
         assert_eq!(
             Message::Warning(Warning::all_channels("")).msg_type(),
@@ -721,6 +746,16 @@ mod tests {
         assert_eq!(
             Message::TxAbort(TxAbort::new(ChannelId::new([0; CHANNEL_ID_SIZE]), "")).msg_type(),
             msg_type::TX_ABORT
+        );
+        assert_eq!(
+            Message::UpdateFailMalformedHtlc(UpdateFailMalformedHtlc {
+                channel_id: ChannelId::new([0x42; CHANNEL_ID_SIZE]),
+                id: 12345,
+                sha256_of_onion: sha256::Hash::from_byte_array([0xaa; SHA256_HASH_SIZE]),
+                failure_code: 0x8001,
+            })
+            .msg_type(),
+            msg_type::UPDATE_FAIL_MALFORMED_HTLC
         );
         assert_eq!(
             Message::GossipTimestampFilter(GossipTimestampFilter::no_gossip([0u8; 32])).msg_type(),
