@@ -87,6 +87,7 @@ firefox ./$TARGET-$SCENARIO-coverage-report/html/index.html
 
 ```
 smite/              # Core Rust library (runners, scenarios, noise protocol, BOLT messages)
+smite-ir/           # Library to build and mutate Intermediate Representation (IR) programs
 smite-nyx-sys/      # Nyx FFI bindings
 smite-scenarios/    # Scenario implementations and target binaries
 workloads/

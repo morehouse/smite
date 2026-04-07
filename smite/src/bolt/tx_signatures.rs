@@ -1,8 +1,15 @@
 //! BOLT 2 `tx_signatures` message.
 
 use super::BoltError;
+use super::tlv::TlvStream;
 use super::types::{ChannelId, Txid};
 use super::wire::WireFormat;
+
+/// A witness stack for a single transaction input.
+///
+/// Each inner `Vec<u8>` is a single witness stack item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Witness(pub Vec<Vec<u8>>);
 
 /// BOLT 2 `tx_signatures` message (type 71).
 ///
@@ -16,27 +23,49 @@ pub struct TxSignatures {
     /// The transaction ID (little-endian, Bitcoin serialization).
     pub txid: Txid,
     /// Witnesses for the transaction inputs.
-    ///
-    /// Outer `Vec`: one entry per input.
-    /// Middle `Vec`: the witness stack for that input.
-    /// Inner `Vec<u8>`: a single witness stack item.
-    pub witnesses: Vec<Vec<Vec<u8>>>,
+    pub witnesses: Vec<Witness>,
+    /// Optional TLV extensions.
+    pub tlvs: TxSignaturesTlvs,
 }
+
+/// TLV extensions for the `tx_signatures` message.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TxSignaturesTlvs {}
 
 impl TxSignatures {
     /// Encodes to wire format (without message type prefix).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the number of witnesses or the number of items in any witness
+    /// stack exceeds `u16::MAX`.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
         self.channel_id.write(&mut out);
         self.txid.write(&mut out);
-        u16::try_from(self.witnesses.len()).unwrap_or(u16::MAX).write(&mut out);
+        assert!(
+            self.witnesses.len() <= usize::from(u16::MAX),
+            "witness count exceeds u16::MAX"
+        );
+        #[allow(clippy::cast_possible_truncation)]
+        (self.witnesses.len() as u16).write(&mut out);
         for witness in &self.witnesses {
-            u16::try_from(witness.len()).unwrap_or(u16::MAX).write(&mut out);
-            for item in witness {
+            assert!(
+                witness.0.len() <= usize::from(u16::MAX),
+                "witness stack item count exceeds u16::MAX"
+            );
+            #[allow(clippy::cast_possible_truncation)]
+            (witness.0.len() as u16).write(&mut out);
+            for item in &witness.0 {
                 item.write(&mut out);
             }
         }
+
+        // Encode TLVs
+        let tlv_stream = TlvStream::new();
+        out.extend(tlv_stream.encode());
+
         out
     }
 
@@ -59,12 +88,18 @@ impl TxSignatures {
                 let item: Vec<u8> = WireFormat::read(&mut cursor)?;
                 stack.push(item);
             }
-            witnesses.push(stack);
+            witnesses.push(Witness(stack));
         }
+
+        // Decode TLVs (remaining bytes); no known even types for this message.
+        let _tlv_stream = TlvStream::decode(cursor)?;
+        let tlvs = TxSignaturesTlvs {};
+
         Ok(Self {
             channel_id,
             txid,
             witnesses,
+            tlvs,
         })
     }
 }
@@ -85,9 +120,10 @@ mod tests {
             channel_id: ChannelId::new([0xab; CHANNEL_ID_SIZE]),
             txid: sample_txid(),
             witnesses: vec![
-                vec![vec![0x01, 0x02], vec![0x03]],
-                vec![vec![0xde, 0xad, 0xbe, 0xef]],
+                Witness(vec![vec![0x01, 0x02], vec![0x03]]),
+                Witness(vec![vec![0xde, 0xad, 0xbe, 0xef]]),
             ],
+            tlvs: TxSignaturesTlvs::default(),
         };
         let encoded = original.encode();
         let decoded = TxSignatures::decode(&encoded).unwrap();
@@ -100,6 +136,7 @@ mod tests {
             channel_id: ChannelId::new([0x00; CHANNEL_ID_SIZE]),
             txid: sample_txid(),
             witnesses: vec![],
+            tlvs: TxSignaturesTlvs::default(),
         };
         let encoded = original.encode();
         // channel_id(32) + txid(32) + num_witnesses(2) = 66
@@ -114,7 +151,8 @@ mod tests {
         let original = TxSignatures {
             channel_id: ChannelId::new([0x11; CHANNEL_ID_SIZE]),
             txid: sample_txid(),
-            witnesses: vec![vec![], vec![]],
+            witnesses: vec![Witness(vec![]), Witness(vec![])],
+            tlvs: TxSignaturesTlvs::default(),
         };
         let encoded = original.encode();
         let decoded = TxSignatures::decode(&encoded).unwrap();
@@ -122,14 +160,16 @@ mod tests {
     }
 
     #[test]
-    fn decode_ignores_trailing_bytes() {
+    fn decode_ignores_unknown_odd_tlv() {
         let original = TxSignatures {
             channel_id: ChannelId::new([0xff; CHANNEL_ID_SIZE]),
             txid: sample_txid(),
             witnesses: vec![],
+            tlvs: TxSignaturesTlvs::default(),
         };
         let mut encoded = original.encode();
-        encoded.extend_from_slice(&[0xaa, 0xbb, 0xcc]);
+        // Append unknown odd TLV: type=3, length=2, value=[0xaa, 0xbb]
+        encoded.extend_from_slice(&[0x03, 0x02, 0xaa, 0xbb]);
         let decoded = TxSignatures::decode(&encoded).unwrap();
         assert_eq!(decoded, original);
     }
@@ -140,7 +180,8 @@ mod tests {
         let msg = TxSignatures {
             channel_id: ChannelId::new([0x42; CHANNEL_ID_SIZE]),
             txid: sample_txid(),
-            witnesses: vec![vec![vec![0xaa, 0xbb, 0xcc]]],
+            witnesses: vec![Witness(vec![vec![0xaa, 0xbb, 0xcc]])],
+            tlvs: TxSignaturesTlvs::default(),
         };
         let encoded = msg.encode();
         assert_eq!(encoded.len(), 32 + 32 + 2 + 2 + 2 + 3);
