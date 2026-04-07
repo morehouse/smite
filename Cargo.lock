@@ -498,6 +498,7 @@ dependencies = [
  "sha2",
  "simple_logger",
  "smite-nyx-sys",
+ "thiserror",
 ]
 
 [[package]]
@@ -531,7 +532,6 @@ dependencies = [
  "smite",
  "smite-nyx-sys",
  "tempfile",
- "thiserror",
 ]
 
 [[package]]
