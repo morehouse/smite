@@ -1,0 +1,88 @@
+//! Mutator that removes an instruction.
+
+use rand::{Rng, RngExt, seq::IteratorRandom};
+
+use super::Mutator;
+use crate::Program;
+
+/// Deletes a randomly selected instruction by removing it from
+/// the instructions list and reindexing the subsequent instructions.
+pub struct InstructionDeleteMutator;
+
+impl Mutator for InstructionDeleteMutator {
+    fn mutate(&self, program: &mut Program, rng: &mut impl Rng) -> bool {
+        if program.instructions.is_empty() {
+            return false;
+        }
+        // Pick a random instruction to delete.
+        let deleted_idx = rng.random_range(0..program.instructions.len());
+        let deleted_type = program.instructions[deleted_idx].operation.output_type();
+
+        // Find the first instruction that uses the deleted instruction.
+        let first_use_idx = program
+            .instructions
+            .iter()
+            .position(|instr| instr.inputs.contains(&deleted_idx));
+
+        // If any instruction downstream depends on the deleted one, pick a prior
+        // type-matching variable to redirect those inputs to.
+        let replacement_idx = if let Some(first_use_idx) = first_use_idx {
+            let mut is_consumed = vec![false; program.instructions.len()];
+            if deleted_type
+                .expect("`None` shouldn't be consumed")
+                .is_affine()
+            {
+                for (i, instr) in program.instructions.iter().enumerate() {
+                    if i == deleted_idx {
+                        continue;
+                    }
+                    for &input in &instr.inputs {
+                        if program.instructions[input].operation.output_type() == deleted_type {
+                            is_consumed[input] = true;
+                        }
+                    }
+                }
+            }
+            match program.instructions[..first_use_idx]
+                .iter()
+                .enumerate()
+                .filter_map(|(i, instr)| {
+                    (instr.operation.output_type() == deleted_type
+                        && i != deleted_idx
+                        && !is_consumed[i])
+                        .then_some(i)
+                })
+                .choose(rng)
+            {
+                Some(idx) => {
+                    if idx > deleted_idx {
+                        // Deleting an instruction shifts every element past it by -1.
+                        Some(idx - 1)
+                    } else {
+                        Some(idx)
+                    }
+                }
+                // Abort if no valid replacement variable exists in the preceding scope.
+                None => return false,
+            }
+        } else {
+            None
+        };
+
+        // Delete from the program.
+        program.instructions.remove(deleted_idx);
+
+        // Heal downstream inputs: redirect references to the deleted index, and
+        // decrement references past it.
+        for instr in &mut program.instructions[deleted_idx..] {
+            for input in &mut instr.inputs {
+                if *input == deleted_idx {
+                    *input = replacement_idx.expect("dependent input implies replacement");
+                } else if *input > deleted_idx {
+                    *input -= 1;
+                }
+            }
+        }
+        true
+    }
+}
