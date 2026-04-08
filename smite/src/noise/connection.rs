@@ -109,49 +109,15 @@ impl NoiseConnection {
 }
 
 /// Errors that can occur during connection operations.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ConnectionError {
     /// IO error (connection, read, write)
-    Io(std::io::Error),
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
     /// Noise protocol error (handshake, decryption)
-    Noise(NoiseError),
+    #[error("Noise error: {0}")]
+    Noise(#[from] NoiseError),
     /// Message exceeds `MAX_MESSAGE_SIZE`
+    #[error("message too large: {0} bytes (max {max})", max = MAX_MESSAGE_SIZE)]
     MessageTooLarge(usize),
-}
-
-impl std::fmt::Display for ConnectionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Io(e) => write!(f, "IO error: {e}"),
-            Self::Noise(e) => write!(f, "Noise error: {e}"),
-            Self::MessageTooLarge(size) => {
-                write!(
-                    f,
-                    "message too large: {size} bytes (max {MAX_MESSAGE_SIZE})"
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for ConnectionError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Io(e) => Some(e),
-            Self::Noise(e) => Some(e),
-            Self::MessageTooLarge(_) => None,
-        }
-    }
-}
-
-impl From<std::io::Error> for ConnectionError {
-    fn from(e: std::io::Error) -> Self {
-        Self::Io(e)
-    }
-}
-
-impl From<NoiseError> for ConnectionError {
-    fn from(e: NoiseError) -> Self {
-        Self::Noise(e)
-    }
 }
