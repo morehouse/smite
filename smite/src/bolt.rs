@@ -20,6 +20,7 @@ mod tx_abort;
 mod tx_complete;
 mod tx_remove_input;
 mod tx_remove_output;
+mod tx_signatures;
 mod types;
 mod warning;
 mod wire;
@@ -41,6 +42,7 @@ pub use tx_abort::TxAbort;
 pub use tx_complete::TxComplete;
 pub use tx_remove_input::TxRemoveInput;
 pub use tx_remove_output::TxRemoveOutput;
+pub use tx_signatures::{TxSignatures, TxSignaturesTlvs, Witness};
 pub use types::{
     BigSize, CHANNEL_ID_SIZE, COMPACT_SIGNATURE_SIZE, ChannelId, MAX_MESSAGE_SIZE, PUBLIC_KEY_SIZE,
     TXID_SIZE, Txid,
@@ -133,6 +135,8 @@ pub mod msg_type {
     pub const TX_REMOVE_OUTPUT: u16 = 69;
     /// `tx_complete` message (BOLT 2).
     pub const TX_COMPLETE: u16 = 70;
+    /// `tx_signatures` message (BOLT 2).
+    pub const TX_SIGNATURES: u16 = 71;
     /// `tx_abort` message (BOLT 2).
     pub const TX_ABORT: u16 = 74;
     /// Gossip timestamp filter message (BOLT 7).
@@ -173,6 +177,8 @@ pub enum Message {
     TxRemoveOutput(TxRemoveOutput),
     /// `tx_complete` message (type 70).
     TxComplete(TxComplete),
+    /// `tx_signatures` message (type 71).
+    TxSignatures(TxSignatures),
     /// `tx_abort` message (type 74).
     TxAbort(TxAbort),
     /// Gossip timestamp filter message (type 265).
@@ -209,6 +215,7 @@ impl Message {
             Self::TxRemoveInput(_) => msg_type::TX_REMOVE_INPUT,
             Self::TxRemoveOutput(_) => msg_type::TX_REMOVE_OUTPUT,
             Self::TxComplete(_) => msg_type::TX_COMPLETE,
+            Self::TxSignatures(_) => msg_type::TX_SIGNATURES,
             Self::TxAbort(_) => msg_type::TX_ABORT,
             Self::GossipTimestampFilter(_) => msg_type::GOSSIP_TIMESTAMP_FILTER,
             Self::Unknown { msg_type, .. } => *msg_type,
@@ -236,6 +243,7 @@ impl Message {
             Self::TxRemoveInput(m) => out.extend(m.encode()),
             Self::TxRemoveOutput(m) => out.extend(m.encode()),
             Self::TxComplete(m) => out.extend(m.encode()),
+            Self::TxSignatures(m) => out.extend(m.encode()),
             Self::TxAbort(m) => out.extend(m.encode()),
             Self::GossipTimestampFilter(m) => out.extend(m.encode()),
             Self::Unknown { payload, .. } => out.extend(payload),
@@ -270,6 +278,7 @@ impl Message {
             msg_type::TX_REMOVE_INPUT => Ok(Self::TxRemoveInput(TxRemoveInput::decode(cursor)?)),
             msg_type::TX_REMOVE_OUTPUT => Ok(Self::TxRemoveOutput(TxRemoveOutput::decode(cursor)?)),
             msg_type::TX_COMPLETE => Ok(Self::TxComplete(TxComplete::decode(cursor)?)),
+            msg_type::TX_SIGNATURES => Ok(Self::TxSignatures(TxSignatures::decode(cursor)?)),
             msg_type::TX_ABORT => Ok(Self::TxAbort(TxAbort::decode(cursor)?)),
             msg_type::GOSSIP_TIMESTAMP_FILTER => Ok(Self::GossipTimestampFilter(
                 GossipTimestampFilter::decode(cursor)?,
@@ -598,6 +607,23 @@ mod tests {
     }
 
     #[test]
+    fn message_tx_signatures_roundtrip() {
+        let tx_sigs = TxSignatures {
+            channel_id: ChannelId::new([0xef; CHANNEL_ID_SIZE]),
+            txid: Txid::from_byte_array([0xcc; TXID_SIZE]),
+            witnesses: vec![
+                Witness(vec![vec![0xde, 0xad], vec![0xbe, 0xef]]),
+                Witness(vec![vec![0x01]]),
+            ],
+            tlvs: TxSignaturesTlvs::default(),
+        };
+        let msg = Message::TxSignatures(tx_sigs.clone());
+        let encoded = msg.encode();
+        let decoded = Message::decode(&encoded).unwrap();
+        assert_eq!(decoded, Message::TxSignatures(tx_sigs));
+    }
+
+    #[test]
     fn message_unknown_roundtrip() {
         let msg = Message::Unknown {
             msg_type: 101,
@@ -671,6 +697,16 @@ mod tests {
             })
             .msg_type(),
             msg_type::TX_COMPLETE
+        );
+        assert_eq!(
+            Message::TxSignatures(TxSignatures {
+                channel_id: ChannelId::new([0; CHANNEL_ID_SIZE]),
+                txid: Txid::from_byte_array([0; TXID_SIZE]),
+                witnesses: vec![],
+                tlvs: TxSignaturesTlvs::default(),
+            })
+            .msg_type(),
+            msg_type::TX_SIGNATURES
         );
         assert_eq!(
             Message::TxAbort(TxAbort::new(ChannelId::new([0; CHANNEL_ID_SIZE]), "")).msg_type(),
