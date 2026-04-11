@@ -1,4 +1,12 @@
-//! IR operations.
+//! IR operations that load, compute, build or act.
+//!
+//! Each [`Operation`] falls into one of four categories:
+//!
+//! - `Load` - Produce a variable from an embedded literal or from the
+//!   [`ProgramContext`].
+//! - `Compute` - Derive a new variable from existing ones.
+//! - `Build` - Construct a BOLT message from input variables.
+//! - `Act` - Perform a side effect against the target.
 
 use std::fmt;
 use std::fmt::Write;
