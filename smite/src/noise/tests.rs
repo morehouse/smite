@@ -1,6 +1,6 @@
 //! BOLT 8 test vectors for Noise protocol implementation.
 
-use secp256k1::{PublicKey, SecretKey};
+use bitcoin::secp256k1::{self, PublicKey, SecretKey};
 
 use super::cipher::{ENCRYPTED_LENGTH_SIZE, NoiseCipher};
 use super::handshake::{ACT_ONE_SIZE, ACT_THREE_SIZE, ACT_TWO_SIZE, NoiseHandshake};
@@ -23,7 +23,7 @@ fn hex_to_vec(s: &str) -> Vec<u8> {
 
 /// Helper to create a `SecretKey` from hex.
 fn secret_key(hex: &str) -> SecretKey {
-    SecretKey::from_byte_array(hex_to_array(hex)).expect("valid secret key")
+    SecretKey::from_slice(&hex_to_vec(hex)).expect("valid secret key")
 }
 
 /// Helper to create a `PublicKey` from hex.

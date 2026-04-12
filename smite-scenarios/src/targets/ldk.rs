@@ -9,6 +9,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use bitcoin::secp256k1;
 use smite::process::ManagedProcess;
 
 use super::bitcoind;

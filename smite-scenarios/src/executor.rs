@@ -3,7 +3,7 @@
 //! Executes an IR program against a target node over an established connection,
 //! producing side effects (sending/receiving messages).
 
-use secp256k1::{PublicKey, Secp256k1, SecretKey};
+use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use smite::bolt::{
     AcceptChannel, ChannelId, Message, OpenChannel, OpenChannelTlvs, Pong, msg_type,
 };
@@ -135,7 +135,7 @@ pub fn execute(
             // -- Compute operations --
             Operation::DerivePoint => {
                 let key_bytes = resolve_private_key(&variables, instr.inputs[0])?;
-                let sk = SecretKey::from_byte_array(key_bytes)
+                let sk = SecretKey::from_slice(&key_bytes)
                     .map_err(|_| ExecuteError::InvalidPrivateKey)?;
                 let pk = PublicKey::from_secret_key(&secp, &sk);
                 Some(Variable::Point(pk))
@@ -416,7 +416,7 @@ mod tests {
     use std::collections::VecDeque;
 
     use super::*;
-    use secp256k1::{Secp256k1, SecretKey};
+    use bitcoin::secp256k1::{Secp256k1, SecretKey};
     use smite::bolt::{AcceptChannelTlvs, Init, Ping};
     use smite_ir::Instruction;
 
@@ -459,7 +459,7 @@ mod tests {
         let secp = Secp256k1::new();
         let mut key_bytes = [0u8; 32];
         key_bytes[31] = byte;
-        let sk = SecretKey::from_byte_array(key_bytes).expect("valid secret key");
+        let sk = SecretKey::from_slice(&key_bytes).expect("valid secret key");
         PublicKey::from_secret_key(&secp, &sk)
     }
 
@@ -705,7 +705,7 @@ mod tests {
         let oc = decode_open_channel(&conn.sent[0]);
         let secp = Secp256k1::new();
         let expected =
-            PublicKey::from_secret_key(&secp, &SecretKey::from_byte_array([0x11; 32]).unwrap());
+            PublicKey::from_secret_key(&secp, &SecretKey::from_slice(&[0x11; 32]).unwrap());
         assert_eq!(oc.funding_pubkey, expected);
     }
 

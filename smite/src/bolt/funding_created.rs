@@ -3,7 +3,7 @@
 use super::BoltError;
 use super::types::{ChannelId, Txid};
 use super::wire::WireFormat;
-use secp256k1::ecdsa::Signature;
+use bitcoin::secp256k1::ecdsa::Signature;
 
 /// BOLT 2 `funding_created` message (type 34).
 ///
@@ -61,15 +61,15 @@ impl FundingCreated {
 mod tests {
     use super::super::{CHANNEL_ID_SIZE, COMPACT_SIGNATURE_SIZE, TXID_SIZE};
     use super::*;
-    use secp256k1::hashes::Hash;
-    use secp256k1::{Message, Secp256k1, SecretKey};
+    use bitcoin::hashes::Hash;
+    use bitcoin::secp256k1::{Message, Secp256k1, SecretKey};
 
     /// Valid `FundingCreated` message for testing.
     fn sample_funding_created() -> FundingCreated {
         let secp = Secp256k1::new();
-        let sk = SecretKey::from_byte_array([0x11; 32]).expect("valid secret");
+        let sk = SecretKey::from_slice(&[0x11; 32]).expect("valid secret");
         let msg = Message::from_digest([0xaa; 32]);
-        let sig = secp.sign_ecdsa(msg, &sk);
+        let sig = secp.sign_ecdsa(&msg, &sk);
 
         FundingCreated {
             temporary_channel_id: ChannelId::new([0xbb; CHANNEL_ID_SIZE]),

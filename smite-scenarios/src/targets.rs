@@ -12,6 +12,7 @@ pub use ldk::{LdkConfig, LdkTarget};
 pub use lnd::{LndConfig, LndTarget};
 use smite::scenarios::TargetError;
 
+use bitcoin::secp256k1;
 use std::net::SocketAddr;
 
 /// Path where the crash handler writes crash data in local (non-Nyx) mode.

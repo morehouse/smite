@@ -4,7 +4,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
-use secp256k1::SecretKey;
+use bitcoin::secp256k1::SecretKey;
 use smite::bolt::{Init, Message};
 use smite::noise::{
     ACT_TWO_SIZE, ENCRYPTED_LENGTH_SIZE, MAC_SIZE, NoiseCipher, NoiseConnection, NoiseHandshake,
@@ -53,9 +53,8 @@ pub struct NoiseScenario<T: Target> {
 impl<T: Target> NoiseScenario<T> {
     /// Create a fresh initiator handshake using fixed keys.
     fn new_handshake(&self) -> NoiseHandshake {
-        let local_static = SecretKey::from_byte_array(FUZZ_STATIC_KEY).expect("valid static key");
-        let local_ephemeral =
-            SecretKey::from_byte_array(EPHEMERAL_KEY).expect("valid ephemeral key");
+        let local_static = SecretKey::from_slice(&FUZZ_STATIC_KEY).expect("valid static key");
+        let local_ephemeral = SecretKey::from_slice(&EPHEMERAL_KEY).expect("valid ephemeral key");
         NoiseHandshake::new_initiator(local_static, local_ephemeral, *self.target.pubkey())
     }
 

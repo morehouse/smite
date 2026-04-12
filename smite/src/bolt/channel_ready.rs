@@ -4,7 +4,7 @@ use super::BoltError;
 use super::tlv::TlvStream;
 use super::types::ChannelId;
 use super::wire::WireFormat;
-use secp256k1::PublicKey;
+use bitcoin::secp256k1::PublicKey;
 
 /// TLV type for short channel ID alias.
 const TLV_SHORT_CHANNEL_ID: u64 = 1;
@@ -98,12 +98,12 @@ impl ChannelReadyTlvs {
 mod tests {
     use super::super::{CHANNEL_ID_SIZE, PUBLIC_KEY_SIZE};
     use super::*;
-    use secp256k1::{Secp256k1, SecretKey};
+    use bitcoin::secp256k1::{Secp256k1, SecretKey};
 
     /// Valid `ChannelReady` message for testing.
     fn sample_channel_ready(tlvs: Option<ChannelReadyTlvs>) -> ChannelReady {
         let secp = Secp256k1::new();
-        let sk = SecretKey::from_byte_array([0x11; 32]).expect("valid secret");
+        let sk = SecretKey::from_slice(&[0x11; 32]).expect("valid secret");
         let pk = PublicKey::from_secret_key(&secp, &sk);
 
         ChannelReady {

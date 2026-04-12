@@ -4,7 +4,7 @@ use super::BoltError;
 use super::tlv::TlvStream;
 use super::types::ChannelId;
 use super::wire::WireFormat;
-use secp256k1::PublicKey;
+use bitcoin::secp256k1::PublicKey;
 
 /// TLV type for upfront shutdown script.
 const TLV_UPFRONT_SHUTDOWN_SCRIPT: u64 = 0;
@@ -159,7 +159,7 @@ impl AcceptChannelTlvs {
 mod tests {
     use super::super::PUBLIC_KEY_SIZE;
     use super::*;
-    use secp256k1::{Secp256k1, SecretKey};
+    use bitcoin::secp256k1::{Secp256k1, SecretKey};
 
     /// Valid `AcceptChannel` message for testing.
     fn sample_accept_channel(tlvs: Option<AcceptChannelTlvs>) -> AcceptChannel {
@@ -170,7 +170,7 @@ mod tests {
         let keys: Vec<PublicKey> = secrets
             .iter()
             .map(|s| {
-                let sk = SecretKey::from_byte_array(*s).expect("valid secret");
+                let sk = SecretKey::from_slice(s).expect("valid secret");
                 PublicKey::from_secret_key(&secp, &sk)
             })
             .collect();
