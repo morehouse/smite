@@ -8,7 +8,7 @@ use smite::bolt::{MAX_MESSAGE_SIZE, ShortChannelId};
 use super::*;
 use generators::{ChannelAnnouncementGenerator, NodeAnnouncementGenerator, OpenChannelGenerator};
 use minimizers::{CommonSubexpressionEliminator, DeadCodeEliminator, Minimizer};
-use mutators::{InputSwapMutator, OperationParamMutator};
+use mutators::{InputSwapMutator, InstructionDeleteMutator, OperationParamMutator};
 use operation::{AcceptChannelField, ChannelTypeVariant, ShutdownScriptVariant};
 
 /// Helper to build a private key with a single distinguishing byte.
@@ -1435,6 +1435,172 @@ fn input_swap_preserves_affine() {
             send_open_channel_1,
             program.instructions[accept_channel].inputs[0]
         );
+    }
+}
+
+// -- InstructionDeleteMutator tests --
+
+#[test]
+fn instr_delete_changes_values() {
+    let original = generate_open_channel_program(0);
+    let mut program = original.clone();
+    let mutator = InstructionDeleteMutator;
+    let mut rng = SmallRng::seed_from_u64(0);
+
+    for _ in 0..100 {
+        mutator.mutate(&mut program, &mut rng);
+    }
+    assert_ne!(
+        program, original,
+        "InstructionDeleteMutator never changed the program"
+    );
+}
+
+#[test]
+fn instr_delete_false_is_noop() {
+    let original = generate_open_channel_program(0);
+    assert_false_is_noop(&InstructionDeleteMutator, &original);
+}
+
+#[test]
+fn instr_delete_returns_false_on_empty_program() {
+    let mut program = Program {
+        instructions: vec![],
+    };
+    let mutator = InstructionDeleteMutator;
+    let mut rng = SmallRng::seed_from_u64(0);
+    assert!(!mutator.mutate(&mut program, &mut rng));
+}
+
+#[test]
+fn instr_delete_returns_false_if_unhealable() {
+    let original = Program {
+        instructions: vec![
+            Instruction {
+                operation: Operation::LoadPrivateKey(key(1)),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::DerivePoint,
+                inputs: vec![0],
+            },
+        ],
+    };
+    let mutator = InstructionDeleteMutator;
+    let mut rng = SmallRng::seed_from_u64(0);
+    let mut found_unhealable = false;
+
+    for _ in 0..100 {
+        let mut program = original.clone();
+        if !mutator.mutate(&mut program, &mut rng) {
+            found_unhealable = true;
+            break;
+        }
+    }
+    assert!(
+        found_unhealable,
+        "InstructionDeleteMutator never returned false for unhealable instruction"
+    );
+}
+
+#[test]
+fn instr_delete_shifts_indices_correctly() {
+    let original = Program {
+        instructions: vec![
+            Instruction {
+                operation: Operation::LoadPrivateKey(key(1)),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadPrivateKey(key(2)),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::DerivePoint,
+                inputs: vec![1, 1],
+            },
+        ],
+    };
+
+    let mutator = InstructionDeleteMutator;
+    let mut rng = SmallRng::seed_from_u64(0);
+    let mut verified_shift = false;
+
+    for _ in 0..100 {
+        let mut program = original.clone();
+        if mutator.mutate(&mut program, &mut rng) &&
+            program.instructions.len() == 2 &&
+            // Check if it deleted index 1, meaning DerivePoint is now at index 1
+            program.instructions[1].operation == Operation::DerivePoint
+        {
+            // input references must have shifted from [1, 1] down to [0, 0]
+            assert_eq!(program.instructions[1].inputs, vec![0, 0]);
+            verified_shift = true;
+            break;
+        }
+    }
+    assert!(
+        verified_shift,
+        "InstructionDeleteMutator never took the expected target shift path"
+    );
+}
+
+#[test]
+fn instr_delete_respects_affine_rules() {
+    let original = Program {
+        instructions: vec![
+            Instruction {
+                operation: Operation::BuildOpenChannel,
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::SendOpenChannel,
+                inputs: vec![0],
+            },
+            Instruction {
+                operation: Operation::RecvAcceptChannel,
+                inputs: vec![1],
+            },
+            Instruction {
+                operation: Operation::SendOpenChannel,
+                inputs: vec![0],
+            },
+            Instruction {
+                operation: Operation::RecvAcceptChannel,
+                inputs: vec![3],
+            },
+        ],
+    };
+    let mutator = InstructionDeleteMutator;
+    let mut rng = SmallRng::seed_from_u64(0);
+
+    for _ in 0..100 {
+        let mut program = original.clone();
+        // The only deletable instructions in the program are the `RecvAcceptChannel`s.
+        if mutator.mutate(&mut program, &mut rng) {
+            assert!(program.instructions.len() == original.instructions.len() - 1);
+            assert!(
+                // The first `RecvAcceptChannel` was deleted.
+                program.instructions[2] == original.instructions[3] ||
+                // The second `RecvAcceptChannel` was deleted.
+                program.instructions == original.instructions[0..original.instructions.len() - 1],
+                "InstructionDeleteMutator deleted an unhealable instruction"
+            );
+        }
+    }
+}
+
+#[test]
+fn instr_delete_maintains_validity() {
+    let original = generate_open_channel_program(0);
+    let mutator = InstructionDeleteMutator;
+    let mut rng = SmallRng::seed_from_u64(0);
+
+    for _ in 0..100 {
+        let mut program = original.clone();
+        if mutator.mutate(&mut program, &mut rng) {
+            assert_well_formed(&program);
+        }
     }
 }
 
