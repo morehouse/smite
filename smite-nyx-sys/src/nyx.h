@@ -232,6 +232,13 @@ static inline uint64_t kAFL_hypercall(uint64_t rbx, uint64_t rcx){
 	return 0;
 }
 #endif
+#else
+/* Stub kAFL_hypercall for non-x86 architectures (e.g., ARM64) */
+static inline uint64_t kAFL_hypercall(uint64_t rbx, uint64_t rcx){
+	(void)rbx;
+	(void)rcx;
+	return 0;
+}
 #endif
 
 //extern uint8_t* hprintf_buffer;
@@ -319,10 +326,19 @@ enum nyx_cpu_type{
 	nyx_cpu_v2  /* Nyx CPU used by vanilla KVM + VMWare backdoor */
 };
 
+#if defined(__x86_64__) || defined(__i386__)
 #define cpuid(in,a,b,c,d)\
   asm("cpuid": "=a" (a), "=b" (b), "=c" (c), "=d" (d) : "a" (in));
+#else
+/* ARM64/other architectures: cpuid is not available, use stub */
+#define cpuid(in,a,b,c,d) \
+  do { \
+    (void)(in); (void)(a); (void)(b); (void)(c); (void)(d); \
+  } while(0)
+#endif
 
-static int is_nyx_vcpu(void){
+#if defined(__x86_64__) || defined(__i386__)
+static int __attribute__((unused)) is_nyx_vcpu(void){
   unsigned long eax,ebx,ecx,edx;
   char str[8];
   cpuid(0x80000004,eax,ebx,ecx,edx);
@@ -334,8 +350,14 @@ static int is_nyx_vcpu(void){
 
   return !memcmp(&str, "NYX vCPU", 8);
 }
+#else
+static int __attribute__((unused)) is_nyx_vcpu(void){
+  return 0;  /* ARM64/other architectures don't support CPUID */
+}
+#endif
 
-static int get_nyx_cpu_type(void){
+#if defined(__x86_64__) || defined(__i386__)
+static int __attribute__((unused)) get_nyx_cpu_type(void){
 	unsigned long eax,ebx,ecx,edx;
   char str[9];
   cpuid(0x80000004,eax,ebx,ecx,edx);
@@ -363,6 +385,11 @@ static int get_nyx_cpu_type(void){
 	str[8] = 0;
 	printf("ECX: %s\n", str);
 }
+#else
+static int __attribute__((unused)) get_nyx_cpu_type(void){
+  return unkown;  /* ARM64/other architectures don't support CPUID */
+}
+#endif
 
 typedef struct req_data_bulk_s{
 	char file_name[256];
