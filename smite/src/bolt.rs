@@ -5,6 +5,7 @@
 
 mod accept_channel;
 mod channel_ready;
+mod channel_reestablish;
 mod error;
 mod funding_created;
 mod funding_signed;
@@ -28,6 +29,7 @@ mod wire;
 
 pub use accept_channel::{AcceptChannel, AcceptChannelTlvs};
 pub use channel_ready::{ChannelReady, ChannelReadyTlvs};
+pub use channel_reestablish::ChannelReestablish;
 pub use error::Error;
 pub use funding_created::FundingCreated;
 pub use funding_signed::FundingSigned;
@@ -127,6 +129,8 @@ pub mod msg_type {
     pub const TX_ACK_RBF: u16 = 73;
     /// `tx_abort` message (BOLT 2).
     pub const TX_ABORT: u16 = 74;
+    /// `channel_reestablish` message (BOLT 2).
+    pub const CHANNEL_REESTABLISH: u16 = 136;
     /// Gossip timestamp filter message (BOLT 7).
     pub const GOSSIP_TIMESTAMP_FILTER: u16 = 265;
 }
@@ -171,6 +175,8 @@ pub enum Message {
     TxAckRbf(TxAckRbf),
     /// `tx_abort` message (type 74).
     TxAbort(TxAbort),
+    /// `channel_reestablish` message (type 136).
+    ChannelReestablish(ChannelReestablish),
     /// Gossip timestamp filter message (type 265).
     GossipTimestampFilter(GossipTimestampFilter),
     /// Unknown message type.
@@ -208,6 +214,7 @@ impl Message {
             Self::TxInitRbf(_) => msg_type::TX_INIT_RBF,
             Self::TxAckRbf(_) => msg_type::TX_ACK_RBF,
             Self::TxAbort(_) => msg_type::TX_ABORT,
+            Self::ChannelReestablish(_) => msg_type::CHANNEL_REESTABLISH,
             Self::GossipTimestampFilter(_) => msg_type::GOSSIP_TIMESTAMP_FILTER,
             Self::Unknown { msg_type, .. } => *msg_type,
         }
@@ -237,6 +244,7 @@ impl Message {
             Self::TxInitRbf(m) => out.extend(m.encode()),
             Self::TxAckRbf(m) => out.extend(m.encode()),
             Self::TxAbort(m) => out.extend(m.encode()),
+            Self::ChannelReestablish(m) => out.extend(m.encode()),
             Self::GossipTimestampFilter(m) => out.extend(m.encode()),
             Self::Unknown { payload, .. } => out.extend(payload),
         }
@@ -273,6 +281,9 @@ impl Message {
             msg_type::TX_INIT_RBF => Ok(Self::TxInitRbf(TxInitRbf::decode(cursor)?)),
             msg_type::TX_ACK_RBF => Ok(Self::TxAckRbf(TxAckRbf::decode(cursor)?)),
             msg_type::TX_ABORT => Ok(Self::TxAbort(TxAbort::decode(cursor)?)),
+            msg_type::CHANNEL_REESTABLISH => Ok(Self::ChannelReestablish(
+                ChannelReestablish::decode(cursor)?,
+            )),
             msg_type::GOSSIP_TIMESTAMP_FILTER => Ok(Self::GossipTimestampFilter(
                 GossipTimestampFilter::decode(cursor)?,
             )),
@@ -309,6 +320,7 @@ mod tests {
     use secp256k1::hashes::Hash;
     use secp256k1::{PublicKey, Secp256k1, SecretKey};
     use types::CHAIN_HASH_SIZE;
+    use types::PER_COMMITMENT_SECRET_SIZE;
 
     // Tests ordered by message type number: Warning(1), Init(16), Error(17), Ping(18), Pong(19)
 
@@ -616,6 +628,28 @@ mod tests {
     }
 
     #[test]
+    fn message_channel_reestablish_roundtrip() {
+        let secp = Secp256k1::new();
+        let sk =
+            SecretKey::from_byte_array([0x11; PER_COMMITMENT_SECRET_SIZE]).expect("valid secret");
+        let pk = PublicKey::from_secret_key(&secp, &sk);
+
+        let channel_reestablish = ChannelReestablish {
+            channel_id: ChannelId::new([0xcd; CHANNEL_ID_SIZE]),
+            next_commitment_number: 42,
+            next_revocation_number: 41,
+            your_last_per_commitment_secret: [0xab; PER_COMMITMENT_SECRET_SIZE],
+            my_current_per_commitment_point: pk,
+            tlvs: TlvStream::new(),
+        };
+
+        let msg = Message::ChannelReestablish(channel_reestablish.clone());
+        let encoded = msg.encode();
+        let decoded = Message::decode(&encoded).unwrap();
+        assert_eq!(decoded, Message::ChannelReestablish(channel_reestablish));
+    }
+
+    #[test]
     fn message_gossip_timestamp_filter_roundtrip() {
         let chain_hash = [0x6f; 32];
         let filter = GossipTimestampFilter::new(chain_hash, 1_000_000, 86400);
@@ -637,6 +671,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn message_type_values() {
         assert_eq!(
             Message::Warning(Warning::all_channels("")).msg_type(),
@@ -721,6 +756,24 @@ mod tests {
         assert_eq!(
             Message::TxAbort(TxAbort::new(ChannelId::new([0; CHANNEL_ID_SIZE]), "")).msg_type(),
             msg_type::TX_ABORT
+        );
+        assert_eq!(
+            Message::ChannelReestablish(ChannelReestablish {
+                channel_id: ChannelId::new([0; CHANNEL_ID_SIZE]),
+                next_commitment_number: 0,
+                next_revocation_number: 0,
+                your_last_per_commitment_secret: [0; PER_COMMITMENT_SECRET_SIZE],
+                // Taken from https://github.com/lightning/bolts/blob/master/03-transactions.md#appendix-e-key-derivation-test-vectors
+                my_current_per_commitment_point: PublicKey::from_slice(&[
+                    0x02, 0x5f, 0x71, 0x17, 0xa7, 0x81, 0x50, 0xfe, 0x2e, 0xf9, 0x7d, 0xb7, 0xcf,
+                    0xc8, 0x3b, 0xd5, 0x7b, 0x2e, 0x2c, 0x0d, 0x0d, 0xd2, 0x5e, 0xaf, 0x46, 0x7a,
+                    0x4a, 0x1c, 0x2a, 0x45, 0xce, 0x14, 0x86,
+                ])
+                .unwrap(),
+                tlvs: TlvStream::new(),
+            })
+            .msg_type(),
+            msg_type::CHANNEL_REESTABLISH
         );
         assert_eq!(
             Message::GossipTimestampFilter(GossipTimestampFilter::no_gossip([0u8; 32])).msg_type(),
