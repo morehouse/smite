@@ -1,4 +1,8 @@
 //! IR program definition.
+//!
+//! A [`Program`] is an ordered list of [`Instruction`]s.  Programs are
+//! serialized with `postcard` for transport between the AFL++ custom mutator
+//! and the scenario executor inside the Nyx VM.
 
 use std::fmt;
 

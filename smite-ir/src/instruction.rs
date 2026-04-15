@@ -1,4 +1,8 @@
 //! IR instructions (operation + input variable references).
+//!
+//! Each [`Instruction`] pairs an [`Operation`] with indices into the variable
+//! store.  Programs use SSA form; the instruction at position `i` produces
+//! variable `vi` and later instructions reference it by index.
 
 use serde::{Deserialize, Serialize};
 

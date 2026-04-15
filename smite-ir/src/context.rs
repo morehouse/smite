@@ -1,4 +1,8 @@
 //! Program execution context from snapshot setup.
+//!
+//! A [`ProgramContext`] carries target specific state (public key, chain hash,
+//! block height, features) that is recorded before the Nyx snapshot is taken.
+//! `Load*FromContext` operations read from this context at execution time.
 
 use serde::{Deserialize, Serialize};
 
