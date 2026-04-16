@@ -102,6 +102,7 @@ pub fn execute(
     program: &Program,
     context: &ProgramContext,
     conn: &mut impl Connection,
+    start: std::time::Instant,
 ) -> Result<(), ExecuteError> {
     let secp = Secp256k1::new();
     let mut variables: Vec<Option<Variable>> = Vec::with_capacity(program.instructions.len());
@@ -156,12 +157,20 @@ pub fn execute(
             // -- Act operations --
             Operation::SendMessage => {
                 let bytes = resolve_message(&variables, instr.inputs[0])?;
+                let msg_type = bytes.get(..2).map(|b| u16::from_be_bytes([b[0], b[1]]));
+                log::debug!(
+                    "[{:?}] SendMessage: type {msg_type:?}, {} bytes",
+                    start.elapsed(),
+                    bytes.len(),
+                );
                 conn.send_message(bytes)?;
                 None
             }
 
             Operation::RecvAcceptChannel => {
+                log::debug!("[{:?}] RecvAcceptChannel: waiting", start.elapsed());
                 let ac = recv_accept_channel(conn)?;
+                log::debug!("[{:?}] RecvAcceptChannel: received", start.elapsed());
                 Some(Variable::AcceptChannel(ac))
             }
         };
@@ -607,7 +616,13 @@ mod tests {
             instructions: instrs,
         };
         let mut conn = MockConnection::new();
-        execute(&program, &sample_context(), &mut conn).unwrap();
+        execute(
+            &program,
+            &sample_context(),
+            &mut conn,
+            std::time::Instant::now(),
+        )
+        .unwrap();
 
         assert_eq!(conn.sent.len(), 1);
         let oc = decode_open_channel(&conn.sent[0]);
@@ -657,7 +672,13 @@ mod tests {
             instructions: instrs,
         };
         let mut conn = MockConnection::new();
-        execute(&program, &sample_context(), &mut conn).unwrap();
+        execute(
+            &program,
+            &sample_context(),
+            &mut conn,
+            std::time::Instant::now(),
+        )
+        .unwrap();
 
         let oc = decode_open_channel(&conn.sent[0]);
         assert_eq!(
@@ -700,7 +721,13 @@ mod tests {
             instructions: instrs,
         };
         let mut conn = MockConnection::new();
-        execute(&program, &sample_context(), &mut conn).unwrap();
+        execute(
+            &program,
+            &sample_context(),
+            &mut conn,
+            std::time::Instant::now(),
+        )
+        .unwrap();
 
         let oc = decode_open_channel(&conn.sent[0]);
         let secp = Secp256k1::new();
@@ -754,7 +781,13 @@ mod tests {
         };
         let mut conn = MockConnection::new();
         conn.queue_recv(ac_bytes);
-        execute(&program, &sample_context(), &mut conn).unwrap();
+        execute(
+            &program,
+            &sample_context(),
+            &mut conn,
+            std::time::Instant::now(),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -771,7 +804,13 @@ mod tests {
         };
         let mut conn = MockConnection::new();
         conn.queue_recv(init_bytes);
-        let err = execute(&program, &sample_context(), &mut conn).unwrap_err();
+        let err = execute(
+            &program,
+            &sample_context(),
+            &mut conn,
+            std::time::Instant::now(),
+        )
+        .unwrap_err();
         assert!(matches!(
             err,
             ExecuteError::UnexpectedMessage {
@@ -802,7 +841,13 @@ mod tests {
         let mut conn = MockConnection::new();
         conn.queue_recv(ping_bytes);
         conn.queue_recv(ac_bytes);
-        execute(&program, &sample_context(), &mut conn).unwrap();
+        execute(
+            &program,
+            &sample_context(),
+            &mut conn,
+            std::time::Instant::now(),
+        )
+        .unwrap();
 
         // Verify a correctly-sized pong was sent.
         assert_eq!(conn.sent.len(), 1);
@@ -825,7 +870,13 @@ mod tests {
             instructions: instrs,
         };
         let mut conn = MockConnection::new();
-        let err = execute(&program, &sample_context(), &mut conn).unwrap_err();
+        let err = execute(
+            &program,
+            &sample_context(),
+            &mut conn,
+            std::time::Instant::now(),
+        )
+        .unwrap_err();
         assert!(matches!(
             err,
             ExecuteError::WrongInputCount {
@@ -851,7 +902,13 @@ mod tests {
             instructions: instrs,
         };
         let mut conn = MockConnection::new();
-        let err = execute(&program, &sample_context(), &mut conn).unwrap_err();
+        let err = execute(
+            &program,
+            &sample_context(),
+            &mut conn,
+            std::time::Instant::now(),
+        )
+        .unwrap_err();
         assert!(matches!(
             err,
             ExecuteError::TypeMismatch {
@@ -871,7 +928,13 @@ mod tests {
             instructions: instrs,
         };
         let mut conn = MockConnection::new();
-        let err = execute(&program, &sample_context(), &mut conn).unwrap_err();
+        let err = execute(
+            &program,
+            &sample_context(),
+            &mut conn,
+            std::time::Instant::now(),
+        )
+        .unwrap_err();
         assert!(matches!(err, ExecuteError::VariableIndexOutOfBounds { .. }));
     }
 
@@ -892,7 +955,13 @@ mod tests {
             instructions: instrs,
         };
         let mut conn = MockConnection::new();
-        let err = execute(&program, &sample_context(), &mut conn).unwrap_err();
+        let err = execute(
+            &program,
+            &sample_context(),
+            &mut conn,
+            std::time::Instant::now(),
+        )
+        .unwrap_err();
         assert!(matches!(err, ExecuteError::VariableIndexOutOfBounds { .. }));
     }
 
@@ -920,7 +989,13 @@ mod tests {
             instructions: instrs,
         };
         let mut conn = MockConnection::new();
-        let err = execute(&program, &sample_context(), &mut conn).unwrap_err();
+        let err = execute(
+            &program,
+            &sample_context(),
+            &mut conn,
+            std::time::Instant::now(),
+        )
+        .unwrap_err();
         assert!(matches!(err, ExecuteError::VoidVariable { index: 21 }));
     }
 
@@ -940,7 +1015,13 @@ mod tests {
             instructions: instrs,
         };
         let mut conn = MockConnection::new();
-        let err = execute(&program, &sample_context(), &mut conn).unwrap_err();
+        let err = execute(
+            &program,
+            &sample_context(),
+            &mut conn,
+            std::time::Instant::now(),
+        )
+        .unwrap_err();
         assert!(matches!(err, ExecuteError::InvalidPrivateKey));
     }
 
