@@ -6,14 +6,12 @@
 //! dependency on AFL++ or `LibAFL`.
 //!
 //! # Modules
-//! - [`context`] - Snapshot state available to programs at execution time.
 //! - [`instruction`] - Single IR instruction (operation + input references).
 //! - [`operation`] - Operations that load, compute, build or act.
 //! - [`program`] - Ordered list of instructions.
 //! - [`variable`] - Typed runtime values and lightweight type tags.
 
 pub mod builder;
-pub mod context;
 pub mod generators;
 pub mod instruction;
 pub mod operation;
@@ -21,7 +19,6 @@ pub mod program;
 pub mod variable;
 
 pub use builder::ProgramBuilder;
-pub use context::ProgramContext;
 pub use generators::Generator;
 pub use instruction::Instruction;
 pub use operation::Operation;

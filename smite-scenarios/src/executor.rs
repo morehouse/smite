@@ -9,7 +9,21 @@ use smite::bolt::{
 };
 use smite::noise::{ConnectionError, NoiseConnection};
 use smite_ir::operation::AcceptChannelField;
-use smite_ir::{Operation, Program, ProgramContext, Variable, VariableType};
+use smite_ir::{Operation, Program, Variable, VariableType};
+
+/// State captured during snapshot setup, available to IR programs at execution
+/// time via `LoadContext*` operations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProgramContext {
+    /// Target node's identity public key.
+    pub target_pubkey: PublicKey,
+    /// Chain hash (genesis block hash).
+    pub chain_hash: [u8; 32],
+    /// Current block height at snapshot time.
+    pub block_height: u32,
+    /// Target's advertised feature bits from init message.
+    pub target_features: Vec<u8>,
+}
 
 /// Abstraction over a Noise-encrypted connection, allowing mock implementations
 /// in tests.
@@ -65,10 +79,6 @@ pub enum ExecuteError {
     #[error("invalid private key")]
     InvalidPrivateKey,
 
-    /// Public key bytes are not a valid secp256k1 point.
-    #[error("invalid public key")]
-    InvalidPublicKey,
-
     /// Connection or send/receive failure.
     #[error("connection: {0}")]
     Connection(#[from] smite::noise::ConnectionError),
@@ -117,11 +127,7 @@ pub fn execute(
             Operation::LoadFeatures(b) => Some(Variable::Features(b.clone())),
             Operation::LoadPrivateKey(k) => Some(Variable::PrivateKey(*k)),
             Operation::LoadChannelId(id) => Some(Variable::ChannelId(ChannelId::new(*id))),
-            Operation::LoadTargetPubkeyFromContext => {
-                let pk = PublicKey::from_slice(&context.target_pubkey)
-                    .map_err(|_| ExecuteError::InvalidPublicKey)?;
-                Some(Variable::Point(pk))
-            }
+            Operation::LoadTargetPubkeyFromContext => Some(Variable::Point(context.target_pubkey)),
             Operation::LoadChainHashFromContext => Some(Variable::ChainHash(context.chain_hash)),
 
             // -- Compute operations --
@@ -447,7 +453,7 @@ mod tests {
 
     fn sample_context() -> ProgramContext {
         ProgramContext {
-            target_pubkey: sample_pubkey(1).serialize(),
+            target_pubkey: sample_pubkey(1),
             chain_hash: [0xcc; 32],
             block_height: 800_000,
             target_features: vec![],
@@ -924,22 +930,6 @@ mod tests {
         let mut conn = MockConnection::new();
         let err = execute(&program, &sample_context(), &mut conn).unwrap_err();
         assert!(matches!(err, ExecuteError::InvalidPrivateKey));
-    }
-
-    #[test]
-    fn execute_invalid_target_public_key() {
-        let instrs = vec![Instruction {
-            operation: Operation::LoadTargetPubkeyFromContext,
-            inputs: vec![],
-        }];
-        let mut context = sample_context();
-        context.target_pubkey = [0u8; 33];
-        let program = Program {
-            instructions: instrs,
-        };
-        let mut conn = MockConnection::new();
-        let err = execute(&program, &context, &mut conn).unwrap_err();
-        assert!(matches!(err, ExecuteError::InvalidPublicKey));
     }
 
     // -- extract_field tests --

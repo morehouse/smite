@@ -3,7 +3,7 @@
 //! Each [`Operation`] falls into one of four categories:
 //!
 //! - `Load` - Produce a variable from an embedded literal or from the
-//!   [`ProgramContext`].
+//!   `ProgramContext`.
 //! - `Compute` - Derive a new variable from existing ones.
 //! - `Build` - Construct a BOLT message from input variables.
 //! - `Act` - Perform a side effect against the target.
