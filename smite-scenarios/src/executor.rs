@@ -127,6 +127,7 @@ pub fn execute(
             Operation::LoadFeatures(b) => Some(Variable::Features(b.clone())),
             Operation::LoadPrivateKey(k) => Some(Variable::PrivateKey(*k)),
             Operation::LoadChannelId(id) => Some(Variable::ChannelId(ChannelId::new(*id))),
+            Operation::LoadShutdownScript(variant) => Some(Variable::Bytes(variant.encode())),
             Operation::LoadTargetPubkeyFromContext => Some(Variable::Point(context.target_pubkey)),
             Operation::LoadChainHashFromContext => Some(Variable::ChainHash(context.chain_hash)),
 
@@ -327,7 +328,11 @@ fn build_open_channel(
         first_per_commitment_point: resolve_pubkey(variables, inputs[16])?,
         channel_flags: resolve_u8(variables, inputs[17])?,
         tlvs: OpenChannelTlvs {
-            upfront_shutdown_script: nonempty_or_none(resolve_bytes(variables, inputs[18])?),
+            // Always send the TLV: a zero-length value is the BOLT 2 opt-out
+            // signal when option_upfront_shutdown_script is negotiated.
+            // Omitting it is a protocol violation in that case. Including if
+            // not negotiated is not.
+            upfront_shutdown_script: Some(resolve_bytes(variables, inputs[18])?.to_vec()),
             channel_type: nonempty_or_none(resolve_features(variables, inputs[19])?),
         },
     })
@@ -623,7 +628,7 @@ mod tests {
         assert_eq!(oc.htlc_basepoint, pk);
         assert_eq!(oc.first_per_commitment_point, pk);
         assert_eq!(oc.channel_flags, 1);
-        assert!(oc.tlvs.upfront_shutdown_script.is_none());
+        assert_eq!(oc.tlvs.upfront_shutdown_script, Some(vec![]));
         assert!(oc.tlvs.channel_type.is_none());
     }
 

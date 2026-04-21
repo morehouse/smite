@@ -5,7 +5,7 @@ use rand::{Rng, RngExt};
 use smite::bolt::MAX_MESSAGE_SIZE;
 
 use super::Mutator;
-use crate::operation::AcceptChannelField;
+use crate::operation::{AcceptChannelField, ShutdownScriptVariant};
 use crate::{Operation, Program};
 
 /// Mutates the embedded parameter of a randomly chosen `is_param_mutable`
@@ -55,6 +55,10 @@ fn mutate_operation(op: &mut Operation, rng: &mut impl Rng) -> bool {
         }
         Operation::LoadPrivateKey(bytes) | Operation::LoadChannelId(bytes) => {
             mutate_fixed_bytes(bytes, rng);
+            true
+        }
+        Operation::LoadShutdownScript(variant) => {
+            mutate_shutdown_script(variant, rng);
             true
         }
         Operation::ExtractAcceptChannel(field) => mutate_extract_field(field, rng),
@@ -237,6 +241,40 @@ fn mutate_fixed_bytes(bytes: &mut [u8], rng: &mut impl Rng) {
 }
 
 // -- Extract field mutation --
+
+/// Mutates a `ShutdownScriptVariant`. Half the time, mutates the variant's
+/// embedded bytes in place; otherwise replaces with a random different variant.
+/// Falls through to a variant swap if the current variant has no embedded
+/// bytes.
+fn mutate_shutdown_script(variant: &mut ShutdownScriptVariant, rng: &mut impl Rng) {
+    if rng.random() && mutate_shutdown_script_bytes(variant, rng) {
+        return;
+    }
+    let current = std::mem::discriminant(variant);
+    for _ in 0..8 {
+        let candidate = ShutdownScriptVariant::random(rng);
+        if std::mem::discriminant(&candidate) != current {
+            *variant = candidate;
+            return;
+        }
+    }
+}
+
+/// Mutates the variant's embedded bytes via `mutate_fixed_bytes`. Returns
+/// `false` if the variant carries no bytes to mutate.
+fn mutate_shutdown_script_bytes(variant: &mut ShutdownScriptVariant, rng: &mut impl Rng) -> bool {
+    let bytes: &mut [u8] = match variant {
+        ShutdownScriptVariant::Empty => return false,
+        ShutdownScriptVariant::P2pkh(h)
+        | ShutdownScriptVariant::P2sh(h)
+        | ShutdownScriptVariant::P2wpkh(h) => h,
+        ShutdownScriptVariant::P2wsh(h) => h,
+        ShutdownScriptVariant::AnySegwit { program, .. } => program,
+        ShutdownScriptVariant::OpReturn(data) => data,
+    };
+    mutate_fixed_bytes(bytes, rng);
+    true
+}
 
 /// Returns `true` if the field was swapped, `false` if no same-type alternative
 /// field exists.

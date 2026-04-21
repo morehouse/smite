@@ -4,6 +4,7 @@ use rand::Rng;
 
 use super::Generator;
 use crate::builder::ProgramBuilder;
+use crate::operation::ShutdownScriptVariant;
 use crate::{Operation, VariableType};
 
 /// Generates an `open_channel` -> `accept_channel` flow.
@@ -37,7 +38,9 @@ impl Generator for OpenChannelGenerator {
         let to_self_delay = builder.pick_variable(VariableType::U16, rng);
         let max_accepted_htlcs = builder.pick_variable(VariableType::U16, rng);
         let channel_flags = builder.pick_variable(VariableType::U8, rng);
-        let upfront_shutdown_script = builder.pick_variable(VariableType::Bytes, rng);
+        let shutdown_script_variant = ShutdownScriptVariant::random(rng);
+        let upfront_shutdown_script =
+            builder.append(Operation::LoadShutdownScript(shutdown_script_variant), &[]);
         let channel_type = builder.pick_variable(VariableType::Features, rng);
 
         // Build and send open_channel.

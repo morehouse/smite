@@ -11,6 +11,7 @@
 use std::fmt;
 use std::fmt::Write;
 
+use rand::{Rng, RngExt};
 use serde::{Deserialize, Serialize};
 
 use super::VariableType;
@@ -38,6 +39,11 @@ pub enum Operation {
     LoadPrivateKey([u8; 32]),
     /// Load a 32-byte channel identifier.
     LoadChannelId([u8; 32]),
+    /// Load a BOLT 2 compliant `upfront_shutdown_script`.
+    ///
+    /// Produces a [`VariableType::Bytes`] value whose contents match one of the
+    /// standard script templates required by BOLT 2.
+    LoadShutdownScript(ShutdownScriptVariant),
     /// Load the target node's public key from the program context.
     LoadTargetPubkeyFromContext,
     /// Load the chain hash from the program context.
@@ -86,6 +92,184 @@ pub enum Operation {
     /// Receive and parse an `accept_channel` response.
     /// Produces an `AcceptChannel` compound variable.
     RecvAcceptChannel,
+}
+
+/// A BOLT 2 compliant `upfront_shutdown_script` template.
+///
+/// Each variant encodes to a script matching one of the formats required by
+/// BOLT 2 for the upfront shutdown TLV. `Empty` opts out of upfront shutdown
+/// entirely and is accepted regardless of feature negotiation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ShutdownScriptVariant {
+    /// Zero-length script. Opts out of upfront shutdown.
+    Empty,
+    /// `OP_DUP OP_HASH160 <20-byte hash> OP_EQUALVERIFY OP_CHECKSIG`.
+    P2pkh([u8; 20]),
+    /// `OP_HASH160 <20-byte hash> OP_EQUAL`.
+    P2sh([u8; 20]),
+    /// `OP_0 <20-byte hash>`.
+    P2wpkh([u8; 20]),
+    /// `OP_0 <32-byte hash>`.
+    P2wsh([u8; 32]),
+    /// `OP_<version> <program>` for witness program versions 1..=16 with a
+    /// 2..=40 byte program. Requires the counterparty to signal
+    /// `option_shutdown_anysegwit`.
+    AnySegwit {
+        /// Witness program version, in `1..=16`.
+        version: u8,
+        /// Witness program bytes, length in `2..=40`.
+        program: Vec<u8>,
+    },
+    /// `OP_RETURN <data>` where `data` is 6..=80 bytes. Requires the
+    /// counterparty to signal `option_simple_close`.
+    OpReturn(Vec<u8>),
+}
+
+impl ShutdownScriptVariant {
+    /// Number of variants, used for uniform random sampling. Keep in sync with
+    /// `random` and the enum definition.
+    pub const VARIANT_COUNT: usize = 7;
+
+    /// `AnySegwit` witness program version bounds (BOLT 2 / BIP 141).
+    pub const ANYSEGWIT_MIN_VERSION: u8 = 1;
+    pub const ANYSEGWIT_MAX_VERSION: u8 = 16;
+
+    /// `AnySegwit` witness program length bounds (BOLT 2 / BIP 141).
+    pub const ANYSEGWIT_MIN_PROGRAM_LEN: usize = 2;
+    pub const ANYSEGWIT_MAX_PROGRAM_LEN: usize = 40;
+
+    /// `OP_RETURN` payload length bounds (BOLT 2 `option_simple_close`).
+    pub const OP_RETURN_MIN_DATA_LEN: usize = 6;
+    pub const OP_RETURN_MAX_DATA_LEN: usize = 80;
+
+    /// Generates a random variant with random embedded data. Variants are
+    /// chosen uniformly. Embedded hashes / programs are filled with random
+    /// bytes; lengths are drawn uniformly from the BOLT-permitted range for
+    /// variable-length variants.
+    pub fn random(rng: &mut impl Rng) -> Self {
+        match rng.random_range(0..Self::VARIANT_COUNT) {
+            0 => Self::Empty,
+            1 => Self::P2pkh(rng.random()),
+            2 => Self::P2sh(rng.random()),
+            3 => Self::P2wpkh(rng.random()),
+            4 => Self::P2wsh(rng.random()),
+            5 => {
+                let version =
+                    rng.random_range(Self::ANYSEGWIT_MIN_VERSION..=Self::ANYSEGWIT_MAX_VERSION);
+                let len = rng.random_range(
+                    Self::ANYSEGWIT_MIN_PROGRAM_LEN..=Self::ANYSEGWIT_MAX_PROGRAM_LEN,
+                );
+                let mut program = vec![0u8; len];
+                rng.fill(&mut program[..]);
+                Self::AnySegwit { version, program }
+            }
+            6 => {
+                let len =
+                    rng.random_range(Self::OP_RETURN_MIN_DATA_LEN..=Self::OP_RETURN_MAX_DATA_LEN);
+                let mut data = vec![0u8; len];
+                rng.fill(&mut data[..]);
+                Self::OpReturn(data)
+            }
+            _ => unreachable!("ShutdownScriptVariant::random doesn't generate all variants"),
+        }
+    }
+
+    /// Encodes the variant as raw scriptpubkey bytes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `AnySegwit.version` is outside
+    /// `ANYSEGWIT_MIN_VERSION..=ANYSEGWIT_MAX_VERSION`, if the program is
+    /// outside `ANYSEGWIT_MIN_PROGRAM_LEN..=ANYSEGWIT_MAX_PROGRAM_LEN` bytes,
+    /// or if `OpReturn` data is outside
+    /// `OP_RETURN_MIN_DATA_LEN..=OP_RETURN_MAX_DATA_LEN` bytes.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        match self {
+            Self::Empty => Vec::new(),
+            Self::P2pkh(h) => {
+                let mut out = Vec::with_capacity(25);
+                out.extend_from_slice(&[0x76, 0xa9, 0x14]);
+                out.extend_from_slice(h);
+                out.extend_from_slice(&[0x88, 0xac]);
+                out
+            }
+            Self::P2sh(h) => {
+                let mut out = Vec::with_capacity(23);
+                out.extend_from_slice(&[0xa9, 0x14]);
+                out.extend_from_slice(h);
+                out.push(0x87);
+                out
+            }
+            Self::P2wpkh(h) => {
+                let mut out = Vec::with_capacity(22);
+                out.extend_from_slice(&[0x00, 0x14]);
+                out.extend_from_slice(h);
+                out
+            }
+            Self::P2wsh(h) => {
+                let mut out = Vec::with_capacity(34);
+                out.extend_from_slice(&[0x00, 0x20]);
+                out.extend_from_slice(h);
+                out
+            }
+            Self::AnySegwit { version, program } => {
+                assert!(
+                    (Self::ANYSEGWIT_MIN_VERSION..=Self::ANYSEGWIT_MAX_VERSION).contains(version),
+                    "AnySegwit version {version} out of range",
+                );
+                assert!(
+                    (Self::ANYSEGWIT_MIN_PROGRAM_LEN..=Self::ANYSEGWIT_MAX_PROGRAM_LEN)
+                        .contains(&program.len()),
+                    "AnySegwit program length {} out of range",
+                    program.len(),
+                );
+                // OP_1..OP_16 = 0x51..=0x60 (i.e., 0x50 + version).
+                let opcode = 0x50 + version;
+                let mut out = Vec::with_capacity(2 + program.len());
+                #[allow(clippy::cast_possible_truncation)] // program.len() is at most 40.
+                out.extend_from_slice(&[opcode, program.len() as u8]);
+                out.extend_from_slice(program);
+                out
+            }
+            Self::OpReturn(data) => {
+                assert!(
+                    (Self::OP_RETURN_MIN_DATA_LEN..=Self::OP_RETURN_MAX_DATA_LEN)
+                        .contains(&data.len()),
+                    "OpReturn data length {} out of range",
+                    data.len(),
+                );
+                let mut out = Vec::with_capacity(3 + data.len());
+                out.push(0x6a); // OP_RETURN
+                if data.len() <= 75 {
+                    #[allow(clippy::cast_possible_truncation)] // data.len() <= 75 here.
+                    out.push(data.len() as u8);
+                } else {
+                    // OP_PUSHDATA1 followed by length (76..=80).
+                    #[allow(clippy::cast_possible_truncation)] // data.len() <= 80 here.
+                    out.extend_from_slice(&[0x4c, data.len() as u8]);
+                }
+                out.extend_from_slice(data);
+                out
+            }
+        }
+    }
+}
+
+impl fmt::Display for ShutdownScriptVariant {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(f, "Empty"),
+            Self::P2pkh(h) => write!(f, "P2pkh({})", format_hex(h)),
+            Self::P2sh(h) => write!(f, "P2sh({})", format_hex(h)),
+            Self::P2wpkh(h) => write!(f, "P2wpkh({})", format_hex(h)),
+            Self::P2wsh(h) => write!(f, "P2wsh({})", format_hex(h)),
+            Self::AnySegwit { version, program } => {
+                write!(f, "AnySegwit(v{version}, {})", format_hex(program))
+            }
+            Self::OpReturn(data) => write!(f, "OpReturn({})", format_hex(data)),
+        }
+    }
 }
 
 /// Fields that can be extracted from an `AcceptChannel` compound variable.
@@ -188,6 +372,7 @@ impl fmt::Display for Operation {
             Self::LoadFeatures(b) => write!(f, "LoadFeatures({})", format_hex(b)),
             Self::LoadPrivateKey(b) => write!(f, "LoadPrivateKey({})", format_hex(b)),
             Self::LoadChannelId(b) => write!(f, "LoadChannelId({})", format_hex(b)),
+            Self::LoadShutdownScript(v) => write!(f, "LoadShutdownScript({v})"),
             Self::LoadTargetPubkeyFromContext => write!(f, "LoadTargetPubkeyFromContext()"),
             Self::LoadChainHashFromContext => write!(f, "LoadChainHashFromContext()"),
             Self::RecvAcceptChannel => write!(f, "RecvAcceptChannel()"),
@@ -211,7 +396,7 @@ impl Operation {
             Self::LoadBlockHeight(_) => Some(VariableType::BlockHeight),
             Self::LoadU16(_) => Some(VariableType::U16),
             Self::LoadU8(_) => Some(VariableType::U8),
-            Self::LoadBytes(_) => Some(VariableType::Bytes),
+            Self::LoadBytes(_) | Self::LoadShutdownScript(_) => Some(VariableType::Bytes),
             Self::LoadFeatures(_) => Some(VariableType::Features),
             Self::LoadPrivateKey(_) => Some(VariableType::PrivateKey),
             Self::LoadChannelId(_) => Some(VariableType::ChannelId),
@@ -237,6 +422,7 @@ impl Operation {
             | Self::LoadFeatures(_)
             | Self::LoadPrivateKey(_)
             | Self::LoadChannelId(_)
+            | Self::LoadShutdownScript(_)
             | Self::LoadTargetPubkeyFromContext
             | Self::LoadChainHashFromContext
             | Self::RecvAcceptChannel => vec![],
@@ -301,6 +487,7 @@ impl Operation {
                 | Self::LoadFeatures(_)
                 | Self::LoadPrivateKey(_)
                 | Self::LoadChannelId(_)
+                | Self::LoadShutdownScript(_)
                 | Self::ExtractAcceptChannel(_)
         )
     }

@@ -7,7 +7,7 @@ use smite::bolt::MAX_MESSAGE_SIZE;
 use super::*;
 use generators::OpenChannelGenerator;
 use mutators::{InputSwapMutator, OperationParamMutator};
-use operation::AcceptChannelField;
+use operation::{AcceptChannelField, ShutdownScriptVariant};
 use program::ValidateError;
 
 /// Helper to build a private key with a single distinguishing byte.
@@ -120,7 +120,7 @@ fn display_open_channel_program() {
             inputs: vec![],
         },
         Instruction {
-            operation: Operation::LoadBytes(vec![]),
+            operation: Operation::LoadShutdownScript(ShutdownScriptVariant::Empty),
             inputs: vec![],
         },
         Instruction {
@@ -186,7 +186,7 @@ fn display_open_channel_program() {
         "v21 = LoadU16(144)".into(),
         "v22 = LoadU16(483)".into(),
         "v23 = LoadU8(1)".into(),
-        "v24 = LoadBytes()".into(),
+        "v24 = LoadShutdownScript(Empty)".into(),
         "v25 = LoadFeatures()".into(),
         "v26 = BuildOpenChannel(v13, v12, v14, v15, v16, v17, v18, v19, v20, v21, v22, v1, v3, v5, v7, v9, v11, v23, v24, v25)".into(),
         "SendMessage(v26)".into(),
@@ -267,6 +267,164 @@ fn accept_channel_field_all_is_complete() {
         AcceptChannelField::ALL.len(),
         variant_count(AcceptChannelField::ALL[0]),
     );
+}
+
+// -- ShutdownScriptVariant tests --
+
+// Ensure ShutdownScriptVariant and ShutdownScriptVariant::VARIANT_COUNT stay in
+// sync. The exhaustive match below fails to compile if a variant is added
+// without updating it, and the assertion fails if the match is updated without
+// bumping VARIANT_COUNT.
+#[test]
+fn shutdown_script_variant_count_is_complete() {
+    let variant_count = |v: &ShutdownScriptVariant| -> usize {
+        match v {
+            ShutdownScriptVariant::Empty
+            | ShutdownScriptVariant::P2pkh(_)
+            | ShutdownScriptVariant::P2sh(_)
+            | ShutdownScriptVariant::P2wpkh(_)
+            | ShutdownScriptVariant::P2wsh(_)
+            | ShutdownScriptVariant::AnySegwit { .. }
+            | ShutdownScriptVariant::OpReturn(_) => 7,
+        }
+    };
+    assert_eq!(
+        ShutdownScriptVariant::VARIANT_COUNT,
+        variant_count(&ShutdownScriptVariant::Empty),
+    );
+}
+
+#[test]
+fn shutdown_script_empty_encodes_to_zero_bytes() {
+    assert_eq!(ShutdownScriptVariant::Empty.encode(), Vec::<u8>::new());
+}
+
+#[test]
+fn shutdown_script_p2pkh_encoding() {
+    let h = [0x42u8; 20];
+    let bytes = ShutdownScriptVariant::P2pkh(h).encode();
+    assert_eq!(bytes.len(), 25);
+    assert_eq!(&bytes[..3], &[0x76, 0xa9, 0x14]);
+    assert_eq!(&bytes[3..23], &h);
+    assert_eq!(&bytes[23..], &[0x88, 0xac]);
+}
+
+#[test]
+fn shutdown_script_p2sh_encoding() {
+    let h = [0x33u8; 20];
+    let bytes = ShutdownScriptVariant::P2sh(h).encode();
+    assert_eq!(bytes.len(), 23);
+    assert_eq!(&bytes[..2], &[0xa9, 0x14]);
+    assert_eq!(&bytes[2..22], &h);
+    assert_eq!(bytes[22], 0x87);
+}
+
+#[test]
+fn shutdown_script_p2wpkh_encoding() {
+    let h = [0x55u8; 20];
+    let bytes = ShutdownScriptVariant::P2wpkh(h).encode();
+    assert_eq!(bytes.len(), 22);
+    assert_eq!(&bytes[..2], &[0x00, 0x14]);
+    assert_eq!(&bytes[2..], &h);
+}
+
+#[test]
+fn shutdown_script_p2wsh_encoding() {
+    let h = [0x77u8; 32];
+    let bytes = ShutdownScriptVariant::P2wsh(h).encode();
+    assert_eq!(bytes.len(), 34);
+    assert_eq!(&bytes[..2], &[0x00, 0x20]);
+    assert_eq!(&bytes[2..], &h);
+}
+
+#[test]
+fn shutdown_script_anysegwit_p2tr() {
+    let prog = [0x99u8; 32];
+    let v = ShutdownScriptVariant::AnySegwit {
+        version: 1,
+        program: prog.to_vec(),
+    };
+    let bytes = v.encode();
+    assert_eq!(bytes.len(), 34);
+    assert_eq!(bytes[0], 0x51); // OP_1
+    assert_eq!(bytes[1], 32);
+    assert_eq!(&bytes[2..], &prog);
+}
+
+#[test]
+fn shutdown_script_anysegwit_v16_min_program() {
+    let v = ShutdownScriptVariant::AnySegwit {
+        version: ShutdownScriptVariant::ANYSEGWIT_MAX_VERSION,
+        program: vec![0xab, 0xcd],
+    };
+    let bytes = v.encode();
+    assert_eq!(bytes, vec![0x60, 0x02, 0xab, 0xcd]);
+}
+
+#[test]
+fn shutdown_script_op_return_short_push() {
+    // 6..=75 bytes: raw length opcode.
+    let data = vec![0x11u8; 75];
+    let bytes = ShutdownScriptVariant::OpReturn(data.clone()).encode();
+    assert_eq!(bytes.len(), 1 + 1 + 75);
+    assert_eq!(bytes[0], 0x6a); // OP_RETURN
+    assert_eq!(bytes[1], 75);
+    assert_eq!(&bytes[2..], &data[..]);
+}
+
+#[test]
+fn shutdown_script_op_return_pushdata1() {
+    // 76..=80 bytes: OP_PUSHDATA1 + length byte.
+    let data = vec![0x22u8; ShutdownScriptVariant::OP_RETURN_MAX_DATA_LEN];
+    let bytes = ShutdownScriptVariant::OpReturn(data.clone()).encode();
+    assert_eq!(
+        bytes.len(),
+        1 + 2 + ShutdownScriptVariant::OP_RETURN_MAX_DATA_LEN,
+    );
+    assert_eq!(bytes[0], 0x6a);
+    assert_eq!(bytes[1], 0x4c); // OP_PUSHDATA1
+    assert_eq!(
+        usize::from(bytes[2]),
+        ShutdownScriptVariant::OP_RETURN_MAX_DATA_LEN,
+    );
+    assert_eq!(&bytes[3..], &data[..]);
+}
+
+#[test]
+fn shutdown_script_random_respects_bounds() {
+    let mut rng = SmallRng::seed_from_u64(1);
+    for _ in 0..200 {
+        let v = ShutdownScriptVariant::random(&mut rng);
+        match &v {
+            ShutdownScriptVariant::AnySegwit { version, program } => {
+                assert!(
+                    (ShutdownScriptVariant::ANYSEGWIT_MIN_VERSION
+                        ..=ShutdownScriptVariant::ANYSEGWIT_MAX_VERSION)
+                        .contains(version),
+                    "version out of range: {version}",
+                );
+                assert!(
+                    (ShutdownScriptVariant::ANYSEGWIT_MIN_PROGRAM_LEN
+                        ..=ShutdownScriptVariant::ANYSEGWIT_MAX_PROGRAM_LEN)
+                        .contains(&program.len()),
+                    "program length out of range: {}",
+                    program.len(),
+                );
+            }
+            ShutdownScriptVariant::OpReturn(data) => {
+                assert!(
+                    (ShutdownScriptVariant::OP_RETURN_MIN_DATA_LEN
+                        ..=ShutdownScriptVariant::OP_RETURN_MAX_DATA_LEN)
+                        .contains(&data.len()),
+                    "OpReturn length out of range: {}",
+                    data.len(),
+                );
+            }
+            _ => {}
+        }
+        // encode() must not panic for any randomly produced variant.
+        let _ = v.encode();
+    }
 }
 
 fn generate_program(seed: u64) -> Program {
