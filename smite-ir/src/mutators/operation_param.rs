@@ -323,3 +323,115 @@ fn interesting_u32(rng: &mut impl Rng) -> u32 {
 fn interesting_u64(rng: &mut impl Rng) -> u64 {
     INTERESTING_U64[rng.random_range(0..INTERESTING_U64.len())]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::{SeedableRng, rngs::SmallRng};
+
+    #[test]
+    fn test_shuffle_subrange_preserves_elements() {
+        let mut rng = SmallRng::seed_from_u64(0);
+        let sorted = vec![1, 2, 3, 4, 5, 6, 7, 8];
+        let mut shuffled = sorted.clone();
+
+        shuffle_subrange(&mut shuffled, &mut rng);
+
+        assert_ne!(shuffled, sorted, "Shuffle must shuffle elements");
+        shuffled.sort_unstable();
+        assert_eq!(
+            shuffled, sorted,
+            "Shuffle must preserve all original elements"
+        );
+    }
+
+    #[test]
+    fn test_shuffle_subrange_empty_and_single() {
+        let mut rng = SmallRng::seed_from_u64(0);
+
+        let mut empty: Vec<u8> = vec![];
+        shuffle_subrange(&mut empty, &mut rng);
+        assert!(empty.is_empty());
+
+        let mut single = vec![0xFF];
+        shuffle_subrange(&mut single, &mut rng);
+        assert_eq!(single, vec![0xFF]);
+    }
+
+    #[test]
+    fn test_mutate_bytes_respects_max_size() {
+        let mut rng = SmallRng::seed_from_u64(0);
+        let mut data = vec![0xAA; MAX_MESSAGE_SIZE];
+
+        for _ in 0..50 {
+            mutate_bytes(&mut data, &mut rng);
+
+            // The mutator must NEVER exceed the max size, even if it picks
+            // the "insert" or "copy part" branches.
+            assert!(
+                data.len() <= MAX_MESSAGE_SIZE,
+                "mutate_bytes exceeded MAX_MESSAGE_SIZE. Current len: {}",
+                data.len()
+            );
+        }
+    }
+
+    #[test]
+    fn test_mutate_bytes_handles_empty_input() {
+        let mut rng = SmallRng::seed_from_u64(0);
+        let mut data: Vec<u8> = vec![];
+
+        // Should either safely insert data or do nothing.
+        mutate_bytes(&mut data, &mut rng);
+    }
+
+    #[test]
+    fn test_mutate_fixed_bytes_no_out_of_bounds_panics() {
+        let mut rng = SmallRng::seed_from_u64(0);
+        let mut bytes = [0x00; 32];
+
+        for _ in 0..500 {
+            mutate_fixed_bytes(&mut bytes, &mut rng);
+        }
+        // Ensure the array actually mutated from all zeros
+        assert_ne!(bytes, [0x00; 32], "Array should have been mutated");
+    }
+
+    #[test]
+    fn test_mutate_extract_field_preserves_type() {
+        let mut rng = SmallRng::seed_from_u64(0);
+        let mut field = AcceptChannelField::DustLimitSatoshis;
+        let original_type = field.output_type();
+
+        if mutate_extract_field(&mut field, &mut rng) {
+            assert_ne!(
+                field,
+                AcceptChannelField::DustLimitSatoshis,
+                "Field should be different"
+            );
+            assert_eq!(
+                field.output_type(),
+                original_type,
+                "Output type must be preserved"
+            );
+        }
+    }
+
+    #[test]
+    fn test_mutate_extract_field_handles_unique_types() {
+        let mut rng = SmallRng::seed_from_u64(0);
+
+        // Choose a field that has NO other fields with the same output type.
+        // MinimumDepth is the only field with a `u32` output type.
+        let mut test_field = AcceptChannelField::MinimumDepth;
+        let original_field = test_field;
+
+        let changed = mutate_extract_field(&mut test_field, &mut rng);
+
+        assert!(
+            !changed,
+            "Should return false when no alternative field of same type exists"
+        );
+        assert_eq!(test_field, original_field, "Field must remain unchanged");
+    }
+}
