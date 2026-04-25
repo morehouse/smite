@@ -162,6 +162,8 @@ pub fn execute(
                 let ac = recv_accept_channel(conn)?;
                 Some(Variable::AcceptChannel(ac))
             }
+
+            Operation::Nop => None,
         };
 
         variables.push(result);
