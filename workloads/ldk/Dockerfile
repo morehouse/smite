@@ -51,7 +51,6 @@ WORKDIR /ldk-wrapper
 COPY workloads/ldk/Cargo.toml workloads/ldk/Cargo.lock ./
 COPY workloads/ldk/src/ src/
 ENV AFL_NO_CFG_FUZZING=1
-RUN cargo afl build --release
 
 # Copy smite workspace files and build the Rust ldk-scenario binary
 WORKDIR /smite
