@@ -66,7 +66,8 @@ fn mutate_operation(op: &mut Operation, rng: &mut impl Rng) -> bool {
         | Operation::LoadChainHashFromContext
         | Operation::BuildOpenChannel
         | Operation::SendMessage
-        | Operation::RecvAcceptChannel => {
+        | Operation::RecvAcceptChannel
+        | Operation::Nop => {
             unreachable!("is_param_mutable returned true for {op:?}")
         }
     }

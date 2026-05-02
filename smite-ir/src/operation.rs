@@ -42,6 +42,8 @@ pub enum Operation {
     LoadTargetPubkeyFromContext,
     /// Load the chain hash from the program context.
     LoadChainHashFromContext,
+    /// NOP operation for `InstructionDeleteMutator`.
+    Nop,
 
     // -- Compute: derive a variable from inputs --
     /// Derive a compressed public key from a private key. The executor
@@ -191,6 +193,7 @@ impl fmt::Display for Operation {
             Self::LoadTargetPubkeyFromContext => write!(f, "LoadTargetPubkeyFromContext()"),
             Self::LoadChainHashFromContext => write!(f, "LoadChainHashFromContext()"),
             Self::RecvAcceptChannel => write!(f, "RecvAcceptChannel()"),
+            Self::Nop => write!(f, "Nop()"),
             // Operations with inputs: parens added by Program::Display.
             Self::DerivePoint => write!(f, "DerivePoint"),
             Self::ExtractAcceptChannel(field) => write!(f, "Extract{field}"),
@@ -219,7 +222,7 @@ impl Operation {
             Self::LoadChainHashFromContext => Some(VariableType::ChainHash),
             Self::ExtractAcceptChannel(field) => Some(field.output_type()),
             Self::BuildOpenChannel => Some(VariableType::Message),
-            Self::SendMessage => None,
+            Self::SendMessage | Self::Nop => None,
             Self::RecvAcceptChannel => Some(VariableType::AcceptChannel),
         }
     }
@@ -239,7 +242,8 @@ impl Operation {
             | Self::LoadChannelId(_)
             | Self::LoadTargetPubkeyFromContext
             | Self::LoadChainHashFromContext
-            | Self::RecvAcceptChannel => vec![],
+            | Self::RecvAcceptChannel
+            | Self::Nop => vec![],
 
             Self::DerivePoint => vec![VariableType::PrivateKey],
             Self::ExtractAcceptChannel(_) => vec![VariableType::AcceptChannel],
