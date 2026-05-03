@@ -7,6 +7,7 @@ use smite::bolt::MAX_MESSAGE_SIZE;
 
 use super::*;
 use generators::OpenChannelGenerator;
+use minimizers::{CommonSubexpressionEliminator, DeadCodeEliminator, Minimizer};
 use mutators::{InputSwapMutator, OperationParamMutator};
 use operation::{AcceptChannelField, ChannelTypeVariant, ShutdownScriptVariant};
 use program::ValidateError;
@@ -1163,4 +1164,340 @@ fn input_swap_preserves_types() {
             }
         }
     }
+}
+
+// -- DeadCodeEliminator tests --
+
+#[test]
+fn dead_code_removes_dead_instructions() {
+    // All three LoadAmount instructions are unreferenced; all three are dropped.
+    let mut program = Program {
+        instructions: vec![
+            Instruction {
+                operation: Operation::LoadAmount(1),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadAmount(2),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadAmount(3),
+                inputs: vec![],
+            },
+        ],
+    };
+    assert!(DeadCodeEliminator.minimize(&mut program));
+    assert!(
+        program.instructions.is_empty(),
+        "all dead instructions should be removed"
+    );
+    program.validate().expect("trimmed program should validate");
+}
+
+#[test]
+fn dead_code_returns_false_on_empty_program() {
+    let mut program = Program {
+        instructions: vec![],
+    };
+    assert!(!DeadCodeEliminator.minimize(&mut program));
+    assert!(program.instructions.is_empty());
+}
+
+/// Build a program with a dead load appended after the generated program.
+/// This gives the `DeadCodeEliminator` at least one candidate to try.
+fn program_with_dead_load() -> Program {
+    let mut p = generate_program(0);
+    p.instructions.push(Instruction {
+        operation: Operation::LoadAmount(42),
+        inputs: vec![],
+    });
+    p
+}
+
+#[test]
+fn dead_code_keeps_send_message() {
+    let mut program = program_with_dead_load();
+    DeadCodeEliminator.minimize(&mut program);
+    let has_send = program
+        .instructions
+        .iter()
+        .any(|i| matches!(i.operation, Operation::SendMessage));
+    assert!(has_send, "DeadCodeEliminator must not remove SendMessage");
+}
+
+#[test]
+fn dead_code_keeps_recv_accept_channel() {
+    let mut program = program_with_dead_load();
+    DeadCodeEliminator.minimize(&mut program);
+    let has_recv = program
+        .instructions
+        .iter()
+        .any(|i| matches!(i.operation, Operation::RecvAcceptChannel));
+    assert!(
+        has_recv,
+        "DeadCodeEliminator must not remove RecvAcceptChannel"
+    );
+}
+
+#[test]
+fn dead_code_result_validates() {
+    let mut program = program_with_dead_load();
+    DeadCodeEliminator.minimize(&mut program);
+    program.validate().expect("final program should validate");
+}
+
+#[test]
+fn dead_code_reindexes_remaining_inputs() {
+    // Indexes 0 and 1 are dead loads; 2 is a referenced load; 3 references 2.
+    // After dropping 0 and 1, the surviving load shifts to index 0 and the
+    // DerivePoint must be rewritten to reference it.
+    let mut program = Program {
+        instructions: vec![
+            Instruction {
+                operation: Operation::LoadAmount(1),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadAmount(2),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadPrivateKey(key(1)),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::SendMessage,
+                inputs: vec![2],
+            },
+        ],
+    };
+    assert!(DeadCodeEliminator.minimize(&mut program));
+    assert_eq!(program.instructions.len(), 2);
+    assert!(matches!(
+        program.instructions[0].operation,
+        Operation::LoadPrivateKey(_)
+    ));
+    assert!(matches!(
+        program.instructions[1].operation,
+        Operation::SendMessage
+    ));
+    assert_eq!(program.instructions[1].inputs, vec![0]);
+}
+
+#[test]
+fn dead_code_chains_collapse() {
+    // Two chains share a root LoadPrivateKey. One DerivePoint feeds an
+    // impure SendMessage (alive); the other is unreferenced (dead). DCE
+    // drops the dead DerivePoint, but the shared root must survive because
+    // the alive chain still references it.
+    //
+    // Note: this program is type-invalid (SendMessage expects Message, not
+    // Point), but the minimizer doesn't typecheck so it's fine for the test.
+    let mut program = Program {
+        instructions: vec![
+            Instruction {
+                operation: Operation::LoadPrivateKey(key(1)),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::DerivePoint, // alive
+                inputs: vec![0],
+            },
+            Instruction {
+                operation: Operation::DerivePoint, // dead
+                inputs: vec![0],
+            },
+            Instruction {
+                operation: Operation::SendMessage,
+                inputs: vec![1],
+            },
+        ],
+    };
+    let expected = Program {
+        instructions: vec![
+            Instruction {
+                operation: Operation::LoadPrivateKey(key(1)),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::DerivePoint,
+                inputs: vec![0],
+            },
+            Instruction {
+                operation: Operation::SendMessage,
+                inputs: vec![1],
+            },
+        ],
+    };
+    assert!(DeadCodeEliminator.minimize(&mut program));
+    assert_eq!(program, expected);
+}
+
+#[test]
+fn dead_code_idempotent() {
+    let mut once = program_with_dead_load();
+    DeadCodeEliminator.minimize(&mut once);
+    let mut twice = once.clone();
+    assert!(
+        !DeadCodeEliminator.minimize(&mut twice),
+        "second pass must report unchanged"
+    );
+    assert_eq!(once, twice, "elimination is idempotent");
+}
+
+// -- CommonSubexpressionEliminator tests --
+
+#[test]
+fn cse_returns_false_on_empty_program() {
+    let mut program = Program {
+        instructions: vec![],
+    };
+    assert!(!CommonSubexpressionEliminator.minimize(&mut program));
+    assert!(program.instructions.is_empty());
+}
+
+#[test]
+fn cse_rewires_references() {
+    // A downstream DerivePoint consumes the duplicate load. After CSE, its
+    // input must be rewired from the dropped duplicate (index 1) to the
+    // surviving canonical load (index 0).
+    let mut program = Program {
+        instructions: vec![
+            Instruction {
+                operation: Operation::LoadPrivateKey(key(7)),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadPrivateKey(key(7)), // duplicate of index 0
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::DerivePoint,
+                inputs: vec![1], // must be rewired to 0
+            },
+        ],
+    };
+    let expected = Program {
+        instructions: vec![
+            Instruction {
+                operation: Operation::LoadPrivateKey(key(7)),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::DerivePoint,
+                inputs: vec![0],
+            },
+        ],
+    };
+    assert!(CommonSubexpressionEliminator.minimize(&mut program));
+    assert_eq!(program, expected);
+    program.validate().expect("program should still validate");
+}
+
+#[test]
+fn cse_result_validates() {
+    let mut program = generate_program(0);
+    CommonSubexpressionEliminator.minimize(&mut program);
+    program.validate().expect("merged program should validate");
+}
+
+#[test]
+fn cse_idempotent() {
+    let mut once = generate_program(0);
+    CommonSubexpressionEliminator.minimize(&mut once);
+    let mut twice = once.clone();
+    assert!(
+        !CommonSubexpressionEliminator.minimize(&mut twice),
+        "second pass must report unchanged"
+    );
+    assert_eq!(once, twice, "merging is idempotent");
+}
+
+#[test]
+fn cse_merges_compute_ops_through_canonicalized_inputs() {
+    // Two LoadPrivateKey duplicates feed two DerivePoint instructions.
+    // CSE first merges the loads, which canonicalizes the DerivePoint
+    // inputs to the same index, which in turn lets CSE merge the
+    // DerivePoints themselves.
+    let mut program = Program {
+        instructions: vec![
+            Instruction {
+                operation: Operation::LoadPrivateKey(key(7)),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::DerivePoint,
+                inputs: vec![0],
+            },
+            Instruction {
+                operation: Operation::LoadPrivateKey(key(7)), // duplicate of 0
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::DerivePoint,
+                inputs: vec![2], // canonicalizes to 0 -> matches index 1
+            },
+        ],
+    };
+    program.validate().expect("input program should validate");
+    assert!(CommonSubexpressionEliminator.minimize(&mut program));
+    assert_eq!(program.instructions.len(), 2);
+    assert!(matches!(
+        program.instructions[0].operation,
+        Operation::LoadPrivateKey(_)
+    ));
+    assert!(matches!(
+        program.instructions[1].operation,
+        Operation::DerivePoint
+    ));
+    assert_eq!(program.instructions[1].inputs, vec![0]);
+}
+
+#[test]
+fn cse_does_not_merge_send_message() {
+    // SendMessage is not pure (network side-effect): two with the same
+    // input must both survive. The duplicate LoadBytes upstream should
+    // be merged, and both SendMessages remapped to the surviving load.
+    //
+    // Note: this program is type-invalid (SendMessage expects Message, not
+    // Bytes), but the minimizer doesn't typecheck so it's fine for the test.
+    let mut program = Program {
+        instructions: vec![
+            Instruction {
+                operation: Operation::LoadBytes(vec![0xab]),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::SendMessage,
+                inputs: vec![0],
+            },
+            Instruction {
+                operation: Operation::LoadBytes(vec![0xab]), // duplicate of 0
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::SendMessage,
+                inputs: vec![2], // canonicalizes to 0
+            },
+        ],
+    };
+    let expected = Program {
+        instructions: vec![
+            Instruction {
+                operation: Operation::LoadBytes(vec![0xab]),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::SendMessage,
+                inputs: vec![0],
+            },
+            Instruction {
+                operation: Operation::SendMessage,
+                inputs: vec![0],
+            },
+        ],
+    };
+    assert!(CommonSubexpressionEliminator.minimize(&mut program));
+    assert_eq!(program, expected, "SendMessage must not be deduplicated");
 }
