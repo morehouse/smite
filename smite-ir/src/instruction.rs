@@ -12,7 +12,7 @@ use super::Operation;
 ///
 /// In SSA form, each instruction produces at most one variable (at the index
 /// equal to the instruction's position in the program).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Instruction {
     /// The operation to perform.
     pub operation: Operation,
