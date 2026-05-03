@@ -17,7 +17,7 @@ use super::VariableType;
 
 /// An IR operation.  Each instruction in a program contains one operation plus
 /// input variable indices.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Operation {
     // -- Load: produce a variable from an embedded literal or the context --
     /// Load a satoshi or millisatoshi amount.
@@ -89,7 +89,7 @@ pub enum Operation {
 }
 
 /// Fields that can be extracted from an `AcceptChannel` compound variable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AcceptChannelField {
     TemporaryChannelId,
     DustLimitSatoshis,
@@ -283,6 +283,44 @@ impl Operation {
                 .map(|&f| (Self::ExtractAcceptChannel(f), f.output_type()))
                 .collect(),
             _ => vec![],
+        }
+    }
+
+    /// Returns `true` if this operation can be safely removed or
+    /// deduplicated by a minimizer.
+    ///
+    /// `false` for `SendMessage` and `RecvAcceptChannel`, the only
+    /// operations with I/O side effects:
+    /// - `SendMessage` writes to the network. Each invocation is a
+    ///   distinct effect, so it can never be dropped (DCE) and two
+    ///   `SendMessage`s with the same input are not equivalent (CSE).
+    /// - `RecvAcceptChannel` consumes a message off the wire. Dropping
+    ///   it desynchronises the protocol; merging two of them would
+    ///   collapse two distinct reads into one.
+    ///
+    /// Used by both
+    /// [`DeadCodeEliminator`](crate::minimizers::DeadCodeEliminator)
+    /// (must be `true` to drop an unreferenced instruction) and
+    /// [`CommonSubexpressionEliminator`](crate::minimizers::CommonSubexpressionEliminator)
+    /// (must be `true` to merge equivalent instructions).
+    #[must_use]
+    pub fn is_removable(&self) -> bool {
+        match self {
+            Self::LoadAmount(_)
+            | Self::LoadFeeratePerKw(_)
+            | Self::LoadBlockHeight(_)
+            | Self::LoadU16(_)
+            | Self::LoadU8(_)
+            | Self::LoadBytes(_)
+            | Self::LoadFeatures(_)
+            | Self::LoadPrivateKey(_)
+            | Self::LoadChannelId(_)
+            | Self::LoadTargetPubkeyFromContext
+            | Self::LoadChainHashFromContext
+            | Self::DerivePoint
+            | Self::ExtractAcceptChannel(_)
+            | Self::BuildOpenChannel => true,
+            Self::SendMessage | Self::RecvAcceptChannel => false,
         }
     }
 
