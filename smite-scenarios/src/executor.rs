@@ -333,17 +333,23 @@ fn build_open_channel(
     })
 }
 
-/// Receives the next non-ping message, automatically responding to pings.
+/// Receives the next message of interest, auto-responding to pings and silently
+/// skipping unknown odd-type messages.
+#[allow(clippy::similar_names)] // ping and pong are canonical names
 fn recv_non_ping(conn: &mut impl Connection) -> Result<Message, ExecuteError> {
     loop {
         let msg_bytes = conn.recv_message()?;
         let msg = Message::decode(&msg_bytes)?;
-        if let Message::Ping(ping) = msg {
-            let pong = Message::Pong(Pong::respond_to(&ping)).encode();
-            conn.send_message(&pong)?;
-            continue;
+        match msg {
+            Message::Ping(ping) => {
+                let pong = Message::Pong(Pong::respond_to(&ping)).encode();
+                conn.send_message(&pong)?;
+            }
+            Message::Unknown { msg_type, .. } => {
+                log::debug!("skipping unknown message type {msg_type}");
+            }
+            other => return Ok(other),
         }
-        return Ok(msg);
     }
 }
 
