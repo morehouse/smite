@@ -37,7 +37,9 @@ pub use accept_channel::{AcceptChannel, AcceptChannelTlvs};
 pub use accept_channel2::{AcceptChannel2, AcceptChannel2Tlvs};
 pub use attribution_data::{AttributionData, TruncatedHmac};
 pub use channel_ready::{ChannelReady, ChannelReadyTlvs};
-pub use commitment::{CommitmentParams, can_opener_afford_feerate};
+pub use commitment::{
+    ChannelConfig, ChannelPartyConfig, CommitmentPartyState, CommitmentState, HolderIdentity,
+};
 pub use error::Error;
 pub use funding_created::FundingCreated;
 pub use funding_signed::FundingSigned;

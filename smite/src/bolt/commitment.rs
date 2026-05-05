@@ -25,8 +25,8 @@ const COMMITMENT_WEIGHT_ANCHOR: u64 = 1124;
 const OPTION_ANCHORS_EVEN_BIT: usize = 22;
 const OPTION_ANCHORS_ODD_BIT: usize = 23;
 
-/// Public keys and channel parameters for one side of a channel (opener or acceptor).
-pub struct ChannelPartyParams {
+/// Static public keys and channel parameters for one side of a channel (opener or acceptor).
+pub struct ChannelPartyConfig {
     /// Funding pubkey used in the funding output.
     pub funding_pubkey: PublicKey,
     /// Payment basepoint used to derive the `to_remote` output key.
@@ -35,55 +35,86 @@ pub struct ChannelPartyParams {
     pub revocation_basepoint: PublicKey,
     /// Delayed payment basepoint used to derive the time-locked `to_local` output key.
     pub delayed_payment_basepoint: PublicKey,
-    /// Per-commitment point used to derive all commitment-specific keys.
-    pub per_commitment_point: PublicKey,
     /// Minimum output value below which outputs are trimmed as dust.
     pub dust_limit_satoshis: u64,
     /// CSV delay this party imposes on the other's `to_local` output.
     pub to_self_delay: u16,
 }
 
-/// Parameters for building a commitment transaction.
-pub struct CommitmentParams {
-    /// The commitment transaction number.
-    pub commitment_number: u64,
-    /// Whether the holder of this commitment is the channel opener.
-    pub holder_is_opener: bool,
-    /// Holder's funding private key.
-    pub holder_funding_privkey: SecretKey,
+/// Channel configuration including funding details and both parties configuration.
+pub struct ChannelConfig {
     /// Funding transaction outpoint.
     pub funding_outpoint: OutPoint,
     /// Total channel funding amount in satoshis.
     pub funding_satoshis: u64,
-    /// Amount pushed to the acceptor in millisatoshis.
-    pub push_msat: u64,
-    /// Fee rate for the commitment transaction.
-    pub feerate_per_kw: u32,
-    /// Opener's keys and parameters.
-    pub opener: ChannelPartyParams,
-    /// Acceptor's keys and parameters.
-    pub acceptor: ChannelPartyParams,
     /// Channel type feature bits. The commitment format (anchor / legacy) is
     /// derived from the bits set here.
     pub channel_type: Vec<u8>,
+    /// Opener's static keys and parameters.
+    pub opener: ChannelPartyConfig,
+    /// Acceptor's static keys and parameters.
+    pub acceptor: ChannelPartyConfig,
 }
 
-impl CommitmentParams {
+/// Per-party parameters used in a commitment transaction.
+pub struct CommitmentPartyState {
+    /// Per-commitment point used to derive all commitment-specific keys.
+    pub per_commitment_point: PublicKey,
+
+    /// Amount allocated to this party in millisatoshis.
+    /// Represents the balance before subtraction of fees, and anchors outputs.
+    /// In-flight HTLCs are represented as separate outputs in the commitment
+    /// transaction, so those values are already deducted from these balance values.
+    pub balance_msat: u64,
+}
+
+/// Parameters for building a commitment transaction.
+pub struct CommitmentState {
+    /// The commitment transaction number.
+    pub commitment_number: u64,
+    /// Fee rate for the commitment transaction.
+    pub feerate_per_kw: u32,
+    /// Parameters for the channel opener.
+    pub opener: CommitmentPartyState,
+    /// Parameters for the channel acceptor.
+    pub acceptor: CommitmentPartyState,
+    // TODO: When adding HTLC support, store pending HTLCs (offered/received) for both sides
+    // to correctly compute balances and construct HTLC outputs in the commitment transaction.
+}
+
+/// Holder's identity and funding secret for the commitment.
+pub struct HolderIdentity {
+    /// Whether the holder of this commitment is the channel opener.
+    pub is_opener: bool,
+    /// Holder's funding private key.
+    pub funding_privkey: SecretKey,
+}
+
+impl ChannelConfig {
     /// Builds the signature for the counterparty's commitment transaction.
     #[must_use]
-    pub fn counterparty_commitment_signature(&self) -> Signature {
-        let sighash = self.build_commitment_sighash(false);
-        sign(&sighash, &self.holder_funding_privkey)
+    pub fn sign_counterparty_commitment(
+        &self,
+        state: &CommitmentState,
+        holder: &HolderIdentity,
+    ) -> Signature {
+        let sighash = self.build_commitment_sighash(state, holder, false);
+        sign(&sighash, &holder.funding_privkey)
     }
 
     /// Verifies a signature received from the counterparty for the holder's
     /// commitment transaction. Returns `true` if the signature is valid.
     #[must_use]
-    pub fn verify_received_commitment_signature(&self, signature: &Signature) -> bool {
-        let sighash = self.build_commitment_sighash(true);
+    pub fn verify_counterparty_signature(
+        &self,
+        state: &CommitmentState,
+        holder: &HolderIdentity,
+        signature: &Signature,
+    ) -> bool {
+        let sighash = self.build_commitment_sighash(state, holder, true);
         let secp = Secp256k1::new();
         let msg = Message::from_digest(sighash);
-        let counterparty_funding_pubkey = if self.holder_is_opener {
+        let counterparty_funding_pubkey = if holder.is_opener {
             &self.acceptor.funding_pubkey
         } else {
             &self.opener.funding_pubkey
@@ -95,9 +126,13 @@ impl CommitmentParams {
     /// Builds the signature for the holder's commitment transaction.
     /// Only used to exercise BOLT 3 test vectors.
     #[cfg(test)]
-    fn holder_commitment_signature(&self) -> Signature {
-        let sighash = self.build_commitment_sighash(true);
-        sign(&sighash, &self.holder_funding_privkey)
+    fn holder_commitment_signature(
+        &self,
+        state: &CommitmentState,
+        holder: &HolderIdentity,
+    ) -> Signature {
+        let sighash = self.build_commitment_sighash(state, holder, true);
+        sign(&sighash, &holder.funding_privkey)
     }
 
     /// Builds the sighash for the commitment transaction. The commitment
@@ -105,26 +140,33 @@ impl CommitmentParams {
     ///
     /// When `for_holder` is true, builds the holder's commitment and
     /// when false, builds the counterparty's.
-    #[allow(clippy::cast_possible_truncation)]
-    fn build_commitment_sighash(&self, for_holder: bool) -> [u8; 32] {
+    fn build_commitment_sighash(
+        &self,
+        state: &CommitmentState,
+        holder: &HolderIdentity,
+        for_holder: bool,
+    ) -> [u8; 32] {
         // Obscured commitment number.
         let obscuring_factor = compute_obscuring_factor(
             &self.opener.payment_basepoint,
             &self.acceptor.payment_basepoint,
         );
-        let obscured_commitment_number = self.commitment_number ^ obscuring_factor;
+        let obscured_commitment_number = state.commitment_number ^ obscuring_factor;
 
         // Upper 8 bits of sequence are 0x80 and lower 24 bits are the upper 24 bits
         // of the obscured commitment number.
-        let sequence = (0x80u32 << (8 * 3)) | ((obscured_commitment_number >> 24) as u32);
+        let sequence = (0x80u32 << (8 * 3))
+            | u32::try_from(obscured_commitment_number >> 24)
+                .expect("commitment_number cannot be more than 48 bits");
 
         // Upper 8 bits of locktime are 0x20 and lower 24 bits are the lower 24 bits
         // of the obscured commitment number.
-        let locktime =
-            (0x20u32 << (8 * 3)) | ((obscured_commitment_number & 0x00ff_ffff_u64) as u32);
+        let locktime = (0x20u32 << (8 * 3))
+            | u32::try_from(obscured_commitment_number & 0x00ff_ffff_u64)
+                .expect("commitment_number cannot be more than 48 bits");
 
         // Build the commitment transaction
-        let outputs = self.build_commitment_outputs(for_holder);
+        let outputs = self.build_commitment_outputs(state, holder, for_holder);
 
         // Witness is not included in the BIP 143 sighash, so we leave it empty.
         let input = TxIn {
@@ -163,55 +205,59 @@ impl CommitmentParams {
     ///
     /// When `for_holder` is true, builds outputs for the holder's commitment;
     /// otherwise builds outputs for the counterparty's commitment.
-    fn build_commitment_outputs(&self, for_holder: bool) -> Vec<TxOut> {
+    fn build_commitment_outputs(
+        &self,
+        state: &CommitmentState,
+        holder: &HolderIdentity,
+        for_holder: bool,
+    ) -> Vec<TxOut> {
         let anchor = supports_option_anchors(&self.channel_type);
 
         // Fee and balances.
-        let commitment_weight = if anchor {
-            COMMITMENT_WEIGHT_ANCHOR
-        } else {
-            COMMITMENT_WEIGHT_NON_ANCHOR
-        };
-        let fee = u64::from(self.feerate_per_kw) * commitment_weight / 1000;
-        let anchor_cost = if anchor { 2 * ANCHOR_OUTPUT_VALUE } else { 0 };
+        let fee_msat = commit_tx_fee_sat(state.feerate_per_kw, &self.channel_type) * 1000;
+        let anchor_cost_msat = total_anchors_sat(&self.channel_type) * 1000;
 
-        let push_sat = self.push_msat / 1000;
-        let acceptor_balance = push_sat;
-        let opener_balance = self
-            .funding_satoshis
-            .saturating_sub(push_sat)
-            .saturating_sub(fee)
-            .saturating_sub(anchor_cost);
+        let acceptor_balance = state.acceptor.balance_msat / 1000;
+        let opener_balance_msat = state
+            .opener
+            .balance_msat
+            .saturating_sub(fee_msat)
+            .saturating_sub(anchor_cost_msat);
+        let opener_balance = opener_balance_msat / 1000;
 
         // Map opener/acceptor to holder/counterparty for this commitment side.
-        let (to_local_value, to_remote_value) = if self.holder_is_opener == for_holder {
+        let (to_local_value, to_remote_value) = if holder.is_opener == for_holder {
             (opener_balance, acceptor_balance)
         } else {
             (acceptor_balance, opener_balance)
         };
 
-        let (holder, counterparty) = if self.holder_is_opener == for_holder {
+        let (local, remote) = if holder.is_opener == for_holder {
             (&self.opener, &self.acceptor)
         } else {
             (&self.acceptor, &self.opener)
         };
 
+        let local_per_commitment_point = if holder.is_opener == for_holder {
+            state.opener.per_commitment_point
+        } else {
+            state.acceptor.per_commitment_point
+        };
+
         let mut outputs: Vec<TxOut> = Vec::new();
 
-        if to_local_value >= holder.dust_limit_satoshis {
+        if to_local_value >= local.dust_limit_satoshis {
             let local_delayedpubkey = derive_pubkey(
-                &holder.delayed_payment_basepoint,
-                &holder.per_commitment_point,
+                &local.delayed_payment_basepoint,
+                &local_per_commitment_point,
             );
-            let revocationpubkey = derive_revocation_pubkey(
-                &counterparty.revocation_basepoint,
-                &holder.per_commitment_point,
-            );
+            let revocationpubkey =
+                derive_revocation_pubkey(&remote.revocation_basepoint, &local_per_commitment_point);
 
             let to_local_spk = build_to_local_scriptpubkey(
                 &local_delayedpubkey,
                 &revocationpubkey,
-                counterparty.to_self_delay,
+                remote.to_self_delay,
             );
 
             outputs.push(TxOut {
@@ -222,13 +268,12 @@ impl CommitmentParams {
             if anchor {
                 outputs.push(TxOut {
                     value: Amount::from_sat(ANCHOR_OUTPUT_VALUE),
-                    script_pubkey: build_anchor_scriptpubkey(&holder.funding_pubkey),
+                    script_pubkey: build_anchor_scriptpubkey(&local.funding_pubkey),
                 });
             }
         }
-        if to_remote_value >= holder.dust_limit_satoshis {
-            let to_remote_spk =
-                build_to_remote_scriptpubkey(&counterparty.payment_basepoint, anchor);
+        if to_remote_value >= local.dust_limit_satoshis {
+            let to_remote_spk = build_to_remote_scriptpubkey(&remote.payment_basepoint, anchor);
 
             outputs.push(TxOut {
                 value: Amount::from_sat(to_remote_value),
@@ -238,7 +283,7 @@ impl CommitmentParams {
             if anchor {
                 outputs.push(TxOut {
                     value: Amount::from_sat(ANCHOR_OUTPUT_VALUE),
-                    script_pubkey: build_anchor_scriptpubkey(&counterparty.funding_pubkey),
+                    script_pubkey: build_anchor_scriptpubkey(&remote.funding_pubkey),
                 });
             }
         }
@@ -254,31 +299,80 @@ impl CommitmentParams {
     }
 }
 
-/// Checks whether the opener can afford the commitment fee at the given
-/// feerate, after accounting for the pushed amount and anchor outputs.
-#[must_use]
-#[allow(clippy::similar_names)]
-pub fn can_opener_afford_feerate(
-    funding_satoshis: u64,
-    push_msat: u64,
-    feerate_per_kw: u32,
-    channel_type: &[u8],
-) -> bool {
-    let anchor = supports_option_anchors(channel_type);
-    let commitment_weight = if anchor {
+impl CommitmentState {
+    /// Constructs the initial commitment state after channel funding.
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// - `funding_satoshis` is too large to convert to millisatoshis
+    /// - `push_msat` exceeds the total channel funding in millisatoshis
+    pub fn new_initial_from_funding(
+        funding_satoshis: u64,
+        push_msat: u64,
+        feerate_per_kw: u32,
+        opener_per_commitment_point: PublicKey,
+        acceptor_per_commitment_point: PublicKey,
+    ) -> Result<Self, String> {
+        let funding_msat = funding_satoshis.checked_mul(1000).ok_or_else(|| {
+            format!("funding satoshis ({funding_satoshis}) is too large to convert to msat")
+        })?;
+
+        let to_opener_balance_msat = funding_msat.checked_sub(push_msat).ok_or_else(|| {
+            format!("push_msat ({push_msat}) exceeds total funding msat ({funding_msat})")
+        })?;
+
+        let to_acceptor_balance_msat = push_msat;
+
+        Ok(Self {
+            commitment_number: 0,
+            feerate_per_kw,
+            opener: CommitmentPartyState {
+                per_commitment_point: opener_per_commitment_point,
+                balance_msat: to_opener_balance_msat,
+            },
+            acceptor: CommitmentPartyState {
+                per_commitment_point: acceptor_per_commitment_point,
+                balance_msat: to_acceptor_balance_msat,
+            },
+        })
+    }
+
+    /// Checks whether the opener can afford the commitment fee at the given
+    /// feerate, after accounting for the anchor outputs.
+    #[must_use]
+    pub fn can_opener_afford_feerate(&self, channel_type: &[u8]) -> bool {
+        let fee_msat = commit_tx_fee_sat(self.feerate_per_kw, channel_type) * 1000;
+        let anchor_cost_msat = total_anchors_sat(channel_type) * 1000;
+
+        self.opener
+            .balance_msat
+            .checked_sub(fee_msat)
+            .and_then(|balance| balance.checked_sub(anchor_cost_msat))
+            .is_some()
+    }
+
+    // TODO: When adding HTLC support, add `get_next_commitment_state` to build the next
+    // commitment state based on the previous state and the HTLCs claimed by both sides.
+}
+
+/// Get the fee cost of a commitment tx in satoshis.
+fn commit_tx_fee_sat(feerate_per_kw: u32, channel_type: &[u8]) -> u64 {
+    let commitment_weight = if supports_option_anchors(channel_type) {
         COMMITMENT_WEIGHT_ANCHOR
     } else {
         COMMITMENT_WEIGHT_NON_ANCHOR
     };
-    let fee = u64::from(feerate_per_kw) * commitment_weight / 1000;
-    let anchor_cost = if anchor { 2 * ANCHOR_OUTPUT_VALUE } else { 0 };
-    let push_sat = push_msat / 1000;
 
-    funding_satoshis
-        .checked_sub(push_sat)
-        .and_then(|balance| balance.checked_sub(fee))
-        .and_then(|balance| balance.checked_sub(anchor_cost))
-        .is_some()
+    u64::from(feerate_per_kw) * commitment_weight / 1000
+}
+
+/// Get the anchor cost of a commitment tx in satoshis.
+fn total_anchors_sat(channel_type: &[u8]) -> u64 {
+    if supports_option_anchors(channel_type) {
+        ANCHOR_OUTPUT_VALUE * 2
+    } else {
+        0
+    }
 }
 
 /// Computes the commitment number obscuring factor per BOLT 3.
@@ -529,28 +623,28 @@ mod tests {
         );
     }
 
-    // BOLT 3 Appendix C: Commitment and HTLC Transaction Test Vectors
-    //    https://github.com/lightning/bolts/blob/master/03-transactions.md#appendix-c-commitment-and-htlc-transaction-test-vectors
-
     fn bolt3_commitment_params(
         feerate_per_kw: u32,
-        push_msat: u64,
+        to_opener_msat: u64,
+        to_acceptor_msat: u64,
+        dust_limit_satoshis: u64,
         channel_type: Vec<u8>,
-    ) -> CommitmentParams {
-        CommitmentParams {
-            commitment_number: 42,
-            holder_is_opener: true,
+    ) -> (
+        ChannelConfig,
+        CommitmentState,
+        HolderIdentity,
+        HolderIdentity,
+    ) {
+        let chan_config = ChannelConfig {
             funding_outpoint: OutPoint {
                 txid: "8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be"
                     .parse()
                     .expect("valid funding txid hex"),
                 vout: 0,
             },
-            feerate_per_kw,
             funding_satoshis: 10_000_000,
-            push_msat,
-            holder_funding_privkey: secret(OPENER_FUNDING_PRIVKEY),
-            opener: ChannelPartyParams {
+            channel_type,
+            opener: ChannelPartyConfig {
                 funding_pubkey: pubkey(
                     "023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb",
                 ),
@@ -563,13 +657,10 @@ mod tests {
                 delayed_payment_basepoint: pubkey(
                     "023c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
                 ),
-                per_commitment_point: pubkey(
-                    "025f7117a78150fe2ef97db7cfc83bd57b2e2c0d0dd25eaf467a4a1c2a45ce1486",
-                ),
-                dust_limit_satoshis: 546,
+                dust_limit_satoshis,
                 to_self_delay: 144,
             },
-            acceptor: ChannelPartyParams {
+            acceptor: ChannelPartyConfig {
                 funding_pubkey: pubkey(
                     "030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c1",
                 ),
@@ -580,176 +671,553 @@ mod tests {
                     "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
                 ),
                 delayed_payment_basepoint: pubkey(
-                    "023c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+                    "02a1633caf7bf0b7d9e5c4b8a1d6f2e3c4b5a6978877665544332211ffeeddccbb",
                 ),
+                dust_limit_satoshis,
+                to_self_delay: 144,
+            },
+        };
+
+        let state = CommitmentState {
+            commitment_number: 42,
+            feerate_per_kw,
+            opener: CommitmentPartyState {
                 per_commitment_point: pubkey(
                     "025f7117a78150fe2ef97db7cfc83bd57b2e2c0d0dd25eaf467a4a1c2a45ce1486",
                 ),
-                dust_limit_satoshis: 546,
-                to_self_delay: 144,
+                balance_msat: to_opener_msat,
             },
-            channel_type,
-        }
+            acceptor: CommitmentPartyState {
+                per_commitment_point: pubkey(
+                    "03b28f7c5a9d1e4f8c6a7b2d3e9f1048576a1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e",
+                ),
+                balance_msat: to_acceptor_msat,
+            },
+        };
+
+        let opener_holder = HolderIdentity {
+            is_opener: true,
+            funding_privkey: secret(OPENER_FUNDING_PRIVKEY),
+        };
+
+        let acceptor_holder = HolderIdentity {
+            is_opener: false,
+            funding_privkey: secret(ACCEPTOR_FUNDING_PRIVKEY),
+        };
+
+        (chan_config, state, opener_holder, acceptor_holder)
     }
 
+    // BOLT 3 Appendix C: Commitment and HTLC Transaction Test Vectors
+    //    https://github.com/lightning/bolts/blob/master/03-transactions.md#appendix-c-commitment-and-htlc-transaction-test-vectors
+
+    // name: simple commitment tx with no HTLCs (BOLT 3 Appendix C)
     #[test]
     fn simple_commitment_tx_with_no_htlcs_legacy() {
-        let opener_params = bolt3_commitment_params(15_000, 3_000_000_000, vec![]);
+        let (chan_config, commitment_params, opener_holder, acceptor_holder) =
+            bolt3_commitment_params(15_000, 7_000_000_000, 3_000_000_000, 546, vec![]);
 
-        // Holder signs own commitment.
+        // Opener signs own commitment.
         assert_eq!(
-            hex::encode(opener_params.holder_commitment_signature().serialize_der()),
+            hex::encode(
+                chan_config
+                    .holder_commitment_signature(&commitment_params, &opener_holder)
+                    .serialize_der()
+            ),
             "30440220616210b2cc4d3afb601013c373bbd8aac54febd9f15400379a8cb65ce7deca60022034236c010991beb7ff770510561ae8dc885b8d38d1947248c38f2ae055647142",
         );
 
-        // Counterparty signs holder's commitment.
+        // Acceptor signs opener's commitment.
         let remote_signature = der_sig(
             "3045022100c3127b33dcc741dd6b05b1e63cbd1a9a7d816f37af9b6756fa2376b056f032370220408b96279808fe57eb7e463710804cdf4f108388bc5cf722d8c848d2c7f9f3b0",
         );
-        assert!(opener_params.verify_received_commitment_signature(&remote_signature));
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &opener_holder,
+            &remote_signature,
+        ));
 
         // Opener signs the acceptor's commitment, then the acceptor verifies it.
-        let acceptor_commit_sig = opener_params.counterparty_commitment_signature();
-        let acceptor_params = CommitmentParams {
-            holder_is_opener: false,
-            holder_funding_privkey: secret(ACCEPTOR_FUNDING_PRIVKEY),
-            ..bolt3_commitment_params(15_000, 3_000_000_000, vec![])
-        };
-        assert!(acceptor_params.verify_received_commitment_signature(&acceptor_commit_sig));
+        let acceptor_commit_sig =
+            chan_config.sign_counterparty_commitment(&commitment_params, &opener_holder);
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &acceptor_holder,
+            &acceptor_commit_sig,
+        ));
     }
 
+    // name: commitment tx with two outputs untrimmed (minimum feerate) (BOLT 3 Appendix C)
     #[test]
-    fn simple_commitment_tx_with_no_htlcs_and_single_local_output_legacy() {
-        let opener_params = bolt3_commitment_params(15_000, 0, vec![]);
+    fn commitment_tx_with_two_outputs_untrimmed_minimum_feerate_legacy() {
+        let (chan_config, commitment_params, opener_holder, acceptor_holder) =
+            bolt3_commitment_params(4_915, 6_988_000_000, 3_000_000_000, 546, vec![]);
 
-        // Holder signs own commitment.
+        // Opener signs own commitment.
         assert_eq!(
-            hex::encode(opener_params.holder_commitment_signature().serialize_der()),
-            "304402202a88d662baa98fbb8eba613c0dbc4f76ee285d5753081f4b934f4cd13b39342a022067dee9c527d05d20037de95b333476e57261cf9fb9ab936e97ce57f4f27f442d",
+            hex::encode(
+                chan_config
+                    .holder_commitment_signature(&commitment_params, &opener_holder)
+                    .serialize_der()
+            ),
+            "30450221008a953551f4d67cb4df3037207fc082ddaf6be84d417b0bd14c80aab66f1b01a402207508796dc75034b2dee876fe01dc05a08b019f3e5d689ac8842ade2f1befccf5",
         );
 
-        // Counterparty signs holder's commitment.
+        // Acceptor signs opener's commitment.
         let remote_signature = der_sig(
-            "3045022100a01b8a4d1ba99291120e41f318092758f83975513c038fcff546fb309760ed1e022070aaf47b335092f6fb0ee2a65c1a18d3999010a63412c9dbbb088c05350391b9",
+            "304402203a286936e74870ca1459c700c71202af0381910a6bfab687ef494ef1bc3e02c902202506c362d0e3bee15e802aa729bf378e051644648253513f1c085b264cc2a720",
         );
-        assert!(opener_params.verify_received_commitment_signature(&remote_signature));
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &opener_holder,
+            &remote_signature,
+        ));
 
         // Opener signs the acceptor's commitment, then the acceptor verifies it.
-        let acceptor_commit_sig = opener_params.counterparty_commitment_signature();
-        let acceptor_params = CommitmentParams {
-            holder_is_opener: false,
-            holder_funding_privkey: secret(ACCEPTOR_FUNDING_PRIVKEY),
-            ..bolt3_commitment_params(15_000, 0, vec![])
-        };
-        assert!(acceptor_params.verify_received_commitment_signature(&acceptor_commit_sig));
+        let acceptor_commit_sig =
+            chan_config.sign_counterparty_commitment(&commitment_params, &opener_holder);
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &acceptor_holder,
+            &acceptor_commit_sig,
+        ));
     }
 
+    // name: commitment tx with two outputs untrimmed (maximum feerate) (BOLT 3 Appendix C)
     #[test]
-    fn simple_commitment_tx_with_no_htlcs_and_single_remote_output_legacy() {
-        let opener_params = bolt3_commitment_params(9_667_817, 3_000_000_000, vec![]);
+    fn commitment_tx_with_two_outputs_untrimmed_maximum_feerate_legacy() {
+        let (chan_config, commitment_params, opener_holder, acceptor_holder) =
+            bolt3_commitment_params(9_651_180, 6_988_000_000, 3_000_000_000, 546, vec![]);
 
-        // Holder signs own commitment.
+        // Opener signs own commitment.
         assert_eq!(
-            hex::encode(opener_params.holder_commitment_signature().serialize_der()),
+            hex::encode(
+                chan_config
+                    .holder_commitment_signature(&commitment_params, &opener_holder)
+                    .serialize_der()
+            ),
+            "3045022100e11b638c05c650c2f63a421d36ef8756c5ce82f2184278643520311cdf50aa200220259565fb9c8e4a87ccaf17f27a3b9ca4f20625754a0920d9c6c239d8156a11de",
+        );
+
+        // Acceptor signs opener's commitment.
+        let remote_signature = der_sig(
+            "304402200a8544eba1d216f5c5e530597665fa9bec56943c0f66d98fc3d028df52d84f7002201e45fa5c6bc3a506cc2553e7d1c0043a9811313fc39c954692c0d47cfce2bbd3",
+        );
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &opener_holder,
+            &remote_signature,
+        ));
+
+        // Opener signs the acceptor's commitment, then the acceptor verifies it.
+        let acceptor_commit_sig =
+            chan_config.sign_counterparty_commitment(&commitment_params, &opener_holder);
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &acceptor_holder,
+            &acceptor_commit_sig,
+        ));
+    }
+
+    // name: commitment tx with one output untrimmed (minimum feerate) (BOLT 3 Appendix C)
+    #[test]
+    fn commitment_tx_with_one_output_untrimmed_minimum_feerate_legacy() {
+        let (chan_config, commitment_params, opener_holder, acceptor_holder) =
+            bolt3_commitment_params(9_651_181, 6_988_000_000, 3_000_000_000, 546, vec![]);
+
+        // Opener signs own commitment.
+        assert_eq!(
+            hex::encode(
+                chan_config
+                    .holder_commitment_signature(&commitment_params, &opener_holder)
+                    .serialize_der()
+            ),
             "304402207e8d51e0c570a5868a78414f4e0cbfaed1106b171b9581542c30718ee4eb95ba02203af84194c97adf98898c9afe2f2ed4a7f8dba05a2dfab28ac9d9c604aa49a379",
         );
 
-        // Counterparty signs holder's commitment.
+        // Acceptor signs opener's commitment.
         let remote_signature = der_sig(
             "304402202ade0142008309eb376736575ad58d03e5b115499709c6db0b46e36ff394b492022037b63d78d66404d6504d4c4ac13be346f3d1802928a6d3ad95a6a944227161a2",
         );
-        assert!(opener_params.verify_received_commitment_signature(&remote_signature));
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &opener_holder,
+            &remote_signature,
+        ));
 
         // Opener signs the acceptor's commitment, then the acceptor verifies it.
-        let acceptor_commit_sig = opener_params.counterparty_commitment_signature();
-        let acceptor_params = CommitmentParams {
-            holder_is_opener: false,
-            holder_funding_privkey: secret(ACCEPTOR_FUNDING_PRIVKEY),
-            ..bolt3_commitment_params(9_667_817, 3_000_000_000, vec![])
-        };
-        assert!(acceptor_params.verify_received_commitment_signature(&acceptor_commit_sig));
+        let acceptor_commit_sig =
+            chan_config.sign_counterparty_commitment(&commitment_params, &opener_holder);
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &acceptor_holder,
+            &acceptor_commit_sig,
+        ));
+    }
+
+    // name: commitment tx with fee greater than funder amount (BOLT 3 Appendix C)
+    #[test]
+    fn commitment_tx_with_fee_greater_than_funder_amount_legacy() {
+        let (chan_config, commitment_params, opener_holder, acceptor_holder) =
+            bolt3_commitment_params(9_651_936, 6_988_000_000, 3_000_000_000, 546, vec![]);
+
+        // Opener signs own commitment.
+        assert_eq!(
+            hex::encode(
+                chan_config
+                    .holder_commitment_signature(&commitment_params, &opener_holder)
+                    .serialize_der()
+            ),
+            "304402207e8d51e0c570a5868a78414f4e0cbfaed1106b171b9581542c30718ee4eb95ba02203af84194c97adf98898c9afe2f2ed4a7f8dba05a2dfab28ac9d9c604aa49a379",
+        );
+
+        // Acceptor signs opener's commitment.
+        let remote_signature: Signature = der_sig(
+            "304402202ade0142008309eb376736575ad58d03e5b115499709c6db0b46e36ff394b492022037b63d78d66404d6504d4c4ac13be346f3d1802928a6d3ad95a6a944227161a2",
+        );
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &opener_holder,
+            &remote_signature,
+        ));
+
+        // Opener signs the acceptor's commitment, then the acceptor verifies it.
+        let acceptor_commit_sig =
+            chan_config.sign_counterparty_commitment(&commitment_params, &opener_holder);
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &acceptor_holder,
+            &acceptor_commit_sig,
+        ));
+    }
+
+    /// Not from BOLT 3 test vectors.
+    /// Tests the edge case where `push_msat % 1000 != 0` to ensure there is
+    /// no off-by-one error in opener balance calculation.
+    #[test]
+    fn commitment_tx_with_balance_msat_not_multiple_of_1000_legacy() {
+        let (chan_config, commitment_params, opener_holder, acceptor_holder) =
+            bolt3_commitment_params(15_000, 6_999_999_000, 3_000_000_123, 546, vec![]);
+
+        // Opener signs own commitment.
+        assert_eq!(
+            hex::encode(
+                chan_config
+                    .holder_commitment_signature(&commitment_params, &opener_holder)
+                    .serialize_der()
+            ),
+            "3045022100a41609df3e71b939046d6dfface892aa6161ef8fb61898e142aeffc0ce1462df02201d1ca13eb145436593b0cb1a201c48bf2fdd6fc0c754784240d5f407c06ab4cf",
+        );
+
+        // Acceptor signs opener's commitment.
+        let remote_signature: Signature = der_sig(
+            "304402202c85c0eb44ff3c5133e0a1e9f120a1af215b43d73da69b994e04c545b6cf7b600220331d81cacccfd7ae71eb3a1407bd767fc39a30776638e1048531441c95889bc2",
+        );
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &opener_holder,
+            &remote_signature,
+        ));
+
+        // Opener signs the acceptor's commitment, then the acceptor verifies it.
+        let acceptor_commit_sig =
+            chan_config.sign_counterparty_commitment(&commitment_params, &opener_holder);
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &acceptor_holder,
+            &acceptor_commit_sig,
+        ));
+    }
+
+    /// Not from BOLT 3 test vectors.
+    /// Covers the case where commitment outputs have equal values,
+    /// ensuring outputs are ordered by `script_pubkey`.
+    #[test]
+    fn commitment_tx_with_equal_output_values_orders_by_script_pubkey_legacy() {
+        let (chan_config, commitment_params, opener_holder, acceptor_holder) =
+            bolt3_commitment_params(15_000, 5_005_430_000, 4_994_570_000, 546, vec![]);
+
+        // Opener signs own commitment.
+        assert_eq!(
+            hex::encode(
+                chan_config
+                    .holder_commitment_signature(&commitment_params, &opener_holder)
+                    .serialize_der()
+            ),
+            "3045022100a51021a83202743cb336edad88ee08bd14f434779bff21351c8f39d78d035f9602200d889a4a98332aff37f02938157cd3d7cf336313e5663848ac18bcd09ad5ff13",
+        );
+
+        // Acceptor signs opener's commitment.
+        let remote_signature: Signature = der_sig(
+            "304402206ad05e8243d8fa04953cf14fff140fbf00999c3b6ffe63670d8edbf2eccf82c502201ca99860981ee1df1d93a02129f5b54f5c18e2ff047e8d8864a017eca48f94c9",
+        );
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &opener_holder,
+            &remote_signature,
+        ));
+
+        // Opener signs the acceptor's commitment, then the acceptor verifies it.
+        let acceptor_commit_sig =
+            chan_config.sign_counterparty_commitment(&commitment_params, &opener_holder);
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &acceptor_holder,
+            &acceptor_commit_sig,
+        ));
     }
 
     // BOLT 3 Appendix F: Commitment and HTLC Transaction Test Vectors (anchors)
     //    https://github.com/lightning/bolts/blob/master/03-transactions.md#appendix-f-commitment-and-htlc-transaction-test-vectors-anchors
 
+    // name: simple commitment tx with no HTLCs (BOLT 3 Appendix F)
     #[test]
     fn simple_commitment_tx_with_no_htlcs_anchor() {
-        let opener_params = bolt3_commitment_params(15_000, 3_000_000_000, vec![0x40, 0x00, 0x00]);
+        let (chan_config, commitment_params, opener_holder, acceptor_holder) =
+            bolt3_commitment_params(
+                15_000,
+                7_000_000_000,
+                3_000_000_000,
+                546,
+                vec![0x40, 0x00, 0x00],
+            );
 
-        // Holder signs own commitment.
+        // Opener signs own commitment.
         assert_eq!(
-            hex::encode(opener_params.holder_commitment_signature().serialize_der()),
+            hex::encode(
+                chan_config
+                    .holder_commitment_signature(&commitment_params, &opener_holder)
+                    .serialize_der()
+            ),
             "30450221008266ac6db5ea71aac3c95d97b0e172ff596844851a3216eb88382a8dddfd33d2022050e240974cfd5d708708b4365574517c18e7ae535ef732a3484d43d0d82be9f7",
         );
 
-        // Counterparty signs holder's commitment.
+        // Acceptor signs opener's commitment.
         let remote_signature = der_sig(
             "3045022100f89034eba16b2be0e5581f750a0a6309192b75cce0f202f0ee2b4ec0cc394850022076c65dc507fe42276152b7a3d90e961e678adbe966e916ecfe85e64d430e75f3",
         );
-        assert!(opener_params.verify_received_commitment_signature(&remote_signature));
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &opener_holder,
+            &remote_signature,
+        ));
 
         // Opener signs the acceptor's commitment, then the acceptor verifies it.
-        let acceptor_commit_sig = opener_params.counterparty_commitment_signature();
-        let acceptor_params = CommitmentParams {
-            holder_is_opener: false,
-            holder_funding_privkey: secret(ACCEPTOR_FUNDING_PRIVKEY),
-            ..bolt3_commitment_params(15_000, 3_000_000_000, vec![0x40, 0x00, 0x00])
-        };
-        assert!(acceptor_params.verify_received_commitment_signature(&acceptor_commit_sig));
+        let acceptor_commit_sig =
+            chan_config.sign_counterparty_commitment(&commitment_params, &opener_holder);
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &acceptor_holder,
+            &acceptor_commit_sig,
+        ));
     }
 
+    // name: simple commitment tx with no HTLCs and single anchor (BOLT 3 Appendix F)
     #[test]
-    fn simple_commitment_tx_with_no_htlcs_and_single_local_output_anchor() {
-        let opener_params = bolt3_commitment_params(15_000, 0, vec![0x40, 0x00, 0x00]);
+    fn simple_commitment_tx_with_no_htlc_and_single_anchor() {
+        let (chan_config, commitment_params, opener_holder, acceptor_holder) =
+            bolt3_commitment_params(15_000, 10_000_000_000, 0, 546, vec![0x40, 0x00, 0x00]);
 
-        // Holder signs own commitment.
+        // Opener signs own commitment.
         assert_eq!(
-            hex::encode(opener_params.holder_commitment_signature().serialize_der()),
+            hex::encode(
+                chan_config
+                    .holder_commitment_signature(&commitment_params, &opener_holder)
+                    .serialize_der()
+            ),
             "3044022007cf6b405e9c9b4f527b0ecad9d8bb661fabb8b12abf7d1c0b3ad1855db3ed490220616d5c1eeadccc63bd775a131149455d62d95a42c2a1b01cc7821fc42dce7778",
         );
 
-        // Counterparty signs holder's commitment.
+        // Acceptor signs opener's commitment.
         let remote_signature = der_sig(
             "30440220655bf909fb6fa81d086f1336ac72c97906dce29d1b166e305c99152d810e26e1022051f577faa46412c46707aaac46b65d50053550a66334e00a44af2706f27a8658",
         );
-        assert!(opener_params.verify_received_commitment_signature(&remote_signature));
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &opener_holder,
+            &remote_signature,
+        ));
 
         // Opener signs the acceptor's commitment, then the acceptor verifies it.
-        let acceptor_commit_sig = opener_params.counterparty_commitment_signature();
-        let acceptor_params = CommitmentParams {
-            holder_is_opener: false,
-            holder_funding_privkey: secret(ACCEPTOR_FUNDING_PRIVKEY),
-            ..bolt3_commitment_params(15_000, 0, vec![0x40, 0x00, 0x00])
-        };
-        assert!(acceptor_params.verify_received_commitment_signature(&acceptor_commit_sig));
+        let acceptor_commit_sig =
+            chan_config.sign_counterparty_commitment(&commitment_params, &opener_holder);
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &acceptor_holder,
+            &acceptor_commit_sig,
+        ));
     }
 
+    // name: commitment tx with two outputs untrimmed (minimum dust limit) (BOLT 3 Appendix F)
     #[test]
-    fn simple_commitment_tx_with_no_htlcs_and_single_remote_output_anchor() {
-        let opener_params =
-            bolt3_commitment_params(9_667_817, 3_000_000_000, vec![0x40, 0x00, 0x00]);
+    fn commitment_tx_with_two_outputs_untrimmed_minimum_dust_limit_anchor() {
+        let (chan_config, commitment_params, opener_holder, acceptor_holder) =
+            bolt3_commitment_params(
+                4_894,
+                6_988_000_000,
+                3_000_000_000,
+                4_001,
+                vec![0x40, 0x00, 0x00],
+            );
 
-        // Holder signs own commitment.
+        // Opener signs own commitment.
         assert_eq!(
-            hex::encode(opener_params.holder_commitment_signature().serialize_der()),
+            hex::encode(
+                chan_config
+                    .holder_commitment_signature(&commitment_params, &opener_holder)
+                    .serialize_der()
+            ),
+            "30450221009f16ac85d232e4eddb3fcd750a68ebf0b58e3356eaada45d3513ede7e817bf4c02207c2b043b4e5f971261975406cb955219fa56bffe5d834a833694b5abc1ce4cfd",
+        );
+
+        // Acceptor signs opener's commitment.
+        let remote_signature = der_sig(
+            "3045022100e784a66b1588575801e237d35e510fd92a81ae3a4a2a1b90c031ad803d07b3f3022021bc5f16501f167607d63b681442da193eb0a76b4b7fd25c2ed4f8b28fd35b95",
+        );
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &opener_holder,
+            &remote_signature,
+        ));
+
+        // Opener signs the acceptor's commitment, then the acceptor verifies it.
+        let acceptor_commit_sig =
+            chan_config.sign_counterparty_commitment(&commitment_params, &opener_holder);
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &acceptor_holder,
+            &acceptor_commit_sig,
+        ));
+    }
+
+    // name: commitment tx with one output untrimmed (minimum dust limit) (BOLT 3 Appendix F)
+    #[test]
+    fn commitment_tx_with_one_output_untrimmed_minimum_dust_limit_anchor() {
+        let (chan_config, commitment_params, opener_holder, acceptor_holder) =
+            bolt3_commitment_params(
+                6_216_010,
+                6_988_000_000,
+                3_000_000_000,
+                4_001,
+                vec![0x40, 0x00, 0x00],
+            );
+
+        // Opener signs own commitment.
+        assert_eq!(
+            hex::encode(
+                chan_config
+                    .holder_commitment_signature(&commitment_params, &opener_holder)
+                    .serialize_der()
+            ),
             "30450221009ad80792e3038fe6968d12ff23e6888a565c3ddd065037f357445f01675d63f3022018384915e5f1f4ae157e15debf4f49b61c8d9d2b073c7d6f97c4a68caa3ed4c1",
         );
 
-        // Counterparty signs holder's commitment.
+        // Acceptor signs opener's commitment.
         let remote_signature = der_sig(
             "30450221008fd5dbff02e4b59020d4cd23a3c30d3e287065fda75a0a09b402980adf68ccda022001e0b8b620cd915ddff11f1de32addf23d81d51b90e6841b2cb8dcaf3faa5ecf",
         );
-        assert!(opener_params.verify_received_commitment_signature(&remote_signature));
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &opener_holder,
+            &remote_signature,
+        ));
 
         // Opener signs the acceptor's commitment, then the acceptor verifies it.
-        let acceptor_commit_sig = opener_params.counterparty_commitment_signature();
-        let acceptor_params = CommitmentParams {
-            holder_is_opener: false,
-            holder_funding_privkey: secret(ACCEPTOR_FUNDING_PRIVKEY),
-            ..bolt3_commitment_params(9_667_817, 3_000_000_000, vec![0x40, 0x00, 0x00])
-        };
-        assert!(acceptor_params.verify_received_commitment_signature(&acceptor_commit_sig));
+        let acceptor_commit_sig =
+            chan_config.sign_counterparty_commitment(&commitment_params, &opener_holder);
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &acceptor_holder,
+            &acceptor_commit_sig,
+        ));
+    }
+
+    /// Not from BOLT 3 test vectors.
+    /// Tests the edge case where `push_msat % 1000 != 0` to ensure there is
+    /// no off-by-one error in opener balance calculation.
+    #[test]
+    fn commitment_tx_with_balance_msat_not_multiple_of_1000_anchor() {
+        let (chan_config, commitment_params, opener_holder, acceptor_holder) =
+            bolt3_commitment_params(
+                15_000,
+                6_999_999_000,
+                3_000_000_123,
+                546,
+                vec![0x40, 0x00, 0x00],
+            );
+
+        // Opener signs own commitment.
+        assert_eq!(
+            hex::encode(
+                chan_config
+                    .holder_commitment_signature(&commitment_params, &opener_holder)
+                    .serialize_der()
+            ),
+            "304402202573a6da7fffc40fffb98d106dc4c83a5c94266118b3b0b44ea03100e20dab1e022038d9e65b3b84096ccebc91f9b56117d30c1cc249e21426d2d3dbf3e4617935fd",
+        );
+
+        // Acceptor signs opener's commitment.
+        let remote_signature: Signature = der_sig(
+            "3044022036e0e75ab8bd15f1232da3974db1a4cfca2491912b1fb06bfe2fbfca4f416e29022035c5a4f4b09f344a595ffdfb73aebf5982d41f1fcf5e90b141d8141c857e9aed",
+        );
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &opener_holder,
+            &remote_signature,
+        ));
+
+        // Opener signs the acceptor's commitment, then the acceptor verifies it.
+        let acceptor_commit_sig =
+            chan_config.sign_counterparty_commitment(&commitment_params, &opener_holder);
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &acceptor_holder,
+            &acceptor_commit_sig,
+        ));
+    }
+
+    /// Not from BOLT 3 test vectors.
+    /// Covers the case where commitment outputs have equal values,
+    /// ensuring outputs are ordered by `script_pubkey`.
+    #[test]
+    fn commitment_tx_with_equal_output_values_orders_by_script_pubkey_anchor() {
+        let (chan_config, commitment_params, opener_holder, acceptor_holder) =
+            bolt3_commitment_params(
+                15_000,
+                5_008_760_000,
+                4_991_240_000,
+                546,
+                vec![0x40, 0x00, 0x00],
+            );
+
+        // Opener signs own commitment.
+        assert_eq!(
+            hex::encode(
+                chan_config
+                    .holder_commitment_signature(&commitment_params, &opener_holder)
+                    .serialize_der()
+            ),
+            "30440220156f857fc1cfaa0e13dadc5a07553244971a91d99a3f53bf87305189864043a402200bd512ace372ac10c54a3745ae123e69d99305c564bd0420ade72ebcac994bd8",
+        );
+
+        // Acceptor signs opener's commitment.
+        let remote_signature: Signature = der_sig(
+            "3044022035fd44caf320fdca9f2a866fe88e27f186a4a93ecf390549c3ed9950a9042c2f0220237525890e37617749e1eae4c2cce10e19d1a796acea1937c29cb888ee992d19",
+        );
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &opener_holder,
+            &remote_signature,
+        ));
+
+        // Opener signs the acceptor's commitment, then the acceptor verifies it.
+        let acceptor_commit_sig =
+            chan_config.sign_counterparty_commitment(&commitment_params, &opener_holder);
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &acceptor_holder,
+            &acceptor_commit_sig,
+        ));
     }
 
     // BOLT 3 Appendix E: Key Derivation Test Vectors
@@ -787,42 +1255,88 @@ mod tests {
         let anchors = &[0x40u8, 0x00, 0x00][..];
         let legacy = &[][..];
         let feerate_per_kw: u32 = 15_000;
+        let sample_key =
+            pubkey("03b28f7c5a9d1e4f8c6a7b2d3e9f1048576a1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e");
         // Legacy fee: 15000 * 724 / 1000 = 10_860 sat
         // Anchor fee: 15000 * 1124 / 1000 = 16_860 sat; anchor_cost = 660 sat
 
         // Comfortably affordable
-        assert!(can_opener_afford_feerate(20_000, 0, feerate_per_kw, legacy));
+        let state = CommitmentState::new_initial_from_funding(
+            20_000,
+            0,
+            feerate_per_kw,
+            sample_key,
+            sample_key,
+        )
+        .expect("valid initial state");
+        assert!(state.can_opener_afford_feerate(legacy));
 
         // Exact zero opener balance
-        assert!(can_opener_afford_feerate(
+        let state = CommitmentState::new_initial_from_funding(
             11_860,
             1_000_000,
             feerate_per_kw,
-            legacy
-        ));
+            sample_key,
+            sample_key,
+        )
+        .expect("valid initial state");
+        assert!(state.can_opener_afford_feerate(legacy));
+
+        // Fails: funding_satoshis too large to convert to msat
+        let err = CommitmentState::new_initial_from_funding(
+            u64::MAX,
+            0,
+            feerate_per_kw,
+            sample_key,
+            sample_key,
+        )
+        .err()
+        .expect("expected overflow error");
+
+        assert_eq!(
+            err,
+            format!(
+                "funding satoshis ({}) is too large to convert to msat",
+                u64::MAX
+            )
+        );
 
         // Fails: push alone exceeds funding
-        assert!(!can_opener_afford_feerate(
+        let err = CommitmentState::new_initial_from_funding(
             1_000,
             2_000_000,
             feerate_per_kw,
-            legacy
-        ));
+            sample_key,
+            sample_key,
+        )
+        .err()
+        .expect("expected error");
+
+        assert_eq!(
+            err,
+            "push_msat (2000000) exceeds total funding msat (1000000)"
+        );
 
         // Fails: push fits but fee does not
-        assert!(!can_opener_afford_feerate(
+        let state = CommitmentState::new_initial_from_funding(
             10_000,
             0,
             feerate_per_kw,
-            legacy
-        ));
+            sample_key,
+            sample_key,
+        )
+        .expect("valid initial state");
+        assert!(!state.can_opener_afford_feerate(legacy));
 
         // Fails: push + fee fit but anchor cost does not
-        assert!(!can_opener_afford_feerate(
+        let state = CommitmentState::new_initial_from_funding(
             17_500,
             0,
             feerate_per_kw,
-            anchors
-        ));
+            sample_key,
+            sample_key,
+        )
+        .expect("valid initial state");
+        assert!(!state.can_opener_afford_feerate(anchors));
     }
 }
