@@ -1,6 +1,6 @@
 //! Fundamental types for BOLT message encoding.
 
-use secp256k1::hashes::{self, sha256d};
+use bitcoin::hashes::{self, sha256d};
 
 /// Maximum Lightning message size (2-byte length prefix limit).
 pub const MAX_MESSAGE_SIZE: usize = 65535;

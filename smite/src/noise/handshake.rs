@@ -4,7 +4,7 @@
 // guarantee the value is set.
 #![allow(clippy::missing_panics_doc)]
 
-use secp256k1::{PublicKey, Secp256k1, SecretKey, ecdh::SharedSecret};
+use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey, ecdh::SharedSecret};
 use sha2::{Digest, Sha256};
 
 use super::cipher::{NoiseCipher, decrypt_with_ad, encrypt_with_ad, hkdf_two_keys};

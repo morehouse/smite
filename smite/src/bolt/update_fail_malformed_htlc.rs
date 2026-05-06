@@ -3,7 +3,7 @@
 use super::BoltError;
 use super::types::ChannelId;
 use super::wire::WireFormat;
-use secp256k1::hashes::sha256;
+use bitcoin::secp256k1::hashes::sha256;
 
 /// BOLT 2 `update_fail_malformed_htlc` message (type 135). Sent
 /// when a node cannot parse an incoming HTLC's onion packet.
@@ -57,7 +57,7 @@ mod tests {
     use super::super::CHANNEL_ID_SIZE;
     use super::*;
     use crate::bolt::SHA256_HASH_SIZE;
-    use secp256k1::hashes::Hash;
+    use bitcoin::secp256k1::hashes::Hash;
 
     /// Valid `UpdateFailMalformedHtlc` message for testing.
     fn sample_msg() -> UpdateFailMalformedHtlc {

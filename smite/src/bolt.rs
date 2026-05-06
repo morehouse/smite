@@ -7,6 +7,7 @@ mod accept_channel;
 mod accept_channel2;
 mod attribution_data;
 mod channel_ready;
+mod commitment;
 mod error;
 mod funding_created;
 mod funding_signed;
@@ -36,6 +37,9 @@ pub use accept_channel::{AcceptChannel, AcceptChannelTlvs};
 pub use accept_channel2::{AcceptChannel2, AcceptChannel2Tlvs};
 pub use attribution_data::{AttributionData, TruncatedHmac};
 pub use channel_ready::{ChannelReady, ChannelReadyTlvs};
+pub use commitment::{
+    ChannelConfig, ChannelPartyConfig, CommitmentPartyState, CommitmentState, HolderIdentity,
+};
 pub use error::Error;
 pub use funding_created::FundingCreated;
 pub use funding_signed::FundingSigned;
@@ -357,8 +361,8 @@ pub fn message_with_type(msg_type: u16, payload: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use secp256k1::hashes::{Hash, sha256};
-    use secp256k1::{PublicKey, Secp256k1, SecretKey};
+    use bitcoin::hashes::{Hash, sha256};
+    use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
     use types::CHAIN_HASH_SIZE;
 
     // Tests ordered by message type number: Warning(1), Init(16), Error(17), Ping(18), Pong(19)
@@ -411,7 +415,7 @@ mod tests {
     /// Valid `OpenChannel` message for testing.
     fn sample_open_channel() -> OpenChannel {
         let secp = Secp256k1::new();
-        let sk = SecretKey::from_byte_array([0x11; 32]).expect("valid secret");
+        let sk = SecretKey::from_slice(&[0x11; 32]).expect("valid secret");
         let pk = PublicKey::from_secret_key(&secp, &sk);
 
         OpenChannel {
@@ -449,7 +453,7 @@ mod tests {
     /// Valid `AcceptChannel` message for testing.
     fn sample_accept_channel() -> AcceptChannel {
         let secp = Secp256k1::new();
-        let sk = SecretKey::from_byte_array([0x11; 32]).expect("valid secret");
+        let sk = SecretKey::from_slice(&[0x11; 32]).expect("valid secret");
         let pk = PublicKey::from_secret_key(&secp, &sk);
 
         AcceptChannel {
@@ -483,9 +487,9 @@ mod tests {
     /// Valid `FundingCreated` message for testing.
     fn sample_funding_created() -> FundingCreated {
         let secp = Secp256k1::new();
-        let sk = SecretKey::from_byte_array([0x11; 32]).expect("valid secret");
+        let sk = SecretKey::from_slice(&[0x11; 32]).expect("valid secret");
         let msg = secp256k1::Message::from_digest([0xaa; 32]);
-        let sig = secp.sign_ecdsa(msg, &sk);
+        let sig = secp.sign_ecdsa(&msg, &sk);
 
         FundingCreated {
             temporary_channel_id: ChannelId::new([0xbb; CHANNEL_ID_SIZE]),
@@ -507,9 +511,9 @@ mod tests {
     /// Valid `FundingSigned` message for testing.
     fn sample_funding_signed() -> FundingSigned {
         let secp = Secp256k1::new();
-        let sk = SecretKey::from_byte_array([0x11; 32]).expect("valid secret");
+        let sk = SecretKey::from_slice(&[0x11; 32]).expect("valid secret");
         let msg = secp256k1::Message::from_digest([0xaa; 32]);
-        let sig = secp.sign_ecdsa(msg, &sk);
+        let sig = secp.sign_ecdsa(&msg, &sk);
 
         FundingSigned {
             channel_id: ChannelId::new([0xbb; CHANNEL_ID_SIZE]),
@@ -529,7 +533,7 @@ mod tests {
     /// Valid `ChannelReady` message for testing.
     fn sample_channel_ready() -> ChannelReady {
         let secp = Secp256k1::new();
-        let sk = SecretKey::from_byte_array([0x11; 32]).expect("valid secret");
+        let sk = SecretKey::from_slice(&[0x11; 32]).expect("valid secret");
         let pk = PublicKey::from_secret_key(&secp, &sk);
 
         ChannelReady {
@@ -560,7 +564,7 @@ mod tests {
     /// Valid `OpenChannel2` message for testing.
     fn sample_open_channel2() -> OpenChannel2 {
         let secp = Secp256k1::new();
-        let sk = SecretKey::from_byte_array([0x11; 32]).expect("valid secret");
+        let sk = SecretKey::from_slice(&[0x11; 32]).expect("valid secret");
         let pk = PublicKey::from_secret_key(&secp, &sk);
 
         OpenChannel2 {
@@ -605,7 +609,7 @@ mod tests {
         let keys: Vec<PublicKey> = secrets
             .iter()
             .map(|s| {
-                let sk = SecretKey::from_byte_array(*s).expect("valid secret");
+                let sk = SecretKey::from_slice(s).expect("valid secret");
                 PublicKey::from_secret_key(&secp, &sk)
             })
             .collect();

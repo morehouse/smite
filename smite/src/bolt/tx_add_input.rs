@@ -1,6 +1,6 @@
 //! BOLT 2 `tx_add_input` message.
 
-use secp256k1::hashes::Hash;
+use bitcoin::secp256k1::hashes::Hash;
 
 use super::BoltError;
 use super::tlv::TlvStream;

@@ -13,7 +13,7 @@ workspace = true
 [dependencies]
 log.workspace = true
 simple_logger.workspace = true
-secp256k1.workspace = true
+bitcoin.workspace = true
 thiserror.workspace = true
 
 # Noise protocol crypto dependencies (BOLT 8)

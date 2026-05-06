@@ -12,5 +12,5 @@ smite = { path = "../smite" }
 rand.workspace = true
 serde.workspace = true
 postcard.workspace = true
-secp256k1.workspace = true
+bitcoin.workspace = true
 thiserror.workspace = true

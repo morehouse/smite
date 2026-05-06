@@ -3,7 +3,7 @@
 //! Variables exist only during program execution -- they are never serialized.
 //! The serialized program stores data only in [`Operation`] literals.
 
-use secp256k1::PublicKey;
+use bitcoin::secp256k1::PublicKey;
 use smite::bolt::{AcceptChannel, ChannelId};
 
 const CHAIN_HASH_SIZE: usize = 32;

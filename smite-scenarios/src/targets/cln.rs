@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+use bitcoin::secp256k1;
 use serde::Deserialize;
 use smite::process::ManagedProcess;
 

@@ -4,7 +4,7 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::time::Duration;
 
-use secp256k1::{PublicKey, SecretKey};
+use bitcoin::secp256k1::{PublicKey, SecretKey};
 
 use super::cipher::{ENCRYPTED_LENGTH_SIZE, MAC_SIZE, MAX_MESSAGE_SIZE, NoiseCipher};
 use super::error::NoiseError;
