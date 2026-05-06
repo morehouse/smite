@@ -13,8 +13,6 @@
 //! - `AFL_CUSTOM_MUTATOR_ONLY=1` -- disable AFL++'s byte mutators. This also
 //!   disables the havoc stage entirely, so we deliberately do not implement
 //!   `afl_custom_havoc_mutation`.
-//! - `AFL_DISABLE_TRIM=1` -- this library does not implement custom trim and
-//!   AFL++'s default byte-level trim would corrupt our structured programs.
 //!
 //! # Buffer ownership
 //!
@@ -30,6 +28,7 @@ use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
 
 use smite_ir::generators::OpenChannelGenerator;
+use smite_ir::minimizers::{CommonSubexpressionEliminator, DeadCodeEliminator, Minimizer};
 use smite_ir::mutators::{InputSwapMutator, OperationParamMutator};
 use smite_ir::{Generator, Mutator, Program, ProgramBuilder};
 
@@ -46,6 +45,10 @@ struct MutatorState {
     /// Sequence of actions taken in the last [`afl_custom_fuzz`] call, used by
     /// [`afl_custom_describe`] to name queue entries.
     last_sequence: Vec<&'static str>,
+    /// `true` after [`afl_custom_init_trim`] has serialized a trimmed
+    /// candidate into `out_buf`; cleared by the first [`afl_custom_trim`]
+    /// call when it hands the buffer back to AFL.
+    trim_pending: bool,
 }
 
 impl MutatorState {
@@ -55,6 +58,7 @@ impl MutatorState {
             out_buf: Vec::new(),
             description: Vec::new(),
             last_sequence: vec!["init"],
+            trim_pending: false,
         }
     }
 
@@ -190,6 +194,111 @@ pub unsafe extern "C" fn afl_custom_fuzz(
     len
 }
 
+/// Runs the full minimizer pipeline (`DeadCodeEliminator` then
+/// `CommonSubexpressionEliminator`) on the corpus entry and stages the
+/// resulting candidate for [`afl_custom_trim`] to hand back.
+///
+/// Both minimizers are deterministic in-process transforms safe in IR
+/// semantics, so we don't need iterative AFL feedback. We compose them
+/// once and offer a single candidate. AFL still gets to verify it (its
+/// coverage cksum is the source of truth); on rejection AFL silently
+/// discards the candidate and keeps the original corpus entry.
+///
+/// AFL drives the trim loop with `while (stage_cur < stage_max)`, where
+/// `stage_max` is this function's return value and `stage_cur` is updated
+/// from [`afl_custom_post_trim`]'s return.
+///
+/// # Returns
+///
+/// - `1` if there's a candidate to offer (decode succeeded, validate
+///   passed, and the trim actually shrank the program). AFL enters the
+///   trim loop for one iteration.
+/// - `0` if there's nothing to do (decode/validate failed, or the trim
+///   was a no-op). AFL skips trim entirely.
+/// - Negative would signal a fatal error to AFL; we never produce one.
+///
+/// # Safety
+///
+/// - `data` must be a pointer returned by [`afl_custom_init`].
+/// - `buf` must point to `buf_size` readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn afl_custom_init_trim(
+    data: *mut c_void,
+    buf: *mut u8,
+    buf_size: usize,
+) -> i32 {
+    let state = unsafe { &mut *data.cast::<MutatorState>() };
+    state.trim_pending = false;
+
+    let input = unsafe { slice::from_raw_parts(buf, buf_size) };
+    let Some(program) = decode_and_validate(input) else {
+        return 0;
+    };
+
+    let trimmed =
+        CommonSubexpressionEliminator.minimize(DeadCodeEliminator.minimize(program.clone()));
+    if trimmed == program || !state.serialize(&trimmed, usize::MAX) {
+        return 0;
+    }
+
+    state.trim_pending = true;
+    1
+}
+
+/// Hands the pre-serialized trimmed candidate back to AFL.
+///
+/// The pointer written into `*out_buf` borrows from `MutatorState::out_buf`
+/// and is valid until the next call into this library; AFL copies the
+/// bytes before re-entering us. We always write a non-null pointer (even
+/// on the zero-length path) to satisfy AFL's `if (unlikely(!retbuf))
+/// FATAL(...)` check.
+///
+/// # Returns
+///
+/// - `> 0` on the first call after [`afl_custom_init_trim`]: the byte
+///   length of the candidate at `*out_buf`.
+/// - `0` afterwards. AFL treats this as "skip this iteration" rather than
+///   a stop signal; the loop terminates via [`afl_custom_post_trim`]'s
+///   return.
+///
+/// # Safety
+///
+/// - `data` must be a pointer returned by [`afl_custom_init`].
+/// - `out_buf` must be a valid, writable pointer to a `*const u8` slot.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn afl_custom_trim(data: *mut c_void, out_buf: *mut *const u8) -> usize {
+    let state = unsafe { &mut *data.cast::<MutatorState>() };
+    unsafe { *out_buf = state.out_buf.as_ptr() };
+    if state.trim_pending {
+        state.trim_pending = false;
+        state.out_buf.len()
+    } else {
+        0
+    }
+}
+
+/// Always returns `1` to terminate AFL's trim loop after a single
+/// iteration.
+///
+/// AFL drives trim with `while (stage_cur < stage_max)` and assigns
+/// `stage_cur` from this function's return value. With `stage_max = 1`
+/// (set by [`afl_custom_init_trim`]), returning `1` makes the condition
+/// `1 < 1` false and breaks the loop.
+///
+/// `success` indicates whether the candidate's coverage cksum matched the
+/// original. We don't need to act on it: AFL itself either persists the
+/// trimmed buffer (on success) or keeps the original corpus entry (on
+/// failure), and we don't track partial state across iterations because
+/// there's only one.
+///
+/// # Safety
+///
+/// - `data` must be a pointer returned by [`afl_custom_init`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn afl_custom_post_trim(_data: *mut c_void, _success: u8) -> i32 {
+    1
+}
+
 /// Marker symbol that tells AFL++ not to populate `add_buf` for
 /// [`afl_custom_fuzz`]. AFL++ never actually calls this function -- it only
 /// checks for the symbol's presence via `dlsym` and, if found, skips picking a
@@ -300,6 +409,19 @@ mod tests {
         postcard::to_allocvec(&builder.build()).expect("postcard serialization")
     }
 
+    /// `seed_program_bytes()` plus an unreferenced `LoadAmount`, so the
+    /// pipeline has something for DCE to drop (and thus `init_trim`
+    /// returns `1`).
+    fn reducible_seed_bytes() -> Vec<u8> {
+        let bytes = seed_program_bytes();
+        let mut program: Program = postcard::from_bytes(&bytes).expect("decode");
+        program.instructions.push(smite_ir::Instruction {
+            operation: smite_ir::Operation::LoadAmount(0xdead_beef),
+            inputs: vec![],
+        });
+        postcard::to_allocvec(&program).expect("encode")
+    }
+
     #[test]
     fn init_returns_nonnull() {
         let state = State::new(0);
@@ -396,5 +518,101 @@ mod tests {
         // AFL++ should never call this function, but invoking it should not
         // crash either.
         unsafe { afl_custom_splice_optout(ptr::null_mut()) };
+    }
+
+    // -- Trim tests --
+
+    fn init_trim_via_ffi(state: &State, mut input: Vec<u8>) -> i32 {
+        unsafe { afl_custom_init_trim(state.0, input.as_mut_ptr(), input.len()) }
+    }
+
+    fn trim_via_ffi(state: &State) -> (*const u8, usize) {
+        let mut out: *const u8 = ptr::null();
+        let len = unsafe { afl_custom_trim(state.0, &raw mut out) };
+        (out, len)
+    }
+
+    fn post_trim_via_ffi(state: &State, success: bool) -> i32 {
+        unsafe { afl_custom_post_trim(state.0, u8::from(success)) }
+    }
+
+    #[test]
+    fn trim_init_returns_1_when_reduction_possible() {
+        let state = State::new(0);
+        let rv = init_trim_via_ffi(&state, reducible_seed_bytes());
+        assert_eq!(rv, 1);
+    }
+
+    #[test]
+    fn trim_init_returns_0_when_no_reduction_possible() {
+        // Generator output has no dead code or duplicate loads; the
+        // pipeline is a no-op, so we tell AFL to skip trim entirely.
+        let state = State::new(0);
+        let rv = init_trim_via_ffi(&state, seed_program_bytes());
+        assert_eq!(rv, 0);
+    }
+
+    #[test]
+    fn trim_init_returns_0_for_garbage() {
+        let state = State::new(0);
+        let rv = init_trim_via_ffi(&state, vec![0xFF; 16]);
+        assert_eq!(rv, 0);
+    }
+
+    #[test]
+    fn trim_yields_one_candidate_then_zero() {
+        let state = State::new(0);
+        init_trim_via_ffi(&state, reducible_seed_bytes());
+
+        // First call: the trimmed candidate.
+        let (out, len) = trim_via_ffi(&state);
+        assert!(len > 0);
+        decode_and_validate(out, len);
+
+        // Subsequent calls: zero, regardless of post_trim verdicts.
+        post_trim_via_ffi(&state, true);
+        let (_, len) = trim_via_ffi(&state);
+        assert_eq!(len, 0);
+    }
+
+    #[test]
+    fn trim_post_trim_returns_1_to_terminate_loop() {
+        let state = State::new(0);
+        init_trim_via_ffi(&state, reducible_seed_bytes());
+        let _ = trim_via_ffi(&state);
+        // post_trim returns 1 unconditionally — it's the load-bearing
+        // termination signal that pushes AFL's `stage_cur` to `stage_max`.
+        assert_eq!(post_trim_via_ffi(&state, true), 1);
+        assert_eq!(post_trim_via_ffi(&state, false), 1);
+    }
+
+    #[test]
+    fn trim_candidate_is_smaller_than_input() {
+        let original_bytes = reducible_seed_bytes();
+        let original_program: Program = postcard::from_bytes(&original_bytes).expect("decode");
+
+        let state = State::new(0);
+        init_trim_via_ffi(&state, original_bytes);
+
+        let (out, len) = trim_via_ffi(&state);
+        assert!(len > 0, "trim should yield a candidate");
+        let trimmed: Program =
+            postcard::from_bytes(unsafe { slice::from_raw_parts(out, len) }).expect("decode");
+        assert!(
+            trimmed.instructions.len() < original_program.instructions.len(),
+            "trim should shrink instruction count"
+        );
+    }
+
+    #[test]
+    fn trim_returns_0_immediately_after_pipeline_exhausted() {
+        let state = State::new(0);
+        init_trim_via_ffi(&state, reducible_seed_bytes());
+        // Drain by taking the single candidate.
+        let _ = trim_via_ffi(&state);
+        post_trim_via_ffi(&state, false);
+        // A second call with no re-init should immediately return 0.
+        let (_, len) = trim_via_ffi(&state);
+        assert_eq!(len, 0, "trim should return 0 after pipeline is exhausted");
     }
 }
