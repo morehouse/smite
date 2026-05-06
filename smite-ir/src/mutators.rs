@@ -4,9 +4,11 @@
 //! structural validity. Each mutator makes a small, targeted change.
 
 mod input_swap;
+mod instruction_reorder;
 mod operation_param;
 
 pub use input_swap::InputSwapMutator;
+pub use instruction_reorder::InstructionReorderMutator;
 pub use operation_param::OperationParamMutator;
 
 use rand::Rng;
