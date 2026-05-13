@@ -1078,6 +1078,20 @@ fn instr_delete_changes_values() {
 }
 
 #[test]
+fn instr_delete_false_is_noop() {
+    let original = generate_program(0);
+    let mutator = InstructionDeleteMutator;
+    let mut rng = SmallRng::seed_from_u64(0);
+
+    for _ in 0..100 {
+        let mut program = original.clone();
+        if !mutator.mutate(&mut program, &mut rng) {
+            assert_eq!(program, original, "program modified on false return");
+        }
+    }
+}
+
+#[test]
 fn instr_delete_returns_false_on_empty_program() {
     let mut program = Program {
         instructions: vec![],
@@ -1145,7 +1159,7 @@ fn instr_delete_shifts_indices_correctly() {
         let mut program = original.clone();
         if mutator.mutate(&mut program, &mut rng) &&
             program.instructions.len() == 2 &&
-            // Check if it deleted index 1, meaning DerivePoint is now at index 1
+            // Check if it deleted a Load* operation, meaning DerivePoint is now at index 1
             program.instructions[1].operation == Operation::DerivePoint
         {
             // input references must have shifted from [1, 1] down to [0, 0]
@@ -1169,26 +1183,9 @@ fn instr_delete_maintains_validity() {
     for _ in 0..100 {
         let mut program = original.clone();
         if mutator.mutate(&mut program, &mut rng) {
-            for (i, instr) in program.instructions.iter().enumerate() {
-                let expected_types = instr.operation.input_types();
-                for (j, &input_idx) in instr.inputs.iter().enumerate() {
-                    assert!(
-                        input_idx < i,
-                        "instruction {i} input {j}: references undefined variable {input_idx}",
-                    );
-                    let actual_type = program.instructions[input_idx]
-                        .operation
-                        .output_type()
-                        .unwrap_or_else(|| {
-                            panic!("instruction {i} input {j}: references void at {input_idx}")
-                        });
-                    assert_eq!(
-                        actual_type, expected_types[j],
-                        "instruction {i} input {j}: expected {:?}, got {actual_type:?}",
-                        expected_types[j],
-                    );
-                }
-            }
+            program
+                .validate()
+                .expect("InstructionDeleteMutator produces valid programs");
         }
     }
 }
