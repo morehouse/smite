@@ -6,7 +6,7 @@ use super::Mutator;
 use crate::Program;
 
 /// Deletes a randomly selected instruction by removing it from
-/// the instuctions list and reindexing the subsequent instructions.
+/// the instructions list and reindexing the subsequent instructions.
 pub struct InstructionDeleteMutator;
 
 impl Mutator for InstructionDeleteMutator {
@@ -30,7 +30,7 @@ impl Mutator for InstructionDeleteMutator {
                 .enumerate()
                 .filter_map(|(i, instr)| {
                     let out_type = instr.operation.output_type();
-                    (out_type.is_some() && out_type == deleted_type).then_some(i)
+                    (out_type == deleted_type).then_some(i)
                 })
                 .choose(rng)
             else {
@@ -50,15 +50,13 @@ impl Mutator for InstructionDeleteMutator {
         program.instructions.remove(deleted_idx);
 
         // Decrement subsequent references pointing past the deleted index.
-        program.instructions[deleted_idx..]
-            .iter_mut()
-            .for_each(|instr| {
-                for input in &mut instr.inputs {
-                    if *input > deleted_idx {
-                        *input -= 1;
-                    }
+        for instr in &mut program.instructions[deleted_idx..] {
+            for input in &mut instr.inputs {
+                if *input > deleted_idx {
+                    *input -= 1;
                 }
-            });
+            }
+        }
         true
     }
 }
