@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
   "smite",
+  "smitebot",
   "smite-ir",
   "smite-ir-mutator",
   "smite-nyx-sys",
@@ -29,3 +30,4 @@ postcard = { version = "1.1", default-features = false, features = ["alloc"] }
 bitcoin = "0.32"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
+clap = { version = "4.5", features = ["derive"] }
