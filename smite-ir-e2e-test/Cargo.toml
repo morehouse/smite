@@ -1,0 +1,13 @@
+[package]
+name = "smite-ir-e2e-test"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+
+[[bin]]
+name = "smite-ir-e2e-test"
+path = "src/main.rs"
+
+[dependencies]
+smite-ir = { path = "../smite-ir" }
+postcard = { version = "1.1", default-features = false, features = ["alloc"] }
