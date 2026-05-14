@@ -18,41 +18,38 @@ impl Mutator for InstructionDeleteMutator {
         let deleted_idx = rng.random_range(0..program.instructions.len());
         let deleted_type = program.instructions[deleted_idx].operation.output_type();
 
-        // Heal downstream dependencies by swapping references to a prior,
-        // type-matching variable.
-        if program.instructions[(deleted_idx + 1)..]
+        // If any instruction downstream depends on the deleted one, pick a prior
+        // type-matching variable to redirect those inputs to.
+        let replacement_idx = if program.instructions[(deleted_idx + 1)..]
             .iter()
             .any(|instr| instr.inputs.contains(&deleted_idx))
         {
-            // Abort if no valid replacement variable exists in the preceding scope.
-            let Some(replacement_idx) = program.instructions[..deleted_idx]
+            match program.instructions[..deleted_idx]
                 .iter()
                 .enumerate()
                 .filter_map(|(i, instr)| {
-                    let out_type = instr.operation.output_type();
-                    (out_type == deleted_type).then_some(i)
+                    (instr.operation.output_type() == deleted_type).then_some(i)
                 })
                 .choose(rng)
-            else {
-                return false;
-            };
-            // Update dependent inputs.
-            for instr in &mut program.instructions[(deleted_idx + 1)..] {
-                for input in &mut instr.inputs {
-                    if *input == deleted_idx {
-                        *input = replacement_idx;
-                    }
-                }
+            {
+                Some(idx) => Some(idx),
+                // Abort if no valid replacement variable exists in the preceding scope.
+                None => return false,
             }
-        }
+        } else {
+            None
+        };
 
         // Delete from the program.
         program.instructions.remove(deleted_idx);
 
-        // Decrement subsequent references pointing past the deleted index.
+        // Heal downstream inputs: redirect references to the deleted index, and
+        // decrement references past it.
         for instr in &mut program.instructions[deleted_idx..] {
             for input in &mut instr.inputs {
-                if *input > deleted_idx {
+                if *input == deleted_idx {
+                    *input = replacement_idx.expect("dependent input implies replacement");
+                } else if *input > deleted_idx {
                     *input -= 1;
                 }
             }
