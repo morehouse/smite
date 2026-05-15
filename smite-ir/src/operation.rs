@@ -632,11 +632,29 @@ impl Operation {
     #[must_use]
     pub fn extractable_fields(&self) -> Vec<(Operation, VariableType)> {
         match self {
+            Self::LoadAmount(_)
+            | Self::LoadFeeratePerKw(_)
+            | Self::LoadBlockHeight(_)
+            | Self::LoadU16(_)
+            | Self::LoadU8(_)
+            | Self::LoadBytes(_)
+            | Self::LoadFeatures(_)
+            | Self::LoadPrivateKey(_)
+            | Self::LoadChannelId(_)
+            | Self::LoadShutdownScript(_)
+            | Self::LoadChannelType(_)
+            | Self::LoadTargetPubkeyFromContext
+            | Self::LoadChainHashFromContext
+            | Self::DerivePoint
+            | Self::ExtractAcceptChannel(_)
+            | Self::BuildOpenChannel
+            | Self::SendMessage
+            | Self::MineBlocks(_) => vec![],
+
             Self::RecvAcceptChannel => AcceptChannelField::ALL
                 .iter()
                 .map(|&f| (Self::ExtractAcceptChannel(f), f.output_type()))
                 .collect(),
-            _ => vec![],
         }
     }
 
@@ -644,21 +662,27 @@ impl Operation {
     /// by `OperationParamMutator`.
     #[must_use]
     pub fn is_param_mutable(&self) -> bool {
-        matches!(
-            self,
+        match self {
             Self::LoadAmount(_)
-                | Self::LoadFeeratePerKw(_)
-                | Self::LoadBlockHeight(_)
-                | Self::LoadU16(_)
-                | Self::LoadU8(_)
-                | Self::LoadBytes(_)
-                | Self::LoadFeatures(_)
-                | Self::LoadPrivateKey(_)
-                | Self::LoadChannelId(_)
-                | Self::LoadShutdownScript(_)
-                | Self::LoadChannelType(_)
-                | Self::MineBlocks(_)
-                | Self::ExtractAcceptChannel(_)
-        )
+            | Self::LoadFeeratePerKw(_)
+            | Self::LoadBlockHeight(_)
+            | Self::LoadU16(_)
+            | Self::LoadU8(_)
+            | Self::LoadBytes(_)
+            | Self::LoadFeatures(_)
+            | Self::LoadPrivateKey(_)
+            | Self::LoadChannelId(_)
+            | Self::LoadShutdownScript(_)
+            | Self::LoadChannelType(_)
+            | Self::MineBlocks(_)
+            | Self::ExtractAcceptChannel(_) => true,
+
+            Self::LoadTargetPubkeyFromContext
+            | Self::LoadChainHashFromContext
+            | Self::DerivePoint
+            | Self::BuildOpenChannel
+            | Self::SendMessage
+            | Self::RecvAcceptChannel => false,
+        }
     }
 }
