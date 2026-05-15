@@ -78,6 +78,16 @@ fn mutate_operation(op: &mut Operation, rng: &mut impl Rng) -> bool {
             true
         }
         Operation::ExtractAcceptChannel(field) => mutate_extract_field(field, rng),
+        Operation::BuildNodeAnnouncement { rgb_color, alias } => {
+            // Randomly mutate rgb_color or alias bytes in place; never change
+            // their lengths (array types prevent it).
+            if rng.random() {
+                mutate_fixed_bytes(rgb_color, rng);
+            } else {
+                mutate_fixed_bytes(alias, rng);
+            }
+            true
+        }
 
         // Non-mutable variants. Reaching here means `is_param_mutable` and this
         // match have drifted out of sync.
