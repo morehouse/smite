@@ -794,7 +794,7 @@ mod tests {
         let secp = Secp256k1::new();
         let sk = SecretKey::from_slice(&[0x11; 32]).expect("valid secret");
 
-        NodeAnnouncement {
+        let mut na = NodeAnnouncement {
             signature: Signature::from_compact(&[0u8; 64]).unwrap(),
             features: vec![0x01, 0x02],
             timestamp: 1_700_000_000,
@@ -802,7 +802,10 @@ mod tests {
             rgb_color: [0xaa, 0xbb, 0xcc],
             alias: [0x42; 32],
             addresses: vec![0x01, 0x7f, 0x00, 0x00, 0x01, 0x23, 0x45],
-        }
+            extra: vec![0x01, 0x02, 0x03],
+        };
+        na.sign(&sk);
+        na
     }
 
     #[test]
