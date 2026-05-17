@@ -234,6 +234,22 @@ fn postcard_roundtrip() {
                 operation: Operation::MineBlocks(6),
                 inputs: vec![],
             },
+            Instruction {
+                operation: Operation::LoadPrivateKey(key(2)),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::DerivePoint,
+                inputs: vec![7],
+            },
+            Instruction {
+                operation: Operation::LoadFeeratePerKw(15_000),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::CreateFundingTransaction,
+                inputs: vec![1, 8, 4, 9],
+            },
         ],
     };
 
@@ -296,6 +312,184 @@ fn validate_rejects_mine_blocks_with_wrong_input() {
             got: 1
         }),
     );
+}
+
+#[test]
+fn create_funding_transaction_operation() {
+    let op = Operation::CreateFundingTransaction;
+    assert_eq!(
+        op.input_types(),
+        vec![
+            VariableType::Point,
+            VariableType::Point,
+            VariableType::Amount,
+            VariableType::FeeratePerKw,
+        ],
+    );
+    assert_eq!(op.output_type(), Some(VariableType::FundingTransaction));
+    assert!(!op.is_param_mutable());
+}
+
+fn create_funding_transaction_instructions() -> Vec<Instruction> {
+    vec![
+        Instruction {
+            operation: Operation::LoadPrivateKey(key(1)),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::DerivePoint,
+            inputs: vec![0],
+        },
+        Instruction {
+            operation: Operation::LoadPrivateKey(key(2)),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::DerivePoint,
+            inputs: vec![2],
+        },
+        Instruction {
+            operation: Operation::LoadAmount(10_000_000),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::LoadFeeratePerKw(15_000),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::CreateFundingTransaction,
+            inputs: vec![1, 3, 4, 5],
+        },
+    ]
+}
+
+#[test]
+fn displays_create_funding_transaction_program() {
+    let program = Program {
+        instructions: create_funding_transaction_instructions(),
+    };
+    let text = program.to_string();
+    let lines: Vec<&str> = text.lines().collect();
+
+    let z31 = "00".repeat(31);
+
+    let expected = vec![
+        format!("v0 = LoadPrivateKey(0x{z31}01)"),
+        "v1 = DerivePoint(v0)".into(),
+        format!("v2 = LoadPrivateKey(0x{z31}02)"),
+        "v3 = DerivePoint(v2)".into(),
+        "v4 = LoadAmount(10000000)".into(),
+        "v5 = LoadFeeratePerKw(15000)".into(),
+        "v6 = CreateFundingTransaction(v1, v3, v4, v5)".into(),
+    ];
+    assert_eq!(lines, expected);
+}
+
+#[test]
+fn validate_accepts_create_funding_transaction() {
+    let program = Program {
+        instructions: create_funding_transaction_instructions(),
+    };
+    program
+        .validate()
+        .expect("CreateFundingTransaction should validate");
+}
+
+#[test]
+fn validate_rejects_create_funding_transaction_with_wrong_input_count() {
+    let program = Program {
+        instructions: vec![Instruction {
+            operation: Operation::CreateFundingTransaction,
+            inputs: vec![],
+        }],
+    };
+    assert_eq!(
+        program.validate(),
+        Err(ValidateError::WrongInputCount {
+            instr: 0,
+            expected: 4,
+            got: 0,
+        }),
+    );
+}
+
+#[test]
+fn validate_rejects_create_funding_transaction_with_wrong_input_type() {
+    fn program_with_wrong_input(pos: usize, wrong: Operation) -> Program {
+        let mut inputs = vec![2, 2, 3, 4];
+        inputs[pos] = 0;
+
+        Program {
+            instructions: vec![
+                Instruction {
+                    operation: wrong, // wrong-typed value
+                    inputs: vec![],
+                },
+                Instruction {
+                    operation: Operation::LoadPrivateKey(key(1)),
+                    inputs: vec![],
+                },
+                Instruction {
+                    operation: Operation::DerivePoint,
+                    inputs: vec![1],
+                },
+                Instruction {
+                    operation: Operation::LoadAmount(100_000),
+                    inputs: vec![],
+                },
+                Instruction {
+                    operation: Operation::LoadFeeratePerKw(1_500),
+                    inputs: vec![],
+                },
+                Instruction {
+                    operation: Operation::CreateFundingTransaction,
+                    inputs,
+                },
+            ],
+        }
+    }
+
+    // input pos, wrong, expected, got
+    let cases = [
+        (
+            0,
+            Operation::LoadAmount(100_000),
+            VariableType::Point,
+            VariableType::Amount,
+        ),
+        (
+            1,
+            Operation::LoadFeeratePerKw(1_500),
+            VariableType::Point,
+            VariableType::FeeratePerKw,
+        ),
+        (
+            2,
+            Operation::LoadPrivateKey(key(1)),
+            VariableType::Amount,
+            VariableType::PrivateKey,
+        ),
+        (
+            3,
+            Operation::LoadAmount(100_000),
+            VariableType::FeeratePerKw,
+            VariableType::Amount,
+        ),
+    ];
+
+    for (input, wrong, expected, got) in cases {
+        let result = program_with_wrong_input(input, wrong).validate();
+
+        assert_eq!(
+            result,
+            Err(ValidateError::TypeMismatch {
+                instr: 5,
+                input,
+                expected,
+                got,
+            }),
+        );
+    }
 }
 
 // Ensure AcceptChannelField and AcceptChannelField::ALL stay in sync. The
@@ -683,6 +877,14 @@ fn generate_fresh_accept_channel_panics() {
     let mut rng = SmallRng::seed_from_u64(0);
     let mut builder = ProgramBuilder::new();
     builder.generate_fresh(VariableType::AcceptChannel, &mut rng);
+}
+
+#[test]
+#[should_panic(expected = "cannot generate fresh FundingTransaction")]
+fn generate_fresh_funding_transaction_panics() {
+    let mut rng = SmallRng::seed_from_u64(0);
+    let mut builder = ProgramBuilder::new();
+    builder.generate_fresh(VariableType::FundingTransaction, &mut rng);
 }
 
 #[test]

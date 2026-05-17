@@ -66,6 +66,14 @@ pub enum Operation {
     /// Extract a field from a parsed `accept_channel` response.
     /// Input: `AcceptChannel`.
     ExtractAcceptChannel(AcceptChannelField),
+    /// Create a BOLT 3 funding transaction for the channel funding flow.
+    ///
+    /// Inputs (4):
+    ///   0: `opener_funding_pubkey` (`Point`)
+    ///   1: `acceptor_funding_pubkey` (`Point`)
+    ///   2: `funding_satoshis` (`Amount`)
+    ///   3: `feerate_per_kw` (`FeeratePerKw`)
+    CreateFundingTransaction,
 
     // -- Build: construct a BOLT message from inputs --
     /// Build an `open_channel` message (BOLT 2, type 32).
@@ -532,6 +540,7 @@ impl fmt::Display for Operation {
             // Operations with inputs: parens added by Program::Display.
             Self::DerivePoint => write!(f, "DerivePoint"),
             Self::ExtractAcceptChannel(field) => write!(f, "Extract{field}"),
+            Self::CreateFundingTransaction => write!(f, "CreateFundingTransaction"),
             Self::BuildOpenChannel => write!(f, "BuildOpenChannel"),
             Self::SendMessage => write!(f, "SendMessage"),
         }
@@ -557,6 +566,7 @@ impl Operation {
             Self::LoadTargetPubkeyFromContext | Self::DerivePoint => Some(VariableType::Point),
             Self::LoadChainHashFromContext => Some(VariableType::ChainHash),
             Self::ExtractAcceptChannel(field) => Some(field.output_type()),
+            Self::CreateFundingTransaction => Some(VariableType::FundingTransaction),
             Self::BuildOpenChannel => Some(VariableType::Message),
             Self::SendMessage | Self::MineBlocks(_) => None,
             Self::RecvAcceptChannel => Some(VariableType::AcceptChannel),
@@ -587,6 +597,12 @@ impl Operation {
             Self::DerivePoint => vec![VariableType::PrivateKey],
             Self::ExtractAcceptChannel(_) => vec![VariableType::AcceptChannel],
             Self::SendMessage => vec![VariableType::Message],
+            Self::CreateFundingTransaction => vec![
+                VariableType::Point,        // opener_funding_pubkey
+                VariableType::Point,        // acceptor_funding_pubkey
+                VariableType::Amount,       // funding_satoshis
+                VariableType::FeeratePerKw, // feerate_per_kw
+            ],
 
             Self::BuildOpenChannel => vec![
                 VariableType::ChainHash,    // chain_hash
@@ -639,7 +655,8 @@ impl Operation {
             | Self::ExtractAcceptChannel(_)
             | Self::BuildOpenChannel
             | Self::SendMessage
-            | Self::MineBlocks(_) => vec![],
+            | Self::MineBlocks(_)
+            | Self::CreateFundingTransaction => vec![],
 
             Self::RecvAcceptChannel => AcceptChannelField::ALL
                 .iter()
@@ -673,7 +690,8 @@ impl Operation {
             | Self::DerivePoint
             | Self::BuildOpenChannel
             | Self::SendMessage
-            | Self::RecvAcceptChannel => false,
+            | Self::RecvAcceptChannel
+            | Self::CreateFundingTransaction => false,
         }
     }
 }

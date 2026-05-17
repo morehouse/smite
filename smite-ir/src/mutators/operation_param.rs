@@ -82,6 +82,7 @@ fn mutate_operation(op: &mut Operation, rng: &mut impl Rng) -> bool {
         // Non-mutable variants. Reaching here means `is_param_mutable` and this
         // match have drifted out of sync.
         Operation::DerivePoint
+        | Operation::CreateFundingTransaction
         | Operation::LoadTargetPubkeyFromContext
         | Operation::LoadChainHashFromContext
         | Operation::BuildOpenChannel
