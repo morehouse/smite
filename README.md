@@ -65,6 +65,7 @@ printf '\x00' > /tmp/smite-seeds/empty
 # Start fuzzing with the custom mutator
 AFL_CUSTOM_MUTATOR_LIBRARY=target/release/libsmite_ir_mutator.so \
 AFL_CUSTOM_MUTATOR_ONLY=1 \
+AFL_FRAMESHIFT_DISABLE=1 \
 AFL_DISABLE_TRIM=1 \
 ~/AFLplusplus/afl-fuzz -X -i /tmp/smite-seeds -o /tmp/smite-out -- /tmp/smite-nyx
 ```
