@@ -11,6 +11,7 @@
 use std::fmt;
 use std::fmt::Write;
 
+use bitcoin::{opcodes::all as opcodes, script::Builder, script::PushBytes};
 use rand::{Rng, RngExt};
 use serde::{Deserialize, Serialize};
 
@@ -196,32 +197,20 @@ impl ShutdownScriptVariant {
     pub fn encode(&self) -> Vec<u8> {
         match self {
             Self::Empty => Vec::new(),
-            Self::P2pkh(h) => {
-                let mut out = Vec::with_capacity(25);
-                out.extend_from_slice(&[0x76, 0xa9, 0x14]);
-                out.extend_from_slice(h);
-                out.extend_from_slice(&[0x88, 0xac]);
-                out
-            }
-            Self::P2sh(h) => {
-                let mut out = Vec::with_capacity(23);
-                out.extend_from_slice(&[0xa9, 0x14]);
-                out.extend_from_slice(h);
-                out.push(0x87);
-                out
-            }
-            Self::P2wpkh(h) => {
-                let mut out = Vec::with_capacity(22);
-                out.extend_from_slice(&[0x00, 0x14]);
-                out.extend_from_slice(h);
-                out
-            }
-            Self::P2wsh(h) => {
-                let mut out = Vec::with_capacity(34);
-                out.extend_from_slice(&[0x00, 0x20]);
-                out.extend_from_slice(h);
-                out
-            }
+            Self::P2pkh(h) => Builder::new()
+                .push_opcode(opcodes::OP_DUP)
+                .push_opcode(opcodes::OP_HASH160)
+                .push_slice(h)
+                .push_opcode(opcodes::OP_EQUALVERIFY)
+                .push_opcode(opcodes::OP_CHECKSIG)
+                .into_bytes(),
+            Self::P2sh(h) => Builder::new()
+                .push_opcode(opcodes::OP_HASH160)
+                .push_slice(h)
+                .push_opcode(opcodes::OP_EQUAL)
+                .into_bytes(),
+            Self::P2wpkh(h) => Builder::new().push_int(0).push_slice(h).into_bytes(),
+            Self::P2wsh(h) => Builder::new().push_int(0).push_slice(h).into_bytes(),
             Self::AnySegwit { version, program } => {
                 assert!(
                     (Self::ANYSEGWIT_MIN_VERSION..=Self::ANYSEGWIT_MAX_VERSION).contains(version),
@@ -233,13 +222,13 @@ impl ShutdownScriptVariant {
                     "AnySegwit program length {} out of range",
                     program.len(),
                 );
-                // OP_1..OP_16 = 0x51..=0x60 (i.e., 0x50 + version).
-                let opcode = 0x50 + version;
-                let mut out = Vec::with_capacity(2 + program.len());
-                #[allow(clippy::cast_possible_truncation)] // program.len() is at most 40.
-                out.extend_from_slice(&[opcode, program.len() as u8]);
-                out.extend_from_slice(program);
-                out
+                Builder::new()
+                    .push_int(i64::from(*version))
+                    .push_slice(
+                        <&PushBytes>::try_from(program.as_slice())
+                            .expect("AnySegwit program length checked above"),
+                    )
+                    .into_bytes()
             }
             Self::OpReturn(data) => {
                 assert!(
@@ -248,18 +237,13 @@ impl ShutdownScriptVariant {
                     "OpReturn data length {} out of range",
                     data.len(),
                 );
-                let mut out = Vec::with_capacity(3 + data.len());
-                out.push(0x6a); // OP_RETURN
-                if data.len() <= 75 {
-                    #[allow(clippy::cast_possible_truncation)] // data.len() <= 75 here.
-                    out.push(data.len() as u8);
-                } else {
-                    // OP_PUSHDATA1 followed by length (76..=80).
-                    #[allow(clippy::cast_possible_truncation)] // data.len() <= 80 here.
-                    out.extend_from_slice(&[0x4c, data.len() as u8]);
-                }
-                out.extend_from_slice(data);
-                out
+                Builder::new()
+                    .push_opcode(opcodes::OP_RETURN)
+                    .push_slice(
+                        <&PushBytes>::try_from(data.as_slice())
+                            .expect("OpReturn data length checked above"),
+                    )
+                    .into_bytes()
             }
         }
     }
