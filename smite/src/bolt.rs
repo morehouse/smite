@@ -7,6 +7,7 @@ mod accept_channel;
 mod accept_channel2;
 mod attribution_data;
 mod channel_ready;
+mod channel_update;
 mod error;
 mod funding_created;
 mod funding_signed;
@@ -37,6 +38,7 @@ pub use accept_channel::{AcceptChannel, AcceptChannelTlvs};
 pub use accept_channel2::{AcceptChannel2, AcceptChannel2Tlvs};
 pub use attribution_data::{AttributionData, TruncatedHmac};
 pub use channel_ready::{ChannelReady, ChannelReadyTlvs};
+pub use channel_update::ChannelUpdate;
 pub use error::Error;
 pub use funding_created::FundingCreated;
 pub use funding_signed::FundingSigned;
@@ -58,7 +60,7 @@ pub use tx_remove_input::TxRemoveInput;
 pub use tx_remove_output::TxRemoveOutput;
 pub use types::{
     BigSize, CHANNEL_ID_SIZE, COMPACT_SIGNATURE_SIZE, ChannelId, MAX_MESSAGE_SIZE, PUBLIC_KEY_SIZE,
-    SHA256_HASH_SIZE, TXID_SIZE,
+    SHA256_HASH_SIZE, SHORT_CHANNEL_ID_SIZE, ShortChannelId, TXID_SIZE,
 };
 pub use update_fail_htlc::{UpdateFailHtlc, UpdateFailHtlcTlvs};
 pub use update_fail_malformed_htlc::UpdateFailMalformedHtlc;
@@ -153,6 +155,8 @@ pub mod msg_type {
     pub const UPDATE_FAIL_MALFORMED_HTLC: u16 = 135;
     /// `node_announcement` message (BOLT 7).
     pub const NODE_ANNOUNCEMENT: u16 = 257;
+    /// `channel_update` message (BOLT 7).
+    pub const CHANNEL_UPDATE: u16 = 258;
     /// Gossip timestamp filter message (BOLT 7).
     pub const GOSSIP_TIMESTAMP_FILTER: u16 = 265;
 }
@@ -209,6 +213,8 @@ pub enum Message {
     UpdateFailMalformedHtlc(UpdateFailMalformedHtlc),
     /// `node_announcement` message (type 257).
     NodeAnnouncement(NodeAnnouncement),
+    /// `channel_update` message (type 258).
+    ChannelUpdate(ChannelUpdate),
     /// Gossip timestamp filter message (type 265).
     GossipTimestampFilter(GossipTimestampFilter),
     /// Unknown message type.
@@ -252,6 +258,7 @@ impl Message {
             Self::UpdateFailHtlc(_) => msg_type::UPDATE_FAIL_HTLC,
             Self::UpdateFailMalformedHtlc(_) => msg_type::UPDATE_FAIL_MALFORMED_HTLC,
             Self::NodeAnnouncement(_) => msg_type::NODE_ANNOUNCEMENT,
+            Self::ChannelUpdate(_) => msg_type::CHANNEL_UPDATE,
             Self::GossipTimestampFilter(_) => msg_type::GOSSIP_TIMESTAMP_FILTER,
             Self::Unknown { msg_type, .. } => *msg_type,
         }
@@ -287,6 +294,7 @@ impl Message {
             Self::UpdateFailHtlc(m) => out.extend(m.encode()),
             Self::UpdateFailMalformedHtlc(m) => out.extend(m.encode()),
             Self::NodeAnnouncement(m) => out.extend(m.encode()),
+            Self::ChannelUpdate(m) => out.extend(m.encode()),
             Self::GossipTimestampFilter(m) => out.extend(m.encode()),
             Self::Unknown { payload, .. } => out.extend(payload),
         }
@@ -335,6 +343,7 @@ impl Message {
             msg_type::NODE_ANNOUNCEMENT => {
                 Ok(Self::NodeAnnouncement(NodeAnnouncement::decode(cursor)?))
             }
+            msg_type::CHANNEL_UPDATE => Ok(Self::ChannelUpdate(ChannelUpdate::decode(cursor)?)),
             msg_type::GOSSIP_TIMESTAMP_FILTER => Ok(Self::GossipTimestampFilter(
                 GossipTimestampFilter::decode(cursor)?,
             )),
@@ -809,6 +818,38 @@ mod tests {
         assert_eq!(decoded, Message::NodeAnnouncement(na));
     }
 
+    fn sample_channel_update() -> ChannelUpdate {
+        let sk = SecretKey::from_slice(&[0x22; 32]).expect("valid secret");
+
+        let mut cu = ChannelUpdate {
+            // Placeholder; overwritten by `sign` below.
+            signature: Signature::from_compact(&[0; COMPACT_SIGNATURE_SIZE])
+                .expect("zero signature parses"),
+            chain_hash: [0x6f; CHAIN_HASH_SIZE],
+            short_channel_id: ShortChannelId::from_u64(0x0000_0824_0000_0035),
+            timestamp: 1_715_000_000,
+            message_flags: 1, // must_be_one
+            channel_flags: 0,
+            cltv_expiry_delta: 144,
+            htlc_minimum_msat: 1_000,
+            fee_base_msat: 1_000,
+            fee_proportional_millionths: 100,
+            htlc_maximum_msat: 99_000_000,
+            extra: Vec::new(),
+        };
+        cu.sign(&sk);
+        cu
+    }
+
+    #[test]
+    fn message_channel_update_roundtrip() {
+        let cu = sample_channel_update();
+        let msg = Message::ChannelUpdate(cu.clone());
+        let encoded = msg.encode();
+        let decoded = Message::decode(&encoded).unwrap();
+        assert_eq!(decoded, Message::ChannelUpdate(cu));
+    }
+
     #[test]
     fn message_gossip_timestamp_filter_roundtrip() {
         let chain_hash = [0x6f; 32];
@@ -958,6 +999,10 @@ mod tests {
         assert_eq!(
             Message::NodeAnnouncement(sample_node_announcement()).msg_type(),
             msg_type::NODE_ANNOUNCEMENT
+        );
+        assert_eq!(
+            Message::ChannelUpdate(sample_channel_update()).msg_type(),
+            msg_type::CHANNEL_UPDATE
         );
         assert_eq!(
             Message::GossipTimestampFilter(GossipTimestampFilter::no_gossip([0u8; 32])).msg_type(),

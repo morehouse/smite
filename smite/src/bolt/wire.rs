@@ -3,7 +3,7 @@
 use crate::bolt::BoltError;
 use crate::bolt::types::{
     BigSize, CHANNEL_ID_SIZE, COMPACT_SIGNATURE_SIZE, ChannelId, PUBLIC_KEY_SIZE, SHA256_HASH_SIZE,
-    TXID_SIZE,
+    ShortChannelId, TXID_SIZE,
 };
 use bitcoin::Txid;
 use bitcoin::hashes::{Hash, sha256};
@@ -84,6 +84,22 @@ impl WireFormat for ChannelId {
 
     fn write(&self, out: &mut Vec<u8>) {
         self.as_bytes().write(out);
+    }
+}
+
+impl WireFormat for ShortChannelId {
+    /// Reads a packed 8-byte big-endian `short_channel_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Truncated` if fewer than 8 bytes remain.
+    fn read(data: &mut &[u8]) -> Result<Self, BoltError> {
+        let scid = u64::read(data)?;
+        Ok(Self::from_u64(scid))
+    }
+
+    fn write(&self, out: &mut Vec<u8>) {
+        self.as_u64().write(out);
     }
 }
 
@@ -216,6 +232,7 @@ impl WireFormat for sha256::Hash {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bolt::SHORT_CHANNEL_ID_SIZE;
     use bitcoin::secp256k1::{self, Secp256k1, SecretKey};
 
     #[test]
@@ -567,6 +584,39 @@ mod tests {
         let id = ChannelId::read(&mut data).unwrap();
         assert_eq!(id, ChannelId::new([0x11; CHANNEL_ID_SIZE]));
         assert_eq!(data.len(), 8); // 8 bytes remaining
+    }
+
+    #[test]
+    fn short_channel_id_write_roundtrip() {
+        let scid = ShortChannelId::new(539_268, 845, 1);
+        let mut buf = Vec::new();
+        scid.write(&mut buf);
+        assert_eq!(buf.len(), SHORT_CHANNEL_ID_SIZE);
+
+        let mut cursor: &[u8] = &buf;
+        let decoded = ShortChannelId::read(&mut cursor).unwrap();
+        assert_eq!(decoded, scid);
+        assert!(cursor.is_empty());
+    }
+
+    #[test]
+    fn short_channel_id_read_truncated() {
+        let mut empty: &[u8] = &[];
+        assert_eq!(
+            ShortChannelId::read(&mut empty),
+            Err(BoltError::Truncated {
+                expected: SHORT_CHANNEL_ID_SIZE,
+                actual: 0
+            })
+        );
+    }
+
+    #[test]
+    fn short_channel_id_wire_layout_is_big_endian_packed() {
+        let scid = ShortChannelId::new(0x00_08_37_a4, 0x00_00_03_4d, 0x0001);
+        let mut buf = Vec::new();
+        scid.write(&mut buf);
+        assert_eq!(buf, [0x08, 0x37, 0xa4, 0x00, 0x03, 0x4d, 0x00, 0x01]);
     }
 
     #[test]
