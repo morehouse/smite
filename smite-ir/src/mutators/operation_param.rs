@@ -392,3 +392,54 @@ fn interesting_u32(rng: &mut impl Rng) -> u32 {
 fn interesting_u64(rng: &mut impl Rng) -> u64 {
     INTERESTING_U64[rng.random_range(0..INTERESTING_U64.len())]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::{SeedableRng, rngs::SmallRng};
+
+    #[test]
+    fn shuffle_subrange_preserves_elements() {
+        let mut rng = SmallRng::seed_from_u64(0);
+        let sorted = vec![1, 2, 3, 4, 5, 6, 7, 8];
+        let mut shuffled = sorted.clone();
+
+        for _ in 0..100 {
+            shuffle_subrange(&mut shuffled, &mut rng);
+            shuffled.sort_unstable();
+            assert_eq!(
+                shuffled, sorted,
+                "shuffle_subrange must preserve all original elements"
+            );
+        }
+    }
+
+    #[test]
+    fn shuffle_subrange_mutates_input() {
+        let mut rng = SmallRng::seed_from_u64(0);
+        let data = vec![1, 2, 3, 4, 5, 6, 7, 8];
+        let mut mutated = false;
+
+        for _ in 0..50 {
+            let mut cloned = data.clone();
+            shuffle_subrange(&mut cloned, &mut rng);
+            if data != cloned {
+                mutated = true;
+            }
+        }
+        assert!(mutated, "shuffle_subrange doesn't mutate input");
+    }
+
+    #[test]
+    fn shuffle_subrange_empty_and_single() {
+        let mut rng = SmallRng::seed_from_u64(0);
+
+        let mut empty: Vec<u8> = vec![];
+        shuffle_subrange(&mut empty, &mut rng);
+        assert!(empty.is_empty());
+
+        let mut single = vec![0xFF];
+        shuffle_subrange(&mut single, &mut rng);
+        assert_eq!(single, vec![0xFF]);
+    }
+}
