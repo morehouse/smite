@@ -7,7 +7,7 @@ use smite::bolt::MAX_MESSAGE_SIZE;
 
 use super::*;
 use generators::OpenChannelGenerator;
-use mutators::{InputSwapMutator, OperationParamMutator};
+use mutators::{InputSwapMutator, InstructionDeleteMutator, OperationParamMutator};
 use operation::{AcceptChannelField, ChannelTypeVariant, ShutdownScriptVariant};
 use program::ValidateError;
 
@@ -1161,6 +1161,137 @@ fn input_swap_preserves_types() {
                     );
                 }
             }
+        }
+    }
+}
+
+// -- InstructionDeleteMutator tests --
+
+#[test]
+fn instr_delete_changes_values() {
+    let original = generate_program(0);
+    let mut program = original.clone();
+    let mutator = InstructionDeleteMutator;
+    let mut rng = SmallRng::seed_from_u64(0);
+
+    for _ in 0..100 {
+        mutator.mutate(&mut program, &mut rng);
+    }
+    assert_ne!(
+        program, original,
+        "InstructionDeleteMutator never changed the program"
+    );
+}
+
+#[test]
+fn instr_delete_false_is_noop() {
+    let original = generate_program(0);
+    let mutator = InstructionDeleteMutator;
+    let mut rng = SmallRng::seed_from_u64(0);
+
+    for _ in 0..100 {
+        let mut program = original.clone();
+        if !mutator.mutate(&mut program, &mut rng) {
+            assert_eq!(program, original, "program modified on false return");
+        }
+    }
+}
+
+#[test]
+fn instr_delete_returns_false_on_empty_program() {
+    let mut program = Program {
+        instructions: vec![],
+    };
+    let mutator = InstructionDeleteMutator;
+    let mut rng = SmallRng::seed_from_u64(0);
+    assert!(!mutator.mutate(&mut program, &mut rng));
+}
+
+#[test]
+fn instr_delete_returns_false_if_unhealable() {
+    let original = Program {
+        instructions: vec![
+            Instruction {
+                operation: Operation::LoadPrivateKey(key(1)),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::DerivePoint,
+                inputs: vec![0],
+            },
+        ],
+    };
+    let mutator = InstructionDeleteMutator;
+    let mut rng = SmallRng::seed_from_u64(0);
+    let mut found_unhealable = false;
+
+    for _ in 0..100 {
+        let mut program = original.clone();
+        if !mutator.mutate(&mut program, &mut rng) {
+            found_unhealable = true;
+            break;
+        }
+    }
+    assert!(
+        found_unhealable,
+        "mutator never returned false for unhealable instruction"
+    );
+}
+
+#[test]
+fn instr_delete_shifts_indices_correctly() {
+    let original = Program {
+        instructions: vec![
+            Instruction {
+                operation: Operation::LoadPrivateKey(key(1)),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadPrivateKey(key(2)),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::DerivePoint,
+                inputs: vec![1, 1],
+            },
+        ],
+    };
+
+    let mutator = InstructionDeleteMutator;
+    let mut rng = SmallRng::seed_from_u64(0);
+    let mut verified_shift = false;
+
+    for _ in 0..100 {
+        let mut program = original.clone();
+        if mutator.mutate(&mut program, &mut rng) &&
+            program.instructions.len() == 2 &&
+            // Check if it deleted a Load* operation, meaning DerivePoint is now at index 1
+            program.instructions[1].operation == Operation::DerivePoint
+        {
+            // input references must have shifted from [1, 1] down to [0, 0]
+            assert_eq!(program.instructions[1].inputs, vec![0, 0]);
+            verified_shift = true;
+            break;
+        }
+    }
+    assert!(
+        verified_shift,
+        "mutator never took the expected target shift path"
+    );
+}
+
+#[test]
+fn instr_delete_maintains_validity() {
+    let original = generate_program(0);
+    let mutator = InstructionDeleteMutator;
+    let mut rng = SmallRng::seed_from_u64(0);
+
+    for _ in 0..100 {
+        let mut program = original.clone();
+        if mutator.mutate(&mut program, &mut rng) {
+            program
+                .validate()
+                .expect("InstructionDeleteMutator produces valid programs");
         }
     }
 }
