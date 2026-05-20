@@ -3,7 +3,7 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Output, Command};
+use std::process::{Command, Output};
 
 use clap::Args;
 use serde::Serialize;
@@ -257,7 +257,8 @@ fn check_docker_daemon() -> Result<(), CheckFailure> {
 /// Resolves the AFL++ root from `--aflpp-path`, falling back to the parent of `afl-fuzz`.
 fn resolve_aflpp_root(aflpp_path: Option<&Path>) -> Option<PathBuf> {
     aflpp_path.map(Path::to_path_buf).or_else(|| {
-        find_in_path("afl-fuzz").and_then(|afl_fuzz_path| afl_fuzz_path.parent().map(Path::to_path_buf))
+        find_in_path("afl-fuzz")
+            .and_then(|afl_fuzz_path| afl_fuzz_path.parent().map(Path::to_path_buf))
     })
 }
 
@@ -490,7 +491,10 @@ mod tests {
     #[test]
     fn command_failure_detail_uses_stdout_if_stderr_empty() {
         let output = output_with("stdout msg", "");
-        assert_eq!(command_failure_detail(&output), "exit status: 1 (stdout msg)");
+        assert_eq!(
+            command_failure_detail(&output),
+            "exit status: 1 (stdout msg)"
+        );
     }
 
     #[test]
