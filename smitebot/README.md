@@ -45,8 +45,7 @@ smitebot doctor --aflpp-path ~/AFLplusplus --smite-dir .
 
 ## JSON output
 
-By default, output is in a human readable format. The `--json` flag changes
-output to structured JSON:
+By default, output is in a human readable format. The `--json` flag changes output to structured JSON:
 
 ```json
 {
