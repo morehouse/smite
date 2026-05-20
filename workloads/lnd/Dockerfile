@@ -69,6 +69,7 @@ COPY smite/ smite/
 COPY smite-ir/ smite-ir/
 COPY smite-ir-mutator/ smite-ir-mutator/
 COPY smite-nyx-sys/ smite-nyx-sys/
+COPY smitebot/ smitebot/
 COPY smite-scenarios/ smite-scenarios/
 RUN TARGET_PATH=/lnd/cmd/lnd/lnd cargo build -p smite-scenarios --bin lnd_${SCENARIO} --release --features nyx
 

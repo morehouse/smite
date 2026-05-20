@@ -68,6 +68,7 @@ COPY smite/ smite/
 COPY smite-ir/ smite-ir/
 COPY smite-ir-mutator/ smite-ir-mutator/
 COPY smite-nyx-sys/ smite-nyx-sys/
+COPY smitebot/ smitebot/
 COPY smite-scenarios/ smite-scenarios/
 RUN TARGET_MAP_SIZE=$(cat /tmp/eclair-edge-count.txt) \
     cargo build -p smite-scenarios --bin eclair_${SCENARIO} --release --features nyx
