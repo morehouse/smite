@@ -109,15 +109,6 @@ COPY --from=builder /smite/target/release/eclair_${SCENARIO} /eclair-scenario
 # Default to the local crash handler; init.sh overrides with the Nyx version.
 ENV SMITE_CRASH_HANDLER=/jvm-crash-handler.so
 
-# Install a java wrapper that LD_PRELOADs the crash handler on the JVM only.
-# eclair-node.sh runs shell commands (ls, grep, awk) that would inherit
-# LD_PRELOAD and trigger false crash reports when they exit(0). The wrapper
-# ensures only the JVM process gets the crash handler.
-RUN mv "$JAVA_HOME/bin/java" "$JAVA_HOME/bin/java.real" && \
-    printf '#!/bin/sh\nLD_PRELOAD=$SMITE_CRASH_HANDLER exec %s/bin/java.real "$@"\n' \
-        "$JAVA_HOME" > "$JAVA_HOME/bin/java" && \
-    chmod +x "$JAVA_HOME/bin/java"
-
 # Copy init script
 COPY workloads/eclair/init.sh /init.sh
 RUN chmod +x /init.sh /eclair-scenario

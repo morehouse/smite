@@ -118,6 +118,13 @@ impl EclairTarget {
         Self::write_config(config, &eclair_dir)?;
 
         let mut cmd = Command::new("eclair-node.sh");
+
+        // LD_PRELOAD the crash handler to report crashes immediately (before
+        // process teardown closes TCP sockets).
+        if let Ok(handler) = std::env::var("SMITE_CRASH_HANDLER") {
+            cmd.env("LD_PRELOAD", handler);
+        }
+
         cmd.arg(format!("-Declair.datadir={}", eclair_dir.display()))
             .stdout(Stdio::null())
             .stderr(Stdio::null());
