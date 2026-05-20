@@ -15,7 +15,9 @@
 ///
 /// Crashes are reported for ALL exit codes (including code 0). Any exit
 /// triggered by a peer message is a bug, since an offline LN node cannot
-/// enforce contracts on chain.
+/// enforce contracts on chain. Exits that occur during node startup are not
+/// reported since Eclair runs various external binaries during startup that
+/// are expected to exit.
 ///
 /// Note that our fuzz scenarios send SIGTERM to shut down LN nodes when done
 /// running in local mode. The JVM calls exit(143) in this case, which triggers
@@ -42,6 +44,13 @@
 #include "nyx.h"
 #endif
 
+// Must match STARTUP_COMPLETE_MARKER in smite/src/runners.rs.
+#define STARTUP_COMPLETE_MARKER "/tmp/smite-startup-complete"
+
+static int startup_complete(void) {
+  return access(STARTUP_COMPLETE_MARKER, F_OK) == 0;
+}
+
 static void report_crash(const char *reason, int code) {
   char buf[256];
   int len = snprintf(buf, sizeof(buf), "%s (code %d)\n", reason, code);
@@ -62,14 +71,16 @@ static void report_crash(const char *reason, int code) {
 
 // Override exit(). The JVM routes all normal termination through exit().
 void exit(int status) {
-  report_crash("exit", status);
+  if (startup_complete())
+    report_crash("exit", status);
   syscall(SYS_exit_group, status);
   __builtin_unreachable();
 }
 
 // Override abort(). The JVM calls abort() for crash dumps (SIGSEGV, etc.).
 void abort(void) {
-  report_crash("abort", 134);
+  if (startup_complete())
+    report_crash("abort", 134);
   syscall(SYS_exit_group, 134);
   __builtin_unreachable();
 }
