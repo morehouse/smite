@@ -203,6 +203,60 @@ fn display_open_channel_program() {
 }
 
 #[test]
+fn display_build_node_announcement_program() {
+    let mut alias = [0u8; 32];
+    alias[..5].copy_from_slice(b"smite");
+    let instructions = vec![
+        Instruction {
+            operation: Operation::LoadPrivateKey(key(1)),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::LoadFeatures(vec![]),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::LoadTimestamp(1_700_000_000),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::LoadBytes(vec![]),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::BuildNodeAnnouncement {
+                rgb_color: [0x11, 0x22, 0x33],
+                alias,
+            },
+            inputs: vec![0, 1, 2, 3],
+        },
+        Instruction {
+            operation: Operation::SendMessage,
+            inputs: vec![4],
+        },
+    ];
+
+    let program = Program { instructions };
+    let text = program.to_string();
+    let lines: Vec<&str> = text.lines().collect();
+
+    let z31 = "00".repeat(31);
+    let alias_hex = format!("0x736d697465{}", "00".repeat(27));
+    let expected: Vec<String> = vec![
+        format!("v0 = LoadPrivateKey(0x{z31}01)"),
+        "v1 = LoadFeatures()".into(),
+        "v2 = LoadTimestamp(1700000000)".into(),
+        "v3 = LoadBytes()".into(),
+        format!("v4 = BuildNodeAnnouncement{{rgb=0x112233, alias={alias_hex}}}(v0, v1, v2, v3)"),
+        "SendMessage(v4)".into(),
+    ];
+    assert_eq!(lines.len(), expected.len(), "line count mismatch");
+    for (i, (got, want)) in lines.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(got, want, "line {i} mismatch");
+    }
+}
+
+#[test]
 fn postcard_roundtrip() {
     let program = Program {
         instructions: vec![
@@ -1041,6 +1095,40 @@ fn param_mutator_caps_byte_length() {
             b.len(),
         );
     }
+}
+
+#[test]
+fn param_mutator_modifies_node_announcement_params() {
+    let original_rgb = [0x11, 0x22, 0x33];
+    let original_alias = [0xaa; 32];
+    let mut builder = ProgramBuilder::new();
+    let sk = builder.append(Operation::LoadPrivateKey(key(1)), &[]);
+    let features = builder.append(Operation::LoadFeatures(vec![]), &[]);
+    let timestamp = builder.append(Operation::LoadTimestamp(0), &[]);
+    let addresses = builder.append(Operation::LoadBytes(vec![]), &[]);
+    let build_idx = builder.append(
+        Operation::BuildNodeAnnouncement {
+            rgb_color: original_rgb,
+            alias: original_alias,
+        },
+        &[sk, features, timestamp, addresses],
+    );
+    let mut program = builder.build();
+
+    let mutator = OperationParamMutator;
+    let mut rng = SmallRng::seed_from_u64(0);
+
+    for _ in 0..100 {
+        mutator.mutate(&mut program, &mut rng);
+    }
+
+    let Operation::BuildNodeAnnouncement { rgb_color, alias } =
+        &program.instructions[build_idx].operation
+    else {
+        panic!("operation type changed");
+    };
+    assert_ne!(*rgb_color, original_rgb, "rgb_color never mutated");
+    assert_ne!(*alias, original_alias, "alias never mutated");
 }
 
 #[test]

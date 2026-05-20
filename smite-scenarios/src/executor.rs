@@ -3,10 +3,12 @@
 //! Executes an IR program against a target node over an established connection,
 //! producing side effects (sending/receiving messages).
 
+use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use smite::bitcoin::BitcoinCli;
 use smite::bolt::{
-    AcceptChannel, ChannelId, Message, OpenChannel, OpenChannelTlvs, Pong, msg_type,
+    AcceptChannel, ChannelId, Message, NodeAnnouncement, OpenChannel, OpenChannelTlvs, Pong,
+    msg_type,
 };
 use smite::noise::{ConnectionError, NoiseConnection};
 use smite_ir::operation::AcceptChannelField;
@@ -169,6 +171,12 @@ pub fn execute(
                 Some(Variable::Message(encoded))
             }
 
+            Operation::BuildNodeAnnouncement { rgb_color, alias } => {
+                let na = build_node_announcement(&variables, &instr.inputs, *rgb_color, *alias)?;
+                let encoded = Message::NodeAnnouncement(na).encode();
+                Some(Variable::Message(encoded))
+            }
+
             // -- Act operations --
             Operation::SendMessage => {
                 let bytes = resolve_message(&variables, instr.inputs[0])?;
@@ -237,6 +245,14 @@ fn resolve_feerate(variables: &[Option<Variable>], index: usize) -> Result<u32, 
     match var {
         Variable::FeeratePerKw(v) => Ok(*v),
         _ => Err(type_err(VariableType::FeeratePerKw, var)),
+    }
+}
+
+fn resolve_timestamp(variables: &[Option<Variable>], index: usize) -> Result<u32, ExecuteError> {
+    let var = resolve(variables, index)?;
+    match var {
+        Variable::Timestamp(v) => Ok(*v),
+        _ => Err(type_err(VariableType::Timestamp, var)),
     }
 }
 
@@ -367,6 +383,36 @@ fn build_open_channel(
             channel_type: nonempty_or_none(resolve_features(variables, inputs[19])?),
         },
     })
+}
+
+/// Builds a signed `NodeAnnouncement` from 4 input variables.
+fn build_node_announcement(
+    variables: &[Option<Variable>],
+    inputs: &[usize],
+    rgb_color: [u8; 3],
+    alias: [u8; 32],
+) -> Result<NodeAnnouncement, ExecuteError> {
+    let sk_bytes = resolve_private_key(variables, inputs[0])?;
+    let features = resolve_features(variables, inputs[1])?.to_vec();
+    let timestamp = resolve_timestamp(variables, inputs[2])?;
+    let addresses = resolve_bytes(variables, inputs[3])?.to_vec();
+
+    let sk = SecretKey::from_slice(&sk_bytes).map_err(|_| ExecuteError::InvalidPrivateKey)?;
+    let secp = Secp256k1::new();
+    let node_id = PublicKey::from_secret_key(&secp, &sk);
+
+    let mut na = NodeAnnouncement {
+        signature: Signature::from_compact(&[0u8; 64]).expect("zero bytes parse as a signature"),
+        features,
+        timestamp,
+        node_id,
+        rgb_color,
+        alias,
+        addresses,
+        extra: Vec::new(),
+    };
+    na.sign(&sk);
+    Ok(na)
 }
 
 /// Receives the next message of interest, auto-responding to pings and silently
@@ -681,6 +727,74 @@ mod tests {
         assert_eq!(oc.channel_flags, 1);
         assert_eq!(oc.tlvs.upfront_shutdown_script, Some(vec![]));
         assert!(oc.tlvs.channel_type.is_none());
+    }
+
+    #[test]
+    fn execute_build_node_announcement() {
+        let mut sk_bytes = [0u8; 32];
+        sk_bytes[31] = 0x42;
+        let rgb_color = [0x11, 0x22, 0x33];
+        let mut alias = [0u8; 32];
+        alias[..5].copy_from_slice(b"smite");
+        let addresses = vec![0xaa, 0xbb, 0xcc];
+
+        let instrs = vec![
+            Instruction {
+                operation: Operation::LoadPrivateKey(sk_bytes),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadFeatures(vec![0x01, 0x02]),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadTimestamp(1_700_000_000),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadBytes(addresses.clone()),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::BuildNodeAnnouncement { rgb_color, alias },
+                inputs: vec![0, 1, 2, 3],
+            },
+            Instruction {
+                operation: Operation::SendMessage,
+                inputs: vec![4],
+            },
+        ];
+
+        let program = Program {
+            instructions: instrs,
+        };
+        let mut conn = MockConnection::new();
+        execute(
+            &program,
+            &sample_context(),
+            &mut conn,
+            &mut MockBitcoinCli::default(),
+            std::time::Instant::now(),
+        )
+        .unwrap();
+
+        assert_eq!(conn.sent.len(), 1);
+        let na = match Message::decode(&conn.sent[0]).expect("valid message") {
+            Message::NodeAnnouncement(na) => na,
+            other => panic!("expected NodeAnnouncement, got type {}", other.msg_type()),
+        };
+
+        let secp = Secp256k1::new();
+        let expected_node_id =
+            PublicKey::from_secret_key(&secp, &SecretKey::from_slice(&sk_bytes).unwrap());
+        assert_eq!(na.node_id, expected_node_id);
+        assert_eq!(na.features, vec![0x01, 0x02]);
+        assert_eq!(na.timestamp, 1_700_000_000);
+        assert_eq!(na.rgb_color, rgb_color);
+        assert_eq!(na.alias, alias);
+        assert_eq!(na.addresses, addresses);
+        assert!(na.extra.is_empty());
+        assert!(na.verify());
     }
 
     #[test]

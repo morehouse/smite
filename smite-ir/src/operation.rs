@@ -92,6 +92,22 @@ pub enum Operation {
     ///  18: `upfront_shutdown_script` (`Bytes`, empty = omit TLV)
     ///  19: `channel_type` (`Features`, empty = omit TLV)
     BuildOpenChannel,
+    /// Build a `node_announcement` message (BOLT 7, type 257).
+    ///
+    /// `rgb_color` and `alias` are op-level params (not variable inputs) so the
+    /// mutator can flip bits inside them but cannot change their lengths.
+    ///
+    /// Inputs (4):
+    ///   0: `node_sk` (`PrivateKey`) -- derives `node_id` and signs the body
+    ///   1: `features` (`Features`)
+    ///   2: `timestamp` (`Timestamp`)
+    ///   3: `addresses` (`Bytes`, raw u16-length-prefixed address descriptors)
+    BuildNodeAnnouncement {
+        /// 3-byte RGB color for UI display.
+        rgb_color: [u8; 3],
+        /// 32-byte node alias, zero-padded.
+        alias: [u8; 32],
+    },
 
     // -- Act: side effects against the target --
     /// Send an encoded message over the connection.
@@ -533,6 +549,12 @@ impl fmt::Display for Operation {
             Self::DerivePoint => write!(f, "DerivePoint"),
             Self::ExtractAcceptChannel(field) => write!(f, "Extract{field}"),
             Self::BuildOpenChannel => write!(f, "BuildOpenChannel"),
+            Self::BuildNodeAnnouncement { rgb_color, alias } => write!(
+                f,
+                "BuildNodeAnnouncement{{rgb={}, alias={}}}",
+                format_hex(rgb_color),
+                format_hex(alias),
+            ),
             Self::SendMessage => write!(f, "SendMessage"),
         }
     }
@@ -557,7 +579,9 @@ impl Operation {
             Self::LoadTargetPubkeyFromContext | Self::DerivePoint => Some(VariableType::Point),
             Self::LoadChainHashFromContext => Some(VariableType::ChainHash),
             Self::ExtractAcceptChannel(field) => Some(field.output_type()),
-            Self::BuildOpenChannel => Some(VariableType::Message),
+            Self::BuildOpenChannel | Self::BuildNodeAnnouncement { .. } => {
+                Some(VariableType::Message)
+            }
             Self::SendMessage | Self::MineBlocks(_) => None,
             Self::RecvAcceptChannel => Some(VariableType::AcceptChannel),
         }
@@ -610,6 +634,13 @@ impl Operation {
                 VariableType::Bytes,        // upfront_shutdown_script
                 VariableType::Features,     // channel_type
             ],
+
+            Self::BuildNodeAnnouncement { .. } => vec![
+                VariableType::PrivateKey, // node_sk
+                VariableType::Features,   // features
+                VariableType::Timestamp,  // timestamp
+                VariableType::Bytes,      // addresses
+            ],
         }
     }
 
@@ -638,6 +669,7 @@ impl Operation {
             | Self::DerivePoint
             | Self::ExtractAcceptChannel(_)
             | Self::BuildOpenChannel
+            | Self::BuildNodeAnnouncement { .. }
             | Self::SendMessage
             | Self::MineBlocks(_) => vec![],
 
@@ -665,8 +697,9 @@ impl Operation {
             | Self::LoadChannelId(_)
             | Self::LoadShutdownScript(_)
             | Self::LoadChannelType(_)
-            | Self::MineBlocks(_)
-            | Self::ExtractAcceptChannel(_) => true,
+            | Self::ExtractAcceptChannel(_)
+            | Self::BuildNodeAnnouncement { .. }
+            | Self::MineBlocks(_) => true,
 
             Self::LoadTargetPubkeyFromContext
             | Self::LoadChainHashFromContext
