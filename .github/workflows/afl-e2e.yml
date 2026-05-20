@@ -1,0 +1,77 @@
+name: AFL e2e
+
+on:
+  push:
+    branches: ["master"]
+    paths:
+      - "smite-ir/**"
+      - "smite-ir-mutator/**"
+      - "smite-ir-e2e-test/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/afl-e2e.yml"
+  pull_request:
+    branches: ["master"]
+    paths:
+      - "smite-ir/**"
+      - "smite-ir-mutator/**"
+      - "smite-ir-e2e-test/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/afl-e2e.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+  # Bump to invalidate the cargo-afl cache and pull a newer cargo-afl
+  # (and the bundled AFL++ runtime).
+  CARGO_AFL_VERSION: "0.18.1"
+
+jobs:
+  afl-custom-mutator-e2e:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        id: rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            smite-ir-e2e-test
+
+      - name: Cache cargo-afl
+        id: cargo-afl-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/cargo-afl
+            ~/.local/share/afl.rs
+          key: cargo-afl-${{ runner.os }}-${{ steps.rust.outputs.cachekey }}-${{ env.CARGO_AFL_VERSION }}
+
+      - name: Install cargo-afl
+        if: steps.cargo-afl-cache.outputs.cache-hit != 'true'
+        run: cargo install cargo-afl --locked --force --version ${{ env.CARGO_AFL_VERSION }}
+
+      - name: Run AFL custom mutator e2e
+        run: |
+          cargo test -p smite-ir-mutator --test afl_custom_mutator_e2e \
+            -- --ignored --nocapture
+
+      # AFL's queue filenames contain colons (e.g. `id:000000,...`),
+      # which actions/upload-artifact rejects. Tar the directory first.
+      - name: Archive AFL output
+        if: failure()
+        run: tar -czf /tmp/smite-e2e-logs.tar.gz -C /tmp smite-e2e
+
+      - name: Upload AFL output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: afl-e2e-logs
+          path: /tmp/smite-e2e-logs.tar.gz
+          if-no-files-found: ignore

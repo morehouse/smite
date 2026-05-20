@@ -7,7 +7,7 @@ members = [
   "smite-nyx-sys",
   "smite-scenarios",
 ]
-exclude = ["workloads/ldk"]
+exclude = ["workloads/ldk", "smite-ir-e2e-test"]
 
 [workspace.package]
 version = "0.0.0"
