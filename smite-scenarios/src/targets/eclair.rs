@@ -118,11 +118,7 @@ impl EclairTarget {
         Self::write_config(config, &eclair_dir)?;
 
         let mut cmd = Command::new("eclair-node.sh");
-        // Skip java_version_check() in eclair-node.sh. It runs `java -version`,
-        // which inherits our crash handler wrapper and could trigger a false
-        // crash report on exit().
-        cmd.arg("-no-version-check")
-            .arg(format!("-Declair.datadir={}", eclair_dir.display()))
+        cmd.arg(format!("-Declair.datadir={}", eclair_dir.display()))
             .stdout(Stdio::null())
             .stderr(Stdio::null());
 
