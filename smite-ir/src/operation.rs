@@ -676,4 +676,10 @@ impl Operation {
             | Self::RecvAcceptChannel => false,
         }
     }
+
+    /// Returns true for Act instructions.
+    #[must_use]
+    pub fn is_act(&self) -> bool {
+        matches!(self, Self::SendMessage | Self::RecvAcceptChannel)
+    }
 }
