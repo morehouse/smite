@@ -60,17 +60,19 @@ docker rm "$CONTAINER_ID" > /dev/null
 echo "Copying packer binaries..."
 cp "$BINARIES_PATH"/* "$SHAREDIR/"
 
-# Generate Nyx config
+# Generate Nyx config.
+#
 # Python 3.14 changed the default multiprocessing start method to 'forkserver',
-# which breaks the packer's common/debug.py. Force 'fork' to restore the
-# pre-3.14 behavior.
+# which breaks the packer's common/debug.py. We force 'fork' via a
+# sitecustomize.py injected on PYTHONPATH to restore the pre-3.14 behavior.
 echo "Generating Nyx config..."
-(cd "$PACKER_PATH" && python3 -c "
-import multiprocessing, runpy, sys
-multiprocessing.set_start_method('fork', force=True)
-sys.argv = ['nyx_config_gen.py'] + sys.argv[1:]
-runpy.run_path('nyx_config_gen.py', run_name='__main__')
-" "$SHAREDIR" Kernel -m 4096)
+FORCE_FORK_DIR="$(mktemp -d)"
+trap 'rm -rf "$FORCE_FORK_DIR"' EXIT
+cat > "$FORCE_FORK_DIR/sitecustomize.py" <<'EOF'
+import multiprocessing
+multiprocessing.set_start_method("fork", force=True)
+EOF
+(cd "$PACKER_PATH" && PYTHONPATH="$FORCE_FORK_DIR${PYTHONPATH:+:$PYTHONPATH}" ./nyx_config_gen.py "$SHAREDIR" Kernel -m 4096)
 
 # Create fuzz_no_pt.sh script
 echo "Creating fuzz_no_pt.sh..."
