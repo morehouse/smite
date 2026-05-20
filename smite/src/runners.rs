@@ -10,6 +10,15 @@
 #[cfg(feature = "nyx")]
 use smite_nyx_sys::{nyx_fail, nyx_get_fuzz_input, nyx_init, nyx_release, nyx_skip};
 
+/// Marker file created right before the first fuzz input is delivered, so
+/// crash handlers can filter out expected subprocess exits that occur during
+/// node startup.
+const STARTUP_COMPLETE_MARKER: &str = "/tmp/smite-startup-complete";
+
+fn create_startup_complete_marker() {
+    let _ = std::fs::File::create(STARTUP_COMPLETE_MARKER);
+}
+
 /// `Runner` provides an abstraction for a smite test case runner (e.g. run under nyx,
 /// local system for reproduction, etc.)
 pub trait Runner {
@@ -36,6 +45,9 @@ impl Runner for LocalRunner {
 
     fn get_fuzz_input(&self) -> Vec<u8> {
         use std::io::Read;
+
+        create_startup_complete_marker();
+
         if let Ok(path) = std::env::var("SMITE_INPUT") {
             log::info!("Reading input from {path:?}");
             std::fs::read(&path).unwrap_or_default()
@@ -74,6 +86,8 @@ impl Runner for NyxRunner {
     }
 
     fn get_fuzz_input(&self) -> Vec<u8> {
+        create_startup_complete_marker();
+
         let mut data = vec![0u8; self.max_input_size];
         // SAFETY: We pass a valid pointer to an allocated buffer of exactly
         // max_input_size bytes. The C code will write at most max_input_size
