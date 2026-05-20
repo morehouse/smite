@@ -87,6 +87,14 @@ fi
 
 echo "Found $INPUT_COUNT input files in corpus"
 
+# If docker runs as root, we need to set the --user flag to ensure the created
+# coverage report is accessible to the current user. For rootless docker, the
+# --user flag is unnecessary and causes permission issues.
+DOCKER_USER=(--user "$(id -u):$(id -g)")
+if docker info 2>/dev/null | grep -q "rootless"; then
+    DOCKER_USER=()
+fi
+
 # Build coverage image if needed (use REBUILD=1 to force rebuild)
 if [ "${REBUILD:-}" = "1" ] || ! docker image inspect "$DOCKER_IMAGE" >/dev/null 2>&1; then
     SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -126,7 +134,7 @@ run_input() {
         rm -rf "$covdir"
         mkdir "$covdir"
 
-        docker run --rm --user "$(id -u):$(id -g)" \
+        docker run --rm "${DOCKER_USER[@]}" \
             -v "$CORPUS_DIR:/corpus:ro" \
             -v "$covdir:/covdata" \
             -e SMITE_INPUT="/corpus/$input_name" \
@@ -221,7 +229,7 @@ echo "Merging coverage data and generating report..."
 # tools, so the merge step is necessarily target-specific.
 case "$TARGET" in
     lnd)
-        docker run --rm --user "$(id -u):$(id -g)" \
+        docker run --rm "${DOCKER_USER[@]}" \
             -v "$OUTPUT_DIR:/output" \
             -e GOCACHE=/tmp/go-cache \
             -e GOPATH=/tmp/go \
@@ -250,7 +258,7 @@ case "$TARGET" in
         ;;
 
     cln|ldk)
-        docker run --rm --user "$(id -u):$(id -g)" \
+        docker run --rm "${DOCKER_USER[@]}" \
             -v "$OUTPUT_DIR:/output" \
             -e TARGET="$TARGET" \
             "$DOCKER_IMAGE" \
@@ -298,7 +306,7 @@ case "$TARGET" in
         ;;
 
     eclair)
-        docker run --rm --user "$(id -u):$(id -g)" \
+        docker run --rm "${DOCKER_USER[@]}" \
             -v "$OUTPUT_DIR:/output" \
             "$DOCKER_IMAGE" \
             sh -c '
