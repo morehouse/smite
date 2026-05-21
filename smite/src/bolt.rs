@@ -7,9 +7,7 @@ mod accept_channel;
 mod accept_channel2;
 mod attribution_data;
 mod channel_ready;
-mod commitment;
 mod error;
-mod funding;
 mod funding_created;
 mod funding_signed;
 mod gossip_timestamp_filter;
@@ -39,12 +37,7 @@ pub use accept_channel::{AcceptChannel, AcceptChannelTlvs};
 pub use accept_channel2::{AcceptChannel2, AcceptChannel2Tlvs};
 pub use attribution_data::{AttributionData, TruncatedHmac};
 pub use channel_ready::{ChannelReady, ChannelReadyTlvs};
-pub use commitment::{
-    ChannelConfig, ChannelPartyConfig, CommitmentError, CommitmentPartyState, CommitmentState,
-    HolderIdentity, Side,
-};
 pub use error::Error;
-pub use funding::{FundingTransaction, InsufficientFunds, build_funding_transaction};
 pub use funding_created::FundingCreated;
 pub use funding_signed::FundingSigned;
 pub use gossip_timestamp_filter::GossipTimestampFilter;

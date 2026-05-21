@@ -13,6 +13,7 @@
 //! - [`process`] - Managed subprocess utilities.
 //! - [`runners`] - Fuzz input delivery (Nyx and local modes).
 //! - [`scenarios`] - Scenario trait and the [`scenarios::smite_run`] entry point.
+//! - [`tx_builder`] - BOLT 3 channel transaction construction (funding and commitment).
 
 pub mod bitcoin;
 pub mod bolt;
@@ -21,3 +22,4 @@ pub mod oracles;
 pub mod process;
 pub mod runners;
 pub mod scenarios;
+pub mod tx_builder;
