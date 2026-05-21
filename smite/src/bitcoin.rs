@@ -70,6 +70,9 @@ impl BitcoinCli {
     /// If the `bitcoin-cli -generate` command fails to execute or returns
     /// a non-success exit status.
     pub fn mine_blocks(&self, num_blocks: u8) {
+        if num_blocks == 0 {
+            return;
+        }
         let mine_out = self
             .run()
             .arg("-generate")
