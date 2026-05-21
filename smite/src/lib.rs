@@ -8,6 +8,7 @@
 //! # Modules
 //! - [`bitcoin`] - Utilities for interacting with `bitcoind` instances via `bitcoin-cli`.
 //! - [`bolt`] - BOLT message encoding and decoding.
+//! - [`channel_tx`] - BOLT 3 channel transaction construction (funding and commitment).
 //! - [`noise`] - BOLT 8 `Noise_XK` encrypted transport.
 //! - [`oracles`] - Post-scenario invariant checks.
 //! - [`process`] - Managed subprocess utilities.
@@ -16,6 +17,7 @@
 
 pub mod bitcoin;
 pub mod bolt;
+pub mod channel_tx;
 pub mod noise;
 pub mod oracles;
 pub mod process;
