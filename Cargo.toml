@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
   "smite",
+  "smitebot",
   "smite-ir",
   "smite-ir-mutator",
   "smite-nyx-sys",

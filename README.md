@@ -118,6 +118,7 @@ firefox ./$TARGET-$SCENARIO-coverage-report/html/index.html
 
 ```
 smite/              # Core Rust library (runners, scenarios, noise protocol, BOLT messages)
+smitebot/           # Automation CLI (doctor and upcoming campaign orchestration commands)
 smite-ir/           # IR types, generators, and mutators for structured fuzzing programs
 smite-ir-mutator/   # AFL++ custom mutator cdylib for IR programs
 smite-nyx-sys/      # Nyx FFI bindings

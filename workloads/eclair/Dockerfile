@@ -67,6 +67,7 @@ COPY smite/ smite/
 COPY smite-ir/ smite-ir/
 COPY smite-ir-mutator/ smite-ir-mutator/
 COPY smite-nyx-sys/ smite-nyx-sys/
+COPY smitebot/ smitebot/
 COPY smite-scenarios/ smite-scenarios/
 RUN set -eu; for f in smite-scenarios/src/bin/eclair_*.rs; do \
         TARGET_MAP_SIZE=$(cat /tmp/eclair-edge-count.txt) \
