@@ -13,6 +13,10 @@ use crate::targets::Target;
 
 /// Scenario that executes IR programs against a target over an encrypted
 /// connection established by `S`.
+///
+/// The program is expected to be well-formed and produced by `smite-ir`'s
+/// mutators or generators; the executor panics on invariant violations
+/// (out-of-bounds variable refs, type mismatches, `MineBlocks(0)`, etc.).
 pub struct IrScenario<T: Target, S: SnapshotSetup<T>> {
     target: T,
     conn: NoiseConnection,
@@ -36,9 +40,9 @@ impl<T: Target, S: SnapshotSetup<T>> Scenario for IrScenario<T, S> {
     fn run(&mut self, input: &[u8]) -> ScenarioResult {
         let start = std::time::Instant::now();
 
-        let Ok(program) = postcard::from_bytes::<Program>(input) else {
-            log::debug!("Input did not deserialize properly, skipping");
-            return ScenarioResult::Skip;
+        let program = match postcard::from_bytes::<Program>(input) {
+            Ok(p) => p,
+            Err(e) => return ScenarioResult::Fail(format!("postcard decode: {e}")),
         };
 
         log::debug!(
@@ -78,11 +82,10 @@ impl<T: Target, S: SnapshotSetup<T>> Scenario for IrScenario<T, S> {
                 // the spec doesn't allow.
                 return ScenarioResult::Fail(format!("decode error: {e}"));
             }
-            Err(e) => {
-                // Ill-formed IR program. This could happen if an input was
-                // constructed manually or using non-Smite mutators.
-                log::debug!("[{:?}] invalid IR program: {e}", start.elapsed());
-                return ScenarioResult::Skip;
+            Err(ExecuteError::InsufficientFunds(e)) => {
+                // The mutator generated a funding amount/feerate combination
+                // the available UTXOs can't cover. Not a bug in the target.
+                log::debug!("[{:?}] insufficient funds: {e}", start.elapsed());
             }
         }
 

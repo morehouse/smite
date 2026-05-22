@@ -14,7 +14,7 @@ use smite::bolt::{
 use smite::channel_tx::{FundingTransaction, build_funding_transaction};
 use smite::noise::{ConnectionError, NoiseConnection};
 use smite_ir::operation::AcceptChannelField;
-use smite_ir::{Operation, Program, Variable, VariableType};
+use smite_ir::{Operation, Program, Variable};
 
 /// Abstraction over bitcoin-cli operations, allowing mock implementations in tests.
 pub trait BitcoinRpc {
@@ -92,35 +92,11 @@ impl Connection for NoiseConnection {
 }
 
 /// Error from executing an IR program.
+///
+/// These represent target-side behavior or transport failures. Invariant
+/// violations of the program itself cause panics instead.
 #[derive(Debug, thiserror::Error)]
 pub enum ExecuteError {
-    /// Referenced a variable slot that doesn't exist.
-    #[error("variable index {index} out of bounds (have {len})")]
-    VariableIndexOutOfBounds { index: usize, len: usize },
-
-    /// Referenced a variable slot that holds a void result.
-    #[error("variable {index} is void (produced by a void instruction)")]
-    VoidVariable { index: usize },
-
-    /// Input variable has the wrong type.
-    #[error("type mismatch: expected {expected:?}, got {got:?}")]
-    TypeMismatch {
-        expected: VariableType,
-        got: VariableType,
-    },
-
-    /// Wrong number of inputs for the operation.
-    #[error("wrong input count: expected {expected}, got {got}")]
-    WrongInputCount { expected: usize, got: usize },
-
-    /// Private key bytes are not in the valid range `[1, curve_order)`.
-    #[error("invalid private key")]
-    InvalidPrivateKey,
-
-    /// An affine variable is consumed more than once.
-    #[error("affine variable {index} consumed more than once")]
-    AffineOverUse { index: usize },
-
     /// Connection or send/receive failure.
     #[error("connection: {0}")]
     Connection(#[from] smite::noise::ConnectionError),
@@ -142,8 +118,24 @@ pub enum ExecuteError {
 ///
 /// # Errors
 ///
-/// Returns an error if any instruction fails (type mismatch, connection error,
-/// decode error, etc.).
+/// Returns an error on a connection/send/receive failure, a decode failure of
+/// a received message, an unexpected message type from the target, or when
+/// wallet funds are insufficient to perform a channel operation.
+///
+/// # Panics
+///
+/// Panics on any invariant violation of the program:
+/// - input count does not match the operation's expected input count
+/// - input variable index out of bounds
+/// - input variable refers to a void instruction
+/// - input variable has the wrong type
+/// - `MineBlocks(0)` (panics inside `BitcoinCli::mine_blocks`)
+/// - `LoadShutdownScript(AnySegwit { .. })` with an out-of-range version or
+///   program length (panics inside the encoder)
+/// - `LoadBytes` / `LoadFeatures` payload exceeding `MAX_MESSAGE_SIZE` (panics
+///   inside the encoder)
+/// - `LoadPrivateKey` whose bytes are all-zero or >= the secp256k1 curve
+///   order (probability ~2^-128 for uniform random input)
 #[allow(clippy::too_many_lines)]
 pub fn execute(
     program: &Program,
@@ -156,14 +148,14 @@ pub fn execute(
     let mut variables: Vec<Option<Variable>> = Vec::with_capacity(program.instructions.len());
 
     for instr in &program.instructions {
-        // Validate input count before accessing inputs by index.
         let expected_count = instr.operation.input_types().len();
-        if instr.inputs.len() != expected_count {
-            return Err(ExecuteError::WrongInputCount {
-                expected: expected_count,
-                got: instr.inputs.len(),
-            });
-        }
+        assert_eq!(
+            instr.inputs.len(),
+            expected_count,
+            "{:?}: expected {expected_count} inputs, got {}",
+            instr.operation,
+            instr.inputs.len(),
+        );
 
         let result = match &instr.operation {
             // -- Load operations --
@@ -188,15 +180,14 @@ pub fn execute(
 
             // -- Compute operations --
             Operation::DerivePoint => {
-                let key_bytes = resolve_private_key(&variables, instr.inputs[0])?;
-                let sk = SecretKey::from_slice(&key_bytes)
-                    .map_err(|_| ExecuteError::InvalidPrivateKey)?;
+                let key_bytes = resolve_private_key(&variables, instr.inputs[0]);
+                let sk = SecretKey::from_slice(&key_bytes).expect("valid private key");
                 let pk = PublicKey::from_secret_key(&secp, &sk);
                 Some(Variable::Point(pk))
             }
 
             Operation::ExtractAcceptChannel(field) => {
-                let ac = resolve_accept_channel(&variables, instr.inputs[0])?;
+                let ac = resolve_accept_channel(&variables, instr.inputs[0]);
                 Some(extract_field(ac, *field))
             }
 
@@ -207,26 +198,26 @@ pub fn execute(
 
             // -- Build operations --
             Operation::BuildOpenChannel => {
-                let oc = build_open_channel(&variables, &instr.inputs)?;
+                let oc = build_open_channel(&variables, &instr.inputs);
                 let encoded = Message::OpenChannel(oc).encode();
                 Some(Variable::OpenChannelMessage(encoded))
             }
 
             Operation::BuildChannelAnnouncement => {
-                let ca = build_channel_announcement(&variables, &instr.inputs)?;
+                let ca = build_channel_announcement(&variables, &instr.inputs);
                 let encoded = Message::ChannelAnnouncement(ca).encode();
                 Some(Variable::Message(encoded))
             }
 
             Operation::BuildNodeAnnouncement { rgb_color, alias } => {
-                let na = build_node_announcement(&variables, &instr.inputs, *rgb_color, *alias)?;
+                let na = build_node_announcement(&variables, &instr.inputs, *rgb_color, *alias);
                 let encoded = Message::NodeAnnouncement(na).encode();
                 Some(Variable::Message(encoded))
             }
 
             // -- Act operations --
             Operation::SendMessage => {
-                let bytes = resolve_message(&variables, instr.inputs[0])?;
+                let bytes = resolve_message(&variables, instr.inputs[0]);
                 let msg_type = bytes.get(..2).map(|b| u16::from_be_bytes([b[0], b[1]]));
                 log::debug!(
                     "[{:?}] SendMessage: type {msg_type:?}, {} bytes",
@@ -238,7 +229,7 @@ pub fn execute(
             }
 
             Operation::SendOpenChannel => {
-                let bytes = resolve_open_channel_message(&variables, instr.inputs[0])?;
+                let bytes = resolve_open_channel_message(&variables, instr.inputs[0]);
                 log::debug!(
                     "[{:?}] SendOpenChannel: {} bytes",
                     start.elapsed(),
@@ -249,7 +240,7 @@ pub fn execute(
             }
 
             Operation::RecvAcceptChannel => {
-                consume_sent_open_channel(&mut variables, instr.inputs[0])?;
+                consume_sent_open_channel(&mut variables, instr.inputs[0]);
                 log::debug!("[{:?}] RecvAcceptChannel: waiting", start.elapsed());
                 let ac = recv_accept_channel(conn)?;
                 log::debug!("[{:?}] RecvAcceptChannel: received", start.elapsed());
@@ -263,7 +254,7 @@ pub fn execute(
             }
 
             Operation::BroadcastTransaction => {
-                let ft = resolve_funding_transaction(&variables, instr.inputs[0])?;
+                let ft = resolve_funding_transaction(&variables, instr.inputs[0]);
                 log::debug!(
                     "[{:?}] BroadcastTransaction: txid={}",
                     start.elapsed(),
@@ -282,189 +273,186 @@ pub fn execute(
 
 // -- Variable resolution --
 //
-// Each resolver looks up a variable by index and checks its type, returning the
-// resolved variable.
+// Each resolver looks up a variable by index and checks its type, panicking on
+// any invariant violation. Any panic from a resolver indicates that either our
+// custom mutators aren't being used or that there's a bug in our custom
+// mutators or generators.
 
-fn resolve(variables: &[Option<Variable>], index: usize) -> Result<&Variable, ExecuteError> {
+fn resolve(variables: &[Option<Variable>], index: usize) -> &Variable {
     let slot = variables
         .get(index)
-        .ok_or(ExecuteError::VariableIndexOutOfBounds {
-            index,
-            len: variables.len(),
-        })?;
-    slot.as_ref().ok_or(ExecuteError::VoidVariable { index })
+        .unwrap_or_else(|| panic!("variable {index} out of bounds (have {})", variables.len()));
+    slot.as_ref()
+        .unwrap_or_else(|| panic!("variable {index} is void"))
 }
 
-fn type_err(expected: VariableType, got: &Variable) -> ExecuteError {
-    ExecuteError::TypeMismatch {
-        expected,
-        got: got.var_type(),
+fn resolve_amount(variables: &[Option<Variable>], index: usize) -> u64 {
+    match resolve(variables, index) {
+        Variable::Amount(v) => *v,
+        other => panic!(
+            "variable {index}: expected Amount, got {:?}",
+            other.var_type()
+        ),
     }
 }
 
-fn resolve_amount(variables: &[Option<Variable>], index: usize) -> Result<u64, ExecuteError> {
-    let var = resolve(variables, index)?;
-    match var {
-        Variable::Amount(v) => Ok(*v),
-        _ => Err(type_err(VariableType::Amount, var)),
+fn resolve_feerate(variables: &[Option<Variable>], index: usize) -> u32 {
+    match resolve(variables, index) {
+        Variable::FeeratePerKw(v) => *v,
+        other => panic!(
+            "variable {index}: expected FeeratePerKw, got {:?}",
+            other.var_type(),
+        ),
     }
 }
 
-fn resolve_feerate(variables: &[Option<Variable>], index: usize) -> Result<u32, ExecuteError> {
-    let var = resolve(variables, index)?;
-    match var {
-        Variable::FeeratePerKw(v) => Ok(*v),
-        _ => Err(type_err(VariableType::FeeratePerKw, var)),
+fn resolve_timestamp(variables: &[Option<Variable>], index: usize) -> u32 {
+    match resolve(variables, index) {
+        Variable::Timestamp(v) => *v,
+        other => panic!(
+            "variable {index}: expected Timestamp, got {:?}",
+            other.var_type(),
+        ),
     }
 }
 
-fn resolve_timestamp(variables: &[Option<Variable>], index: usize) -> Result<u32, ExecuteError> {
-    let var = resolve(variables, index)?;
-    match var {
-        Variable::Timestamp(v) => Ok(*v),
-        _ => Err(type_err(VariableType::Timestamp, var)),
+fn resolve_u16(variables: &[Option<Variable>], index: usize) -> u16 {
+    match resolve(variables, index) {
+        Variable::U16(v) => *v,
+        other => panic!("variable {index}: expected U16, got {:?}", other.var_type()),
     }
 }
 
-fn resolve_u16(variables: &[Option<Variable>], index: usize) -> Result<u16, ExecuteError> {
-    let var = resolve(variables, index)?;
-    match var {
-        Variable::U16(v) => Ok(*v),
-        _ => Err(type_err(VariableType::U16, var)),
+fn resolve_u8(variables: &[Option<Variable>], index: usize) -> u8 {
+    match resolve(variables, index) {
+        Variable::U8(v) => *v,
+        other => panic!("variable {index}: expected U8, got {:?}", other.var_type()),
     }
 }
 
-fn resolve_u8(variables: &[Option<Variable>], index: usize) -> Result<u8, ExecuteError> {
-    let var = resolve(variables, index)?;
-    match var {
-        Variable::U8(v) => Ok(*v),
-        _ => Err(type_err(VariableType::U8, var)),
+fn resolve_bytes(variables: &[Option<Variable>], index: usize) -> &[u8] {
+    match resolve(variables, index) {
+        Variable::Bytes(v) => v,
+        other => panic!(
+            "variable {index}: expected Bytes, got {:?}",
+            other.var_type()
+        ),
     }
 }
 
-fn resolve_bytes(variables: &[Option<Variable>], index: usize) -> Result<&[u8], ExecuteError> {
-    let var = resolve(variables, index)?;
-    match var {
-        Variable::Bytes(v) => Ok(v),
-        _ => Err(type_err(VariableType::Bytes, var)),
+fn resolve_features(variables: &[Option<Variable>], index: usize) -> &[u8] {
+    match resolve(variables, index) {
+        Variable::Features(v) => v,
+        other => panic!(
+            "variable {index}: expected Features, got {:?}",
+            other.var_type(),
+        ),
     }
 }
 
-fn resolve_features(variables: &[Option<Variable>], index: usize) -> Result<&[u8], ExecuteError> {
-    let var = resolve(variables, index)?;
-    match var {
-        Variable::Features(v) => Ok(v),
-        _ => Err(type_err(VariableType::Features, var)),
+fn resolve_chain_hash(variables: &[Option<Variable>], index: usize) -> [u8; 32] {
+    match resolve(variables, index) {
+        Variable::ChainHash(v) => *v,
+        other => panic!(
+            "variable {index}: expected ChainHash, got {:?}",
+            other.var_type(),
+        ),
     }
 }
 
-fn resolve_chain_hash(
-    variables: &[Option<Variable>],
-    index: usize,
-) -> Result<[u8; 32], ExecuteError> {
-    let var = resolve(variables, index)?;
-    match var {
-        Variable::ChainHash(v) => Ok(*v),
-        _ => Err(type_err(VariableType::ChainHash, var)),
+fn resolve_channel_id(variables: &[Option<Variable>], index: usize) -> ChannelId {
+    match resolve(variables, index) {
+        Variable::ChannelId(v) => *v,
+        other => panic!(
+            "variable {index}: expected ChannelId, got {:?}",
+            other.var_type(),
+        ),
     }
 }
 
-fn resolve_channel_id(
-    variables: &[Option<Variable>],
-    index: usize,
-) -> Result<ChannelId, ExecuteError> {
-    let var = resolve(variables, index)?;
-    match var {
-        Variable::ChannelId(v) => Ok(*v),
-        _ => Err(type_err(VariableType::ChannelId, var)),
+fn resolve_pubkey(variables: &[Option<Variable>], index: usize) -> PublicKey {
+    match resolve(variables, index) {
+        Variable::Point(pk) => *pk,
+        other => panic!(
+            "variable {index}: expected Point, got {:?}",
+            other.var_type()
+        ),
     }
 }
 
-fn resolve_short_channel_id(
-    variables: &[Option<Variable>],
-    index: usize,
-) -> Result<ShortChannelId, ExecuteError> {
-    let var = resolve(variables, index)?;
-    match var {
-        Variable::ShortChannelId(v) => Ok(*v),
-        _ => Err(type_err(VariableType::ShortChannelId, var)),
+fn resolve_short_channel_id(variables: &[Option<Variable>], index: usize) -> ShortChannelId {
+    match resolve(variables, index) {
+        Variable::ShortChannelId(v) => *v,
+        other => panic!(
+            "variable {index}: expected ShortChannelId, got {:?}",
+            other.var_type(),
+        ),
     }
 }
 
-fn resolve_pubkey(variables: &[Option<Variable>], index: usize) -> Result<PublicKey, ExecuteError> {
-    let var = resolve(variables, index)?;
-    match var {
-        Variable::Point(pk) => Ok(*pk),
-        _ => Err(type_err(VariableType::Point, var)),
+fn resolve_private_key(variables: &[Option<Variable>], index: usize) -> [u8; 32] {
+    match resolve(variables, index) {
+        Variable::PrivateKey(v) => *v,
+        other => panic!(
+            "variable {index}: expected PrivateKey, got {:?}",
+            other.var_type(),
+        ),
     }
 }
 
-fn resolve_private_key(
-    variables: &[Option<Variable>],
-    index: usize,
-) -> Result<[u8; 32], ExecuteError> {
-    let var = resolve(variables, index)?;
-    match var {
-        Variable::PrivateKey(v) => Ok(*v),
-        _ => Err(type_err(VariableType::PrivateKey, var)),
+fn resolve_message(variables: &[Option<Variable>], index: usize) -> &[u8] {
+    match resolve(variables, index) {
+        Variable::Message(v) => v,
+        other => panic!(
+            "variable {index}: expected Message, got {:?}",
+            other.var_type()
+        ),
     }
 }
 
-fn resolve_message(variables: &[Option<Variable>], index: usize) -> Result<&[u8], ExecuteError> {
-    let var = resolve(variables, index)?;
-    match var {
-        Variable::Message(v) => Ok(v),
-        _ => Err(type_err(VariableType::Message, var)),
+fn resolve_open_channel_message(variables: &[Option<Variable>], index: usize) -> &[u8] {
+    match resolve(variables, index) {
+        Variable::OpenChannelMessage(v) => v,
+        other => panic!(
+            "variable {index}: expected OpenChannelMessage, got {:?}",
+            other.var_type()
+        ),
     }
 }
 
-fn resolve_open_channel_message(
-    variables: &[Option<Variable>],
-    index: usize,
-) -> Result<&[u8], ExecuteError> {
-    let var = resolve(variables, index)?;
-    match var {
-        Variable::OpenChannelMessage(v) => Ok(v),
-        _ => Err(type_err(VariableType::OpenChannelMessage, var)),
-    }
-}
-
-fn resolve_accept_channel(
-    variables: &[Option<Variable>],
-    index: usize,
-) -> Result<&AcceptChannel, ExecuteError> {
-    let var = resolve(variables, index)?;
-    match var {
-        Variable::AcceptChannel(v) => Ok(v),
-        _ => Err(type_err(VariableType::AcceptChannel, var)),
+fn resolve_accept_channel(variables: &[Option<Variable>], index: usize) -> &AcceptChannel {
+    match resolve(variables, index) {
+        Variable::AcceptChannel(v) => v,
+        other => panic!(
+            "variable {index}: expected AcceptChannel, got {:?}",
+            other.var_type(),
+        ),
     }
 }
 
 fn resolve_funding_transaction(
     variables: &[Option<Variable>],
     index: usize,
-) -> Result<&FundingTransaction, ExecuteError> {
-    let var = resolve(variables, index)?;
-    match var {
-        Variable::FundingTransaction(v) => Ok(v),
-        _ => Err(type_err(VariableType::FundingTransaction, var)),
+) -> &FundingTransaction {
+    match resolve(variables, index) {
+        Variable::FundingTransaction(v) => v,
+        other => panic!(
+            "variable {index}: expected FundingTransaction, got {:?}",
+            other.var_type(),
+        ),
     }
 }
 
-fn consume_sent_open_channel(
-    variables: &mut [Option<Variable>],
-    index: usize,
-) -> Result<(), ExecuteError> {
+fn consume_sent_open_channel(variables: &mut [Option<Variable>], index: usize) {
     match resolve(variables, index) {
-        Ok(Variable::SentOpenChannel) => {
+        Variable::SentOpenChannel => {
             // Consume the affine `SentOpenChannel`.
             variables[index] = None;
-            Ok(())
         }
-        Ok(wrong_var) => Err(type_err(VariableType::SentOpenChannel, wrong_var)),
-        // Map `VoidVariable` to `AffineOverUse`.
-        Err(ExecuteError::VoidVariable { index }) => Err(ExecuteError::AffineOverUse { index }),
-        Err(e) => Err(e),
+        other => panic!(
+            "variable {index}: expected SentOpenChannel, got {:?}",
+            other.var_type(),
+        ),
     }
 }
 
@@ -477,10 +465,10 @@ fn create_funding_transaction(
     inputs: &[usize],
     cli: &mut impl BitcoinRpc,
 ) -> Result<FundingTransaction, ExecuteError> {
-    let opener_pubkey = resolve_pubkey(variables, inputs[0])?;
-    let acceptor_pubkey = resolve_pubkey(variables, inputs[1])?;
-    let funding_satoshis = resolve_amount(variables, inputs[2])?;
-    let feerate_per_kw = resolve_feerate(variables, inputs[3])?;
+    let opener_pubkey = resolve_pubkey(variables, inputs[0]);
+    let acceptor_pubkey = resolve_pubkey(variables, inputs[1]);
+    let funding_satoshis = resolve_amount(variables, inputs[2]);
+    let feerate_per_kw = resolve_feerate(variables, inputs[3]);
 
     // Query wallet state from bitcoind for coin selection and change.
     let utxos = cli.get_utxos();
@@ -500,61 +488,54 @@ fn create_funding_transaction(
 }
 
 /// Builds an `OpenChannel` from 20 input variables (wire order).
-fn build_open_channel(
-    variables: &[Option<Variable>],
-    inputs: &[usize],
-) -> Result<OpenChannel, ExecuteError> {
-    Ok(OpenChannel {
-        chain_hash: resolve_chain_hash(variables, inputs[0])?,
-        temporary_channel_id: resolve_channel_id(variables, inputs[1])?,
-        funding_satoshis: resolve_amount(variables, inputs[2])?,
-        push_msat: resolve_amount(variables, inputs[3])?,
-        dust_limit_satoshis: resolve_amount(variables, inputs[4])?,
-        max_htlc_value_in_flight_msat: resolve_amount(variables, inputs[5])?,
-        channel_reserve_satoshis: resolve_amount(variables, inputs[6])?,
-        htlc_minimum_msat: resolve_amount(variables, inputs[7])?,
-        feerate_per_kw: resolve_feerate(variables, inputs[8])?,
-        to_self_delay: resolve_u16(variables, inputs[9])?,
-        max_accepted_htlcs: resolve_u16(variables, inputs[10])?,
-        funding_pubkey: resolve_pubkey(variables, inputs[11])?,
-        revocation_basepoint: resolve_pubkey(variables, inputs[12])?,
-        payment_basepoint: resolve_pubkey(variables, inputs[13])?,
-        delayed_payment_basepoint: resolve_pubkey(variables, inputs[14])?,
-        htlc_basepoint: resolve_pubkey(variables, inputs[15])?,
-        first_per_commitment_point: resolve_pubkey(variables, inputs[16])?,
-        channel_flags: resolve_u8(variables, inputs[17])?,
+fn build_open_channel(variables: &[Option<Variable>], inputs: &[usize]) -> OpenChannel {
+    OpenChannel {
+        chain_hash: resolve_chain_hash(variables, inputs[0]),
+        temporary_channel_id: resolve_channel_id(variables, inputs[1]),
+        funding_satoshis: resolve_amount(variables, inputs[2]),
+        push_msat: resolve_amount(variables, inputs[3]),
+        dust_limit_satoshis: resolve_amount(variables, inputs[4]),
+        max_htlc_value_in_flight_msat: resolve_amount(variables, inputs[5]),
+        channel_reserve_satoshis: resolve_amount(variables, inputs[6]),
+        htlc_minimum_msat: resolve_amount(variables, inputs[7]),
+        feerate_per_kw: resolve_feerate(variables, inputs[8]),
+        to_self_delay: resolve_u16(variables, inputs[9]),
+        max_accepted_htlcs: resolve_u16(variables, inputs[10]),
+        funding_pubkey: resolve_pubkey(variables, inputs[11]),
+        revocation_basepoint: resolve_pubkey(variables, inputs[12]),
+        payment_basepoint: resolve_pubkey(variables, inputs[13]),
+        delayed_payment_basepoint: resolve_pubkey(variables, inputs[14]),
+        htlc_basepoint: resolve_pubkey(variables, inputs[15]),
+        first_per_commitment_point: resolve_pubkey(variables, inputs[16]),
+        channel_flags: resolve_u8(variables, inputs[17]),
         tlvs: OpenChannelTlvs {
             // Always send the TLV: a zero-length value is the BOLT 2 opt-out
             // signal when option_upfront_shutdown_script is negotiated.
             // Omitting it is a protocol violation in that case. Including if
             // not negotiated is not.
-            upfront_shutdown_script: Some(resolve_bytes(variables, inputs[18])?.to_vec()),
-            channel_type: nonempty_or_none(resolve_features(variables, inputs[19])?),
+            upfront_shutdown_script: Some(resolve_bytes(variables, inputs[18]).to_vec()),
+            channel_type: nonempty_or_none(resolve_features(variables, inputs[19])),
         },
-    })
+    }
 }
 
 /// Builds a signed `ChannelAnnouncement` from 7 input variables.
 fn build_channel_announcement(
     variables: &[Option<Variable>],
     inputs: &[usize],
-) -> Result<ChannelAnnouncement, ExecuteError> {
-    let features = resolve_features(variables, inputs[0])?.to_vec();
-    let chain_hash = resolve_chain_hash(variables, inputs[1])?;
-    let short_channel_id = resolve_short_channel_id(variables, inputs[2])?;
-    let node_sk_1_bytes = resolve_private_key(variables, inputs[3])?;
-    let node_sk_2_bytes = resolve_private_key(variables, inputs[4])?;
-    let bitcoin_sk_1_bytes = resolve_private_key(variables, inputs[5])?;
-    let bitcoin_sk_2_bytes = resolve_private_key(variables, inputs[6])?;
+) -> ChannelAnnouncement {
+    let features = resolve_features(variables, inputs[0]).to_vec();
+    let chain_hash = resolve_chain_hash(variables, inputs[1]);
+    let short_channel_id = resolve_short_channel_id(variables, inputs[2]);
+    let node_sk_1_bytes = resolve_private_key(variables, inputs[3]);
+    let node_sk_2_bytes = resolve_private_key(variables, inputs[4]);
+    let bitcoin_sk_1_bytes = resolve_private_key(variables, inputs[5]);
+    let bitcoin_sk_2_bytes = resolve_private_key(variables, inputs[6]);
 
-    let node_sk_1 =
-        SecretKey::from_slice(&node_sk_1_bytes).map_err(|_| ExecuteError::InvalidPrivateKey)?;
-    let node_sk_2 =
-        SecretKey::from_slice(&node_sk_2_bytes).map_err(|_| ExecuteError::InvalidPrivateKey)?;
-    let bitcoin_sk_1 =
-        SecretKey::from_slice(&bitcoin_sk_1_bytes).map_err(|_| ExecuteError::InvalidPrivateKey)?;
-    let bitcoin_sk_2 =
-        SecretKey::from_slice(&bitcoin_sk_2_bytes).map_err(|_| ExecuteError::InvalidPrivateKey)?;
+    let node_sk_1 = SecretKey::from_slice(&node_sk_1_bytes).expect("valid private key");
+    let node_sk_2 = SecretKey::from_slice(&node_sk_2_bytes).expect("valid private key");
+    let bitcoin_sk_1 = SecretKey::from_slice(&bitcoin_sk_1_bytes).expect("valid private key");
+    let bitcoin_sk_2 = SecretKey::from_slice(&bitcoin_sk_2_bytes).expect("valid private key");
 
     let secp = Secp256k1::new();
     let node_id_1 = PublicKey::from_secret_key(&secp, &node_sk_1);
@@ -578,7 +559,7 @@ fn build_channel_announcement(
         extra: Vec::new(),
     };
     ca.sign(&node_sk_1, &node_sk_2, &bitcoin_sk_1, &bitcoin_sk_2);
-    Ok(ca)
+    ca
 }
 
 /// Builds a signed `NodeAnnouncement` from 4 input variables.
@@ -587,13 +568,13 @@ fn build_node_announcement(
     inputs: &[usize],
     rgb_color: [u8; 3],
     alias: [u8; 32],
-) -> Result<NodeAnnouncement, ExecuteError> {
-    let sk_bytes = resolve_private_key(variables, inputs[0])?;
-    let features = resolve_features(variables, inputs[1])?.to_vec();
-    let timestamp = resolve_timestamp(variables, inputs[2])?;
-    let addresses = resolve_bytes(variables, inputs[3])?.to_vec();
+) -> NodeAnnouncement {
+    let sk_bytes = resolve_private_key(variables, inputs[0]);
+    let features = resolve_features(variables, inputs[1]).to_vec();
+    let timestamp = resolve_timestamp(variables, inputs[2]);
+    let addresses = resolve_bytes(variables, inputs[3]).to_vec();
 
-    let sk = SecretKey::from_slice(&sk_bytes).map_err(|_| ExecuteError::InvalidPrivateKey)?;
+    let sk = SecretKey::from_slice(&sk_bytes).expect("valid private key");
     let secp = Secp256k1::new();
     let node_id = PublicKey::from_secret_key(&secp, &sk);
 
@@ -608,7 +589,7 @@ fn build_node_announcement(
         extra: Vec::new(),
     };
     na.sign(&sk);
-    Ok(na)
+    na
 }
 
 /// Receives the next message of interest, auto-responding to pings and silently
@@ -1408,129 +1389,151 @@ mod tests {
         assert_eq!(pong.ignored.len(), 4);
     }
 
-    // -- Error path tests --
+    // -- Panic path tests --
 
     #[test]
-    fn execute_wrong_input_count() {
-        let instrs = vec![Instruction {
-            operation: Operation::DerivePoint,
-            inputs: vec![], // expects 1 input
-        }];
+    #[should_panic(expected = "expected 1 inputs, got 0")]
+    fn execute_wrong_input_count_panics() {
         let program = Program {
-            instructions: instrs,
+            instructions: vec![Instruction {
+                operation: Operation::DerivePoint,
+                inputs: vec![], // expects 1 input
+            }],
         };
-        let mut conn = MockConnection::new();
-        let err = execute(
+        let _ = execute(
             &program,
             &sample_context(),
-            &mut conn,
+            &mut MockConnection::new(),
             &mut MockBitcoinCli::default(),
             std::time::Instant::now(),
-        )
-        .unwrap_err();
-        assert!(matches!(
-            err,
-            ExecuteError::WrongInputCount {
-                expected: 1,
-                got: 0,
-            }
-        ));
+        );
     }
 
     #[test]
-    fn execute_type_mismatch() {
+    #[should_panic(expected = "expected PrivateKey, got Amount")]
+    fn execute_type_mismatch_panics() {
+        let program = Program {
+            instructions: vec![
+                Instruction {
+                    operation: Operation::LoadAmount(42),
+                    inputs: vec![],
+                },
+                Instruction {
+                    operation: Operation::DerivePoint,
+                    inputs: vec![0], // v0 is Amount, not PrivateKey
+                },
+            ],
+        };
+        let _ = execute(
+            &program,
+            &sample_context(),
+            &mut MockConnection::new(),
+            &mut MockBitcoinCli::default(),
+            std::time::Instant::now(),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "out of bounds")]
+    fn execute_variable_out_of_bounds_panics() {
+        let program = Program {
+            instructions: vec![Instruction {
+                operation: Operation::SendMessage,
+                inputs: vec![99],
+            }],
+        };
+        let _ = execute(
+            &program,
+            &sample_context(),
+            &mut MockConnection::new(),
+            &mut MockBitcoinCli::default(),
+            std::time::Instant::now(),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "out of bounds")]
+    fn execute_forward_variable_reference_panics() {
+        let program = Program {
+            instructions: vec![
+                Instruction {
+                    operation: Operation::DerivePoint,
+                    inputs: vec![1],
+                },
+                Instruction {
+                    operation: Operation::LoadPrivateKey([0x11; 32]),
+                    inputs: vec![],
+                },
+            ],
+        };
+        let _ = execute(
+            &program,
+            &sample_context(),
+            &mut MockConnection::new(),
+            &mut MockBitcoinCli::default(),
+            std::time::Instant::now(),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "is void")]
+    fn execute_void_variable_reference_panics() {
+        let program = Program {
+            instructions: vec![
+                Instruction {
+                    operation: Operation::MineBlocks(1),
+                    inputs: vec![],
+                },
+                // Try to use the void variable.
+                Instruction {
+                    operation: Operation::SendMessage,
+                    inputs: vec![0],
+                },
+            ],
+        };
+        let _ = execute(
+            &program,
+            &sample_context(),
+            &mut MockConnection::new(),
+            &mut MockBitcoinCli::default(),
+            std::time::Instant::now(),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "valid private key")]
+    fn execute_invalid_private_key_panics() {
+        let program = Program {
+            instructions: vec![
+                Instruction {
+                    operation: Operation::LoadPrivateKey([0; 32]),
+                    inputs: vec![],
+                },
+                Instruction {
+                    operation: Operation::DerivePoint,
+                    inputs: vec![0],
+                },
+            ],
+        };
+        let _ = execute(
+            &program,
+            &sample_context(),
+            &mut MockConnection::new(),
+            &mut MockBitcoinCli::default(),
+            std::time::Instant::now(),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "expected OpenChannelMessage, got Amount")]
+    fn execute_send_open_channel_wrong_type_panics() {
         let instrs = vec![
             Instruction {
                 operation: Operation::LoadAmount(42),
                 inputs: vec![],
             },
             Instruction {
-                operation: Operation::DerivePoint,
-                inputs: vec![0], // v0 is Amount, not PrivateKey
-            },
-        ];
-        let program = Program {
-            instructions: instrs,
-        };
-        let mut conn = MockConnection::new();
-        let err = execute(
-            &program,
-            &sample_context(),
-            &mut conn,
-            &mut MockBitcoinCli::default(),
-            std::time::Instant::now(),
-        )
-        .unwrap_err();
-        assert!(matches!(
-            err,
-            ExecuteError::TypeMismatch {
-                expected: VariableType::PrivateKey,
-                got: VariableType::Amount,
-            }
-        ));
-    }
-
-    #[test]
-    fn execute_variable_out_of_bounds() {
-        let instrs = vec![Instruction {
-            operation: Operation::SendOpenChannel,
-            inputs: vec![99],
-        }];
-        let program = Program {
-            instructions: instrs,
-        };
-        let mut conn = MockConnection::new();
-        let err = execute(
-            &program,
-            &sample_context(),
-            &mut conn,
-            &mut MockBitcoinCli::default(),
-            std::time::Instant::now(),
-        )
-        .unwrap_err();
-        assert!(matches!(err, ExecuteError::VariableIndexOutOfBounds { .. }));
-    }
-
-    #[test]
-    fn execute_forward_variable_reference() {
-        // v0 tries to use v1 which hasn't been produced yet.
-        let instrs = vec![
-            Instruction {
-                operation: Operation::DerivePoint,
-                inputs: vec![1],
-            },
-            Instruction {
-                operation: Operation::LoadPrivateKey([0x11; 32]),
-                inputs: vec![],
-            },
-        ];
-        let program = Program {
-            instructions: instrs,
-        };
-        let mut conn = MockConnection::new();
-        let err = execute(
-            &program,
-            &sample_context(),
-            &mut conn,
-            &mut MockBitcoinCli::default(),
-            std::time::Instant::now(),
-        )
-        .unwrap_err();
-        assert!(matches!(err, ExecuteError::VariableIndexOutOfBounds { .. }));
-    }
-
-    #[test]
-    fn execute_void_variable_reference() {
-        // MineBlocks produces no output variable. Referencing it should fail.
-        let instrs = vec![
-            // v0 = void
-            Instruction {
-                operation: Operation::MineBlocks(1),
-                inputs: vec![],
-            },
-            // Try to use the void variable.
-            Instruction {
-                operation: Operation::DerivePoint,
+                operation: Operation::SendOpenChannel,
                 inputs: vec![0],
             },
         ];
@@ -1538,16 +1541,44 @@ mod tests {
         let program = Program {
             instructions: instrs,
         };
+
+        let _ = execute(
+            &program,
+            &sample_context(),
+            &mut MockConnection::new(),
+            &mut MockBitcoinCli::default(),
+            std::time::Instant::now(),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "is void")]
+    fn execute_affine_overuse_panics() {
+        let mut instrs = send_open_channel_instructions();
+        let sent_open_channel = instrs.len() - 1;
+        instrs.extend([
+            Instruction {
+                operation: Operation::RecvAcceptChannel,
+                inputs: vec![sent_open_channel],
+            },
+            Instruction {
+                operation: Operation::RecvAcceptChannel,
+                inputs: vec![sent_open_channel],
+            },
+        ]);
+        let program = Program {
+            instructions: instrs,
+        };
         let mut conn = MockConnection::new();
-        let err = execute(
+        let ac_bytes = Message::AcceptChannel(sample_accept_channel()).encode();
+        conn.queue_recv(ac_bytes);
+        let _ = execute(
             &program,
             &sample_context(),
             &mut conn,
             &mut MockBitcoinCli::default(),
             std::time::Instant::now(),
-        )
-        .unwrap_err();
-        assert!(matches!(err, ExecuteError::VoidVariable { index: 0 }));
+        );
     }
 
     // MineBlocks should track calls to mine_blocks
@@ -1577,6 +1608,7 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "expected 0 inputs, got 1")]
     fn execute_mine_blocks_wrong_input() {
         let instrs = vec![
             Instruction {
@@ -1592,21 +1624,13 @@ mod tests {
             instructions: instrs,
         };
         let mut conn = MockConnection::new();
-        let err = execute(
+        let _ = execute(
             &program,
             &sample_context(),
             &mut conn,
             &mut MockBitcoinCli::default(),
             std::time::Instant::now(),
-        )
-        .unwrap_err();
-        assert!(matches!(
-            err,
-            ExecuteError::WrongInputCount {
-                expected: 0,
-                got: 1,
-            }
-        ));
+        );
     }
 
     #[test]
@@ -1664,98 +1688,6 @@ mod tests {
         };
         assert_eq!(funds_err.available, Amount::from_sat(1_000));
         assert_eq!(funds_err.required, Amount::from_sat(10_007_290));
-    }
-
-    #[test]
-    fn execute_invalid_private_key() {
-        let instrs = vec![
-            Instruction {
-                operation: Operation::LoadPrivateKey([0; 32]),
-                inputs: vec![],
-            },
-            Instruction {
-                operation: Operation::DerivePoint,
-                inputs: vec![0],
-            },
-        ];
-        let program = Program {
-            instructions: instrs,
-        };
-        let mut conn = MockConnection::new();
-        let err = execute(
-            &program,
-            &sample_context(),
-            &mut conn,
-            &mut MockBitcoinCli::default(),
-            std::time::Instant::now(),
-        )
-        .unwrap_err();
-        assert!(matches!(err, ExecuteError::InvalidPrivateKey));
-    }
-
-    #[test]
-    fn execute_send_open_channel_wrong_type() {
-        let instrs = vec![
-            Instruction {
-                operation: Operation::LoadAmount(42),
-                inputs: vec![],
-            },
-            Instruction {
-                operation: Operation::SendOpenChannel,
-                inputs: vec![0],
-            },
-        ];
-
-        let program = Program {
-            instructions: instrs,
-        };
-
-        let err = execute(
-            &program,
-            &sample_context(),
-            &mut MockConnection::new(),
-            &mut MockBitcoinCli::default(),
-            std::time::Instant::now(),
-        )
-        .unwrap_err();
-        assert!(matches!(
-            err,
-            ExecuteError::TypeMismatch {
-                expected: VariableType::OpenChannelMessage,
-                got: VariableType::Amount,
-            }
-        ));
-    }
-
-    #[test]
-    fn execute_affine_overuse() {
-        let mut instrs = send_open_channel_instructions();
-        let sent_open_channel = instrs.len() - 1;
-        instrs.extend([
-            Instruction {
-                operation: Operation::RecvAcceptChannel,
-                inputs: vec![sent_open_channel],
-            },
-            Instruction {
-                operation: Operation::RecvAcceptChannel,
-                inputs: vec![sent_open_channel],
-            },
-        ]);
-        let program = Program {
-            instructions: instrs,
-        };
-        let mut conn = MockConnection::new();
-        let ac_bytes = Message::AcceptChannel(sample_accept_channel()).encode();
-        conn.queue_recv(ac_bytes);
-        let err = execute(
-            &program,
-            &sample_context(),
-            &mut conn,
-            &mut MockBitcoinCli::default(),
-            std::time::Instant::now(),
-        )
-        .unwrap_err();
-        assert!(matches!(err, ExecuteError::AffineOverUse { index } if index == sent_open_channel));
     }
 
     // -- extract_field tests --
