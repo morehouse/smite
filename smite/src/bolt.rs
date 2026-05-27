@@ -6,6 +6,7 @@
 mod accept_channel;
 mod accept_channel2;
 mod attribution_data;
+mod channel_announcement;
 mod channel_ready;
 mod channel_update;
 mod error;
@@ -37,6 +38,7 @@ mod wire;
 pub use accept_channel::{AcceptChannel, AcceptChannelTlvs};
 pub use accept_channel2::{AcceptChannel2, AcceptChannel2Tlvs};
 pub use attribution_data::{AttributionData, TruncatedHmac};
+pub use channel_announcement::ChannelAnnouncement;
 pub use channel_ready::{ChannelReady, ChannelReadyTlvs};
 pub use channel_update::ChannelUpdate;
 pub use error::Error;
@@ -153,6 +155,8 @@ pub mod msg_type {
     pub const UPDATE_FAIL_HTLC: u16 = 131;
     /// `update_fail_malformed_htlc` message (BOLT 2).
     pub const UPDATE_FAIL_MALFORMED_HTLC: u16 = 135;
+    /// `channel_announcement` message (BOLT 7).
+    pub const CHANNEL_ANNOUNCEMENT: u16 = 256;
     /// `node_announcement` message (BOLT 7).
     pub const NODE_ANNOUNCEMENT: u16 = 257;
     /// `channel_update` message (BOLT 7).
@@ -211,6 +215,8 @@ pub enum Message {
     UpdateFailHtlc(UpdateFailHtlc),
     /// `update_fail_malformed_htlc` message (type 135).
     UpdateFailMalformedHtlc(UpdateFailMalformedHtlc),
+    /// `channel_announcement` message (type 256).
+    ChannelAnnouncement(ChannelAnnouncement),
     /// `node_announcement` message (type 257).
     NodeAnnouncement(NodeAnnouncement),
     /// `channel_update` message (type 258).
@@ -257,6 +263,7 @@ impl Message {
             Self::UpdateFulfillHtlc(_) => msg_type::UPDATE_FULFILL_HTLC,
             Self::UpdateFailHtlc(_) => msg_type::UPDATE_FAIL_HTLC,
             Self::UpdateFailMalformedHtlc(_) => msg_type::UPDATE_FAIL_MALFORMED_HTLC,
+            Self::ChannelAnnouncement(_) => msg_type::CHANNEL_ANNOUNCEMENT,
             Self::NodeAnnouncement(_) => msg_type::NODE_ANNOUNCEMENT,
             Self::ChannelUpdate(_) => msg_type::CHANNEL_UPDATE,
             Self::GossipTimestampFilter(_) => msg_type::GOSSIP_TIMESTAMP_FILTER,
@@ -293,6 +300,7 @@ impl Message {
             Self::UpdateFulfillHtlc(m) => out.extend(m.encode()),
             Self::UpdateFailHtlc(m) => out.extend(m.encode()),
             Self::UpdateFailMalformedHtlc(m) => out.extend(m.encode()),
+            Self::ChannelAnnouncement(m) => out.extend(m.encode()),
             Self::NodeAnnouncement(m) => out.extend(m.encode()),
             Self::ChannelUpdate(m) => out.extend(m.encode()),
             Self::GossipTimestampFilter(m) => out.extend(m.encode()),
@@ -339,6 +347,9 @@ impl Message {
             msg_type::UPDATE_FAIL_HTLC => Ok(Self::UpdateFailHtlc(UpdateFailHtlc::decode(cursor)?)),
             msg_type::UPDATE_FAIL_MALFORMED_HTLC => Ok(Self::UpdateFailMalformedHtlc(
                 UpdateFailMalformedHtlc::decode(cursor)?,
+            )),
+            msg_type::CHANNEL_ANNOUNCEMENT => Ok(Self::ChannelAnnouncement(
+                ChannelAnnouncement::decode(cursor)?,
             )),
             msg_type::NODE_ANNOUNCEMENT => {
                 Ok(Self::NodeAnnouncement(NodeAnnouncement::decode(cursor)?))
@@ -791,6 +802,41 @@ mod tests {
         assert_eq!(decoded, Message::UpdateFailMalformedHtlc(msg));
     }
 
+    /// Valid `ChannelAnnouncement` message for testing.
+    fn sample_channel_announcement() -> ChannelAnnouncement {
+        let secp = Secp256k1::new();
+        let node_sk_1 = SecretKey::from_slice(&[0x11; 32]).expect("valid secret");
+        let node_sk_2 = SecretKey::from_slice(&[0x22; 32]).expect("valid secret");
+        let bitcoin_sk_1 = SecretKey::from_slice(&[0x33; 32]).expect("valid secret");
+        let bitcoin_sk_2 = SecretKey::from_slice(&[0x44; 32]).expect("valid secret");
+        let placeholder = Signature::from_compact(&[0u8; COMPACT_SIGNATURE_SIZE]).unwrap();
+
+        let mut ca = ChannelAnnouncement {
+            node_signature_1: placeholder,
+            node_signature_2: placeholder,
+            bitcoin_signature_1: placeholder,
+            bitcoin_signature_2: placeholder,
+            features: vec![0x01, 0x02],
+            chain_hash: [0x6f; CHAIN_HASH_SIZE],
+            short_channel_id: ShortChannelId::new(539_268, 845, 1),
+            node_id_1: PublicKey::from_secret_key(&secp, &node_sk_1),
+            node_id_2: PublicKey::from_secret_key(&secp, &node_sk_2),
+            bitcoin_key_1: PublicKey::from_secret_key(&secp, &bitcoin_sk_1),
+            bitcoin_key_2: PublicKey::from_secret_key(&secp, &bitcoin_sk_2),
+            extra: Vec::new(),
+        };
+        ca.sign(&node_sk_1, &node_sk_2, &bitcoin_sk_1, &bitcoin_sk_2);
+        ca
+    }
+
+    #[test]
+    fn message_channel_announcement_roundtrip() {
+        let ca = sample_channel_announcement();
+        let encoded = Message::ChannelAnnouncement(ca.clone()).encode();
+        let decoded = Message::decode(&encoded).unwrap();
+        assert_eq!(decoded, Message::ChannelAnnouncement(ca));
+    }
+
     /// Valid `NodeAnnouncement` message for testing.
     fn sample_node_announcement() -> NodeAnnouncement {
         let secp = Secp256k1::new();
@@ -995,6 +1041,10 @@ mod tests {
             })
             .msg_type(),
             msg_type::UPDATE_FAIL_MALFORMED_HTLC
+        );
+        assert_eq!(
+            Message::ChannelAnnouncement(sample_channel_announcement()).msg_type(),
+            msg_type::CHANNEL_ANNOUNCEMENT
         );
         assert_eq!(
             Message::NodeAnnouncement(sample_node_announcement()).msg_type(),
