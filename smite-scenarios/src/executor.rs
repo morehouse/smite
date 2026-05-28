@@ -3,15 +3,17 @@
 //! Executes an IR program against a target node over an established connection,
 //! producing side effects (sending/receiving messages).
 
-use bitcoin::ScriptBuf;
 use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+use bitcoin::{OutPoint, ScriptBuf};
 use smite::bitcoin::{BitcoinCli, Utxo};
 use smite::bolt::{
     AcceptChannel, ChannelAnnouncement, ChannelId, Message, NodeAnnouncement, OpenChannel,
     OpenChannelTlvs, Pong, ShortChannelId, msg_type,
 };
-use smite::channel_tx::{FundingTransaction, build_funding_transaction};
+use smite::channel_tx::{
+    ChannelConfig, ChannelPartyConfig, FundingTransaction, build_funding_transaction,
+};
 use smite::noise::{ConnectionError, NoiseConnection};
 use smite_ir::operation::AcceptChannelField;
 use smite_ir::{Operation, Program, Variable, VariableType};
@@ -198,6 +200,11 @@ pub fn execute(
             Operation::CreateFundingTransaction => {
                 let ft = create_funding_transaction(&variables, &instr.inputs, bitcoin_cli)?;
                 Some(Variable::FundingTransaction(ft))
+            }
+
+            Operation::CreateChannelConfig => {
+                let cfg = create_channel_config(&variables, &instr.inputs)?;
+                Some(Variable::ChannelConfig(cfg))
             }
 
             // -- Build operations --
@@ -454,6 +461,44 @@ fn create_funding_transaction(
     Ok(funding)
 }
 
+/// Creates a [`ChannelConfig`] from input variables. The funding outpoint is
+/// derived from the input [`FundingTransaction`].
+fn create_channel_config(
+    variables: &[Option<Variable>],
+    inputs: &[usize],
+) -> Result<ChannelConfig, ExecuteError> {
+    let funding_tx = resolve_funding_transaction(variables, inputs[0])?;
+    let funding_outpoint = OutPoint {
+        txid: funding_tx.tx.compute_txid(),
+        vout: funding_tx.vout,
+    };
+    let funding_satoshis = resolve_amount(variables, inputs[1])?;
+    let channel_type = resolve_features(variables, inputs[2])?.to_vec();
+    let opener = ChannelPartyConfig {
+        funding_pubkey: resolve_pubkey(variables, inputs[3])?,
+        payment_basepoint: resolve_pubkey(variables, inputs[4])?,
+        revocation_basepoint: resolve_pubkey(variables, inputs[5])?,
+        delayed_payment_basepoint: resolve_pubkey(variables, inputs[6])?,
+        dust_limit_satoshis: resolve_amount(variables, inputs[7])?,
+        to_self_delay: resolve_u16(variables, inputs[8])?,
+    };
+    let acceptor = ChannelPartyConfig {
+        funding_pubkey: resolve_pubkey(variables, inputs[9])?,
+        payment_basepoint: resolve_pubkey(variables, inputs[10])?,
+        revocation_basepoint: resolve_pubkey(variables, inputs[11])?,
+        delayed_payment_basepoint: resolve_pubkey(variables, inputs[12])?,
+        dust_limit_satoshis: resolve_amount(variables, inputs[13])?,
+        to_self_delay: resolve_u16(variables, inputs[14])?,
+    };
+    Ok(ChannelConfig {
+        funding_outpoint,
+        funding_satoshis,
+        channel_type,
+        opener,
+        acceptor,
+    })
+}
+
 /// Builds an `OpenChannel` from 20 input variables (wire order).
 fn build_open_channel(
     variables: &[Option<Variable>],
@@ -645,7 +690,7 @@ mod tests {
 
     use super::*;
     use bitcoin::secp256k1::{Secp256k1, SecretKey};
-    use bitcoin::{Amount, OutPoint, Transaction};
+    use bitcoin::{Amount, Transaction};
     use smite::bolt::{AcceptChannelTlvs, Init, Ping};
     use smite_ir::Instruction;
 
@@ -1593,6 +1638,77 @@ mod tests {
         };
         assert_eq!(funds_err.available, Amount::from_sat(1_000));
         assert_eq!(funds_err.required, Amount::from_sat(10_007_290));
+    }
+
+    #[test]
+    fn execute_create_channel_config() {
+        let instrs = vec![
+            Instruction {
+                operation: Operation::LoadPrivateKey([0x11; 32]),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::DerivePoint,
+                inputs: vec![0],
+            },
+            Instruction {
+                operation: Operation::LoadPrivateKey([0x22; 32]),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::DerivePoint,
+                inputs: vec![2],
+            },
+            Instruction {
+                operation: Operation::LoadAmount(10_000_000),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadFeeratePerKw(15_000),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::CreateFundingTransaction,
+                inputs: vec![1, 3, 4, 5],
+            },
+            Instruction {
+                operation: Operation::LoadFeatures(vec![0x40, 0x00, 0x00]),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadAmount(546),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadU16(144),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::CreateChannelConfig,
+                inputs: vec![6, 4, 7, 1, 1, 1, 1, 8, 9, 3, 3, 3, 3, 8, 9],
+            },
+        ];
+
+        let mut conn = MockConnection::new();
+        let mut mock_cli = MockBitcoinCli {
+            utxos: vec![sample_utxo()],
+            change_spk: sample_change_spk(),
+            ..Default::default()
+        };
+        execute(
+            &Program {
+                instructions: instrs,
+            },
+            &sample_context(),
+            &mut conn,
+            &mut mock_cli,
+            std::time::Instant::now(),
+        )
+        .expect("CreateChannelConfig should succeed");
+
+        // TODO: Once we add support for `CommitmentState`, we can construct the
+        // commitment signature here and verify it, indirectly ensuring that the
+        // generated variable matches the expected result.
     }
 
     #[test]

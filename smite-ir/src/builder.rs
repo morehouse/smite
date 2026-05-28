@@ -177,6 +177,9 @@ impl ProgramBuilder {
             VariableType::FundingTransaction => {
                 panic!("cannot generate fresh FundingTransaction: requires composed inputs")
             }
+            VariableType::ChannelConfig => {
+                panic!("cannot generate fresh ChannelConfig: requires composed inputs")
+            }
         }
     }
 

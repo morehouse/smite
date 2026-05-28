@@ -5,7 +5,7 @@
 
 use bitcoin::secp256k1::PublicKey;
 use smite::bolt::{AcceptChannel, ChannelId, ShortChannelId};
-use smite::channel_tx::FundingTransaction;
+use smite::channel_tx::{ChannelConfig, FundingTransaction};
 
 const CHAIN_HASH_SIZE: usize = 32;
 const PRIVATE_KEY_SIZE: usize = 32;
@@ -50,6 +50,8 @@ pub enum Variable {
     AcceptChannel(AcceptChannel),
     /// Constructed funding transaction with funding output index.
     FundingTransaction(FundingTransaction),
+    /// Static channel configuration (funding details and both parties).
+    ChannelConfig(ChannelConfig),
 }
 
 impl Variable {
@@ -74,6 +76,7 @@ impl Variable {
             Self::Message(_) => VariableType::Message,
             Self::AcceptChannel(_) => VariableType::AcceptChannel,
             Self::FundingTransaction(_) => VariableType::FundingTransaction,
+            Self::ChannelConfig(_) => VariableType::ChannelConfig,
         }
     }
 }
@@ -99,4 +102,5 @@ pub enum VariableType {
     Message,
     AcceptChannel,
     FundingTransaction,
+    ChannelConfig,
 }

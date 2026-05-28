@@ -98,6 +98,7 @@ fn mutate_operation(op: &mut Operation, rng: &mut impl Rng) -> bool {
         // match have drifted out of sync.
         Operation::DerivePoint
         | Operation::CreateFundingTransaction
+        | Operation::CreateChannelConfig
         | Operation::LoadTargetPubkeyFromContext
         | Operation::LoadChainHashFromContext
         | Operation::BuildOpenChannel

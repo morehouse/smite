@@ -54,6 +54,7 @@ pub struct HolderIdentity {
 }
 
 /// Static public keys and channel parameters for one side of a channel (opener or acceptor).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelPartyConfig {
     /// Funding pubkey used in the funding output.
     pub funding_pubkey: PublicKey,
@@ -70,6 +71,7 @@ pub struct ChannelPartyConfig {
 }
 
 /// Channel configuration including funding details and both parties configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelConfig {
     /// Funding transaction outpoint.
     pub funding_outpoint: OutPoint,

@@ -81,6 +81,26 @@ pub enum Operation {
     ///   2: `funding_satoshis` (`Amount`)
     ///   3: `feerate_per_kw` (`FeeratePerKw`)
     CreateFundingTransaction,
+    /// Create a static channel configuration capturing the funding details and
+    /// the channel parameters for both parties.
+    ///
+    /// Inputs (15):
+    ///   0: `funding_transaction` (`FundingTransaction`)
+    ///   1: `funding_satoshis` (`Amount`)
+    ///   2: `channel_type` (`Features`)
+    ///   3: `opener_funding_pubkey` (`Point`)
+    ///   4: `opener_payment_basepoint` (`Point`)
+    ///   5: `opener_revocation_basepoint` (`Point`)
+    ///   6: `opener_delayed_payment_basepoint` (`Point`)
+    ///   7: `opener_dust_limit_satoshis` (`Amount`)
+    ///   8: `opener_to_self_delay` (`U16`)
+    ///   9: `acceptor_funding_pubkey` (`Point`)
+    ///  10: `acceptor_payment_basepoint` (`Point`)
+    ///  11: `acceptor_revocation_basepoint` (`Point`)
+    ///  12: `acceptor_delayed_payment_basepoint` (`Point`)
+    ///  13: `acceptor_dust_limit_satoshis` (`Amount`)
+    ///  14: `acceptor_to_self_delay` (`U16`)
+    CreateChannelConfig,
 
     // -- Build: construct a BOLT message from inputs --
     /// Build an `open_channel` message (BOLT 2, type 32).
@@ -585,6 +605,7 @@ impl fmt::Display for Operation {
             Self::DerivePoint => write!(f, "DerivePoint"),
             Self::ExtractAcceptChannel(field) => write!(f, "Extract{field}"),
             Self::CreateFundingTransaction => write!(f, "CreateFundingTransaction"),
+            Self::CreateChannelConfig => write!(f, "CreateChannelConfig"),
             Self::BuildOpenChannel => write!(f, "BuildOpenChannel"),
             Self::BuildChannelAnnouncement => write!(f, "BuildChannelAnnouncement"),
             Self::BuildNodeAnnouncement { rgb_color, alias } => write!(
@@ -620,6 +641,7 @@ impl Operation {
             Self::LoadChainHashFromContext => Some(VariableType::ChainHash),
             Self::ExtractAcceptChannel(field) => Some(field.output_type()),
             Self::CreateFundingTransaction => Some(VariableType::FundingTransaction),
+            Self::CreateChannelConfig => Some(VariableType::ChannelConfig),
             Self::BuildOpenChannel
             | Self::BuildChannelAnnouncement
             | Self::BuildNodeAnnouncement { .. } => Some(VariableType::Message),
@@ -658,6 +680,23 @@ impl Operation {
                 VariableType::Point,        // acceptor_funding_pubkey
                 VariableType::Amount,       // funding_satoshis
                 VariableType::FeeratePerKw, // feerate_per_kw
+            ],
+            Self::CreateChannelConfig => vec![
+                VariableType::FundingTransaction, // funding_transaction
+                VariableType::Amount,             // funding_satoshis
+                VariableType::Features,           // channel_type
+                VariableType::Point,              // opener_funding_pubkey
+                VariableType::Point,              // opener_payment_basepoint
+                VariableType::Point,              // opener_revocation_basepoint
+                VariableType::Point,              // opener_delayed_payment_basepoint
+                VariableType::Amount,             // opener_dust_limit_satoshis
+                VariableType::U16,                // opener_to_self_delay
+                VariableType::Point,              // acceptor_funding_pubkey
+                VariableType::Point,              // acceptor_payment_basepoint
+                VariableType::Point,              // acceptor_revocation_basepoint
+                VariableType::Point,              // acceptor_delayed_payment_basepoint
+                VariableType::Amount,             // acceptor_dust_limit_satoshis
+                VariableType::U16,                // acceptor_to_self_delay
             ],
             Self::SendMessage => vec![VariableType::Message],
             Self::BroadcastTransaction => vec![VariableType::FundingTransaction],
@@ -731,6 +770,7 @@ impl Operation {
             | Self::DerivePoint
             | Self::ExtractAcceptChannel(_)
             | Self::CreateFundingTransaction
+            | Self::CreateChannelConfig
             | Self::BuildOpenChannel
             | Self::BuildChannelAnnouncement
             | Self::BuildNodeAnnouncement { .. }
@@ -772,6 +812,7 @@ impl Operation {
             | Self::LoadChainHashFromContext
             | Self::DerivePoint
             | Self::CreateFundingTransaction
+            | Self::CreateChannelConfig
             | Self::BuildOpenChannel
             | Self::BuildChannelAnnouncement
             | Self::SendMessage

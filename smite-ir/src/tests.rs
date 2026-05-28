@@ -378,6 +378,14 @@ fn postcard_roundtrip() {
                 operation: Operation::BroadcastTransaction,
                 inputs: vec![10],
             },
+            Instruction {
+                operation: Operation::LoadU16(144),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::CreateChannelConfig,
+                inputs: vec![10, 4, 5, 1, 1, 1, 1, 4, 12, 1, 1, 1, 1, 4, 12],
+            },
         ],
     };
 
@@ -664,6 +672,120 @@ fn validate_rejects_broadcast_tx_with_wrong_input_type() {
             input: 0,
             expected: VariableType::FundingTransaction,
             got: VariableType::Amount,
+        }),
+    );
+}
+
+fn create_channel_config_instructions() -> Vec<Instruction> {
+    vec![
+        Instruction {
+            operation: Operation::LoadPrivateKey(key(1)),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::DerivePoint,
+            inputs: vec![0],
+        },
+        Instruction {
+            operation: Operation::LoadAmount(10_000_000),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::LoadFeeratePerKw(15_000),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::CreateFundingTransaction,
+            inputs: vec![1, 1, 2, 3],
+        },
+        Instruction {
+            operation: Operation::LoadFeatures(vec![0x01, 0x02]),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::LoadPrivateKey(key(2)),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::DerivePoint,
+            inputs: vec![6],
+        },
+        Instruction {
+            operation: Operation::LoadAmount(546),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::LoadU16(144),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::LoadPrivateKey(key(3)),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::DerivePoint,
+            inputs: vec![10],
+        },
+        Instruction {
+            operation: Operation::CreateChannelConfig,
+            inputs: vec![4, 2, 5, 7, 7, 7, 7, 8, 9, 11, 11, 11, 11, 8, 9],
+        },
+    ]
+}
+
+#[test]
+fn displays_create_channel_config_program() {
+    let program = Program {
+        instructions: create_channel_config_instructions(),
+    };
+    let text = program.to_string();
+    let lines: Vec<&str> = text.lines().collect();
+
+    let z31 = "00".repeat(31);
+
+    let expected = vec![
+        format!("v0 = LoadPrivateKey(0x{z31}01)"),
+        "v1 = DerivePoint(v0)".into(),
+        "v2 = LoadAmount(10000000)".into(),
+        "v3 = LoadFeeratePerKw(15000)".into(),
+        "v4 = CreateFundingTransaction(v1, v1, v2, v3)".into(),
+        "v5 = LoadFeatures(0x0102)".into(),
+        format!("v6 = LoadPrivateKey(0x{z31}02)"),
+        "v7 = DerivePoint(v6)".into(),
+        "v8 = LoadAmount(546)".into(),
+        "v9 = LoadU16(144)".into(),
+        format!("v10 = LoadPrivateKey(0x{z31}03)"),
+        "v11 = DerivePoint(v10)".into(),
+        "v12 = CreateChannelConfig(v4, v2, v5, v7, v7, v7, v7, v8, v9, v11, v11, v11, v11, v8, v9)"
+            .into(),
+    ];
+    assert_eq!(lines, expected);
+}
+
+#[test]
+fn validate_accepts_create_channel_config() {
+    let program = Program {
+        instructions: create_channel_config_instructions(),
+    };
+    program
+        .validate()
+        .expect("CreateChannelConfig should validate");
+}
+
+#[test]
+fn validate_rejects_create_channel_config_with_wrong_input_count() {
+    let program = Program {
+        instructions: vec![Instruction {
+            operation: Operation::CreateChannelConfig,
+            inputs: vec![],
+        }],
+    };
+    assert_eq!(
+        program.validate(),
+        Err(ValidateError::WrongInputCount {
+            instr: 0,
+            expected: 15,
+            got: 0,
         }),
     );
 }
@@ -1117,6 +1239,14 @@ fn generate_fresh_funding_transaction_panics() {
     let mut rng = SmallRng::seed_from_u64(0);
     let mut builder = ProgramBuilder::new();
     builder.generate_fresh(VariableType::FundingTransaction, &mut rng);
+}
+
+#[test]
+#[should_panic(expected = "cannot generate fresh ChannelConfig")]
+fn generate_fresh_channel_config_panics() {
+    let mut rng = SmallRng::seed_from_u64(0);
+    let mut builder = ProgramBuilder::new();
+    builder.generate_fresh(VariableType::ChannelConfig, &mut rng);
 }
 
 #[test]
