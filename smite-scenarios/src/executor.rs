@@ -8,8 +8,8 @@ use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use smite::bitcoin::{BitcoinCli, Utxo};
 use smite::bolt::{
-    AcceptChannel, ChannelId, Message, NodeAnnouncement, OpenChannel, OpenChannelTlvs, Pong,
-    ShortChannelId, msg_type,
+    AcceptChannel, ChannelAnnouncement, ChannelId, Message, NodeAnnouncement, OpenChannel,
+    OpenChannelTlvs, Pong, ShortChannelId, msg_type,
 };
 use smite::channel_tx::{FundingTransaction, build_funding_transaction};
 use smite::noise::{ConnectionError, NoiseConnection};
@@ -206,6 +206,12 @@ pub fn execute(
                 Some(Variable::Message(encoded))
             }
 
+            Operation::BuildChannelAnnouncement => {
+                let ca = build_channel_announcement(&variables, &instr.inputs)?;
+                let encoded = Message::ChannelAnnouncement(ca).encode();
+                Some(Variable::Message(encoded))
+            }
+
             Operation::BuildNodeAnnouncement { rgb_color, alias } => {
                 let na = build_node_announcement(&variables, &instr.inputs, *rgb_color, *alias)?;
                 let encoded = Message::NodeAnnouncement(na).encode();
@@ -356,6 +362,17 @@ fn resolve_channel_id(
     }
 }
 
+fn resolve_short_channel_id(
+    variables: &[Option<Variable>],
+    index: usize,
+) -> Result<ShortChannelId, ExecuteError> {
+    let var = resolve(variables, index)?;
+    match var {
+        Variable::ShortChannelId(v) => Ok(*v),
+        _ => Err(type_err(VariableType::ShortChannelId, var)),
+    }
+}
+
 fn resolve_pubkey(variables: &[Option<Variable>], index: usize) -> Result<PublicKey, ExecuteError> {
     let var = resolve(variables, index)?;
     match var {
@@ -469,6 +486,53 @@ fn build_open_channel(
             channel_type: nonempty_or_none(resolve_features(variables, inputs[19])?),
         },
     })
+}
+
+/// Builds a signed `ChannelAnnouncement` from 7 input variables.
+fn build_channel_announcement(
+    variables: &[Option<Variable>],
+    inputs: &[usize],
+) -> Result<ChannelAnnouncement, ExecuteError> {
+    let features = resolve_features(variables, inputs[0])?.to_vec();
+    let chain_hash = resolve_chain_hash(variables, inputs[1])?;
+    let short_channel_id = resolve_short_channel_id(variables, inputs[2])?;
+    let node_sk_1_bytes = resolve_private_key(variables, inputs[3])?;
+    let node_sk_2_bytes = resolve_private_key(variables, inputs[4])?;
+    let bitcoin_sk_1_bytes = resolve_private_key(variables, inputs[5])?;
+    let bitcoin_sk_2_bytes = resolve_private_key(variables, inputs[6])?;
+
+    let node_sk_1 =
+        SecretKey::from_slice(&node_sk_1_bytes).map_err(|_| ExecuteError::InvalidPrivateKey)?;
+    let node_sk_2 =
+        SecretKey::from_slice(&node_sk_2_bytes).map_err(|_| ExecuteError::InvalidPrivateKey)?;
+    let bitcoin_sk_1 =
+        SecretKey::from_slice(&bitcoin_sk_1_bytes).map_err(|_| ExecuteError::InvalidPrivateKey)?;
+    let bitcoin_sk_2 =
+        SecretKey::from_slice(&bitcoin_sk_2_bytes).map_err(|_| ExecuteError::InvalidPrivateKey)?;
+
+    let secp = Secp256k1::new();
+    let node_id_1 = PublicKey::from_secret_key(&secp, &node_sk_1);
+    let node_id_2 = PublicKey::from_secret_key(&secp, &node_sk_2);
+    let bitcoin_key_1 = PublicKey::from_secret_key(&secp, &bitcoin_sk_1);
+    let bitcoin_key_2 = PublicKey::from_secret_key(&secp, &bitcoin_sk_2);
+
+    let placeholder = Signature::from_compact(&[0u8; 64]).expect("zero bytes parse as a signature");
+    let mut ca = ChannelAnnouncement {
+        node_signature_1: placeholder,
+        node_signature_2: placeholder,
+        bitcoin_signature_1: placeholder,
+        bitcoin_signature_2: placeholder,
+        features,
+        chain_hash,
+        short_channel_id,
+        node_id_1,
+        node_id_2,
+        bitcoin_key_1,
+        bitcoin_key_2,
+        extra: Vec::new(),
+    };
+    ca.sign(&node_sk_1, &node_sk_2, &bitcoin_sk_1, &bitcoin_sk_2);
+    Ok(ca)
 }
 
 /// Builds a signed `NodeAnnouncement` from 4 input variables.
@@ -899,6 +963,90 @@ mod tests {
         assert_eq!(oc.channel_flags, 1);
         assert_eq!(oc.tlvs.upfront_shutdown_script, Some(vec![]));
         assert!(oc.tlvs.channel_type.is_none());
+    }
+
+    #[test]
+    fn execute_build_channel_announcement() {
+        let node_sk_1_bytes = [0x11; 32];
+        let node_sk_2_bytes = [0x22; 32];
+        let bitcoin_sk_1_bytes = [0x33; 32];
+        let bitcoin_sk_2_bytes = [0x44; 32];
+        let scid = ShortChannelId::new(539_268, 845, 1);
+        let features = vec![0x01, 0x02];
+
+        let instrs = vec![
+            Instruction {
+                operation: Operation::LoadFeatures(features.clone()),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadChainHashFromContext,
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadShortChannelId(scid.as_u64()),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadPrivateKey(node_sk_1_bytes),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadPrivateKey(node_sk_2_bytes),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadPrivateKey(bitcoin_sk_1_bytes),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadPrivateKey(bitcoin_sk_2_bytes),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::BuildChannelAnnouncement,
+                inputs: vec![0, 1, 2, 3, 4, 5, 6],
+            },
+            Instruction {
+                operation: Operation::SendMessage,
+                inputs: vec![7],
+            },
+        ];
+
+        let program = Program {
+            instructions: instrs,
+        };
+        let mut conn = MockConnection::new();
+        execute(
+            &program,
+            &sample_context(),
+            &mut conn,
+            &mut MockBitcoinCli::default(),
+            std::time::Instant::now(),
+        )
+        .unwrap();
+
+        assert_eq!(conn.sent.len(), 1);
+        let ca = match Message::decode(&conn.sent[0]).expect("valid message") {
+            Message::ChannelAnnouncement(ca) => ca,
+            other => panic!(
+                "expected ChannelAnnouncement, got type {}",
+                other.msg_type()
+            ),
+        };
+
+        let secp = Secp256k1::new();
+        let pk =
+            |b: &[u8; 32]| PublicKey::from_secret_key(&secp, &SecretKey::from_slice(b).unwrap());
+        assert_eq!(ca.features, features);
+        assert_eq!(ca.chain_hash, sample_context().chain_hash);
+        assert_eq!(ca.short_channel_id, scid);
+        assert_eq!(ca.node_id_1, pk(&node_sk_1_bytes));
+        assert_eq!(ca.node_id_2, pk(&node_sk_2_bytes));
+        assert_eq!(ca.bitcoin_key_1, pk(&bitcoin_sk_1_bytes));
+        assert_eq!(ca.bitcoin_key_2, pk(&bitcoin_sk_2_bytes));
+        assert!(ca.extra.is_empty());
+        assert!(ca.verify());
     }
 
     #[test]

@@ -203,6 +203,70 @@ fn display_open_channel_program() {
 }
 
 #[test]
+fn display_build_channel_announcement_program() {
+    let scid = ShortChannelId::new(539_268, 845, 1);
+    let instructions = vec![
+        Instruction {
+            operation: Operation::LoadFeatures(vec![0x01, 0x02]),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::LoadChainHashFromContext,
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::LoadShortChannelId(scid.as_u64()),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::LoadPrivateKey(key(1)),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::LoadPrivateKey(key(2)),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::LoadPrivateKey(key(3)),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::LoadPrivateKey(key(4)),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::BuildChannelAnnouncement,
+            inputs: vec![0, 1, 2, 3, 4, 5, 6],
+        },
+        Instruction {
+            operation: Operation::SendMessage,
+            inputs: vec![7],
+        },
+    ];
+
+    let program = Program { instructions };
+    let text = program.to_string();
+    let lines: Vec<&str> = text.lines().collect();
+
+    let z31 = "00".repeat(31);
+    let expected: Vec<String> = vec![
+        "v0 = LoadFeatures(0x0102)".into(),
+        "v1 = LoadChainHashFromContext()".into(),
+        format!("v2 = LoadShortChannelId({scid})"),
+        format!("v3 = LoadPrivateKey(0x{z31}01)"),
+        format!("v4 = LoadPrivateKey(0x{z31}02)"),
+        format!("v5 = LoadPrivateKey(0x{z31}03)"),
+        format!("v6 = LoadPrivateKey(0x{z31}04)"),
+        "v7 = BuildChannelAnnouncement(v0, v1, v2, v3, v4, v5, v6)".into(),
+        "SendMessage(v7)".into(),
+    ];
+    assert_eq!(lines.len(), expected.len(), "line count mismatch");
+    for (i, (got, want)) in lines.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(got, want, "line {i} mismatch");
+    }
+}
+
+#[test]
 fn display_build_node_announcement_program() {
     let mut alias = [0u8; 32];
     alias[..5].copy_from_slice(b"smite");

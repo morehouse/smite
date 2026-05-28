@@ -104,6 +104,19 @@ pub enum Operation {
     ///  18: `upfront_shutdown_script` (`Bytes`, empty = omit TLV)
     ///  19: `channel_type` (`Features`, empty = omit TLV)
     BuildOpenChannel,
+    /// Build a `channel_announcement` message (BOLT 7, type 256).
+    ///
+    /// All four `PrivateKey` inputs are used to sign the body.
+    ///
+    /// Inputs (7):
+    ///   0: `features`         (`Features`)
+    ///   1: `chain_hash`       (`ChainHash`)
+    ///   2: `short_channel_id` (`ShortChannelId`)
+    ///   3: `node_sk_1`        (`PrivateKey`) -- derives `node_id_1`
+    ///   4: `node_sk_2`        (`PrivateKey`) -- derives `node_id_2`
+    ///   5: `bitcoin_sk_1`     (`PrivateKey`) -- derives `bitcoin_key_1`
+    ///   6: `bitcoin_sk_2`     (`PrivateKey`) -- derives `bitcoin_key_2`
+    BuildChannelAnnouncement,
     /// Build a `node_announcement` message (BOLT 7, type 257).
     ///
     /// `rgb_color` and `alias` are op-level params (not variable inputs) so the
@@ -569,6 +582,7 @@ impl fmt::Display for Operation {
             Self::ExtractAcceptChannel(field) => write!(f, "Extract{field}"),
             Self::CreateFundingTransaction => write!(f, "CreateFundingTransaction"),
             Self::BuildOpenChannel => write!(f, "BuildOpenChannel"),
+            Self::BuildChannelAnnouncement => write!(f, "BuildChannelAnnouncement"),
             Self::BuildNodeAnnouncement { rgb_color, alias } => write!(
                 f,
                 "BuildNodeAnnouncement{{rgb={}, alias={}}}",
@@ -601,9 +615,9 @@ impl Operation {
             Self::LoadChainHashFromContext => Some(VariableType::ChainHash),
             Self::ExtractAcceptChannel(field) => Some(field.output_type()),
             Self::CreateFundingTransaction => Some(VariableType::FundingTransaction),
-            Self::BuildOpenChannel | Self::BuildNodeAnnouncement { .. } => {
-                Some(VariableType::Message)
-            }
+            Self::BuildOpenChannel
+            | Self::BuildChannelAnnouncement
+            | Self::BuildNodeAnnouncement { .. } => Some(VariableType::Message),
             Self::SendMessage | Self::MineBlocks(_) | Self::BroadcastTransaction => None,
             Self::RecvAcceptChannel => Some(VariableType::AcceptChannel),
         }
@@ -665,6 +679,16 @@ impl Operation {
                 VariableType::Features,     // channel_type
             ],
 
+            Self::BuildChannelAnnouncement => vec![
+                VariableType::Features,       // features
+                VariableType::ChainHash,      // chain_hash
+                VariableType::ShortChannelId, // short_channel_id
+                VariableType::PrivateKey,     // node_sk_1
+                VariableType::PrivateKey,     // node_sk_2
+                VariableType::PrivateKey,     // bitcoin_sk_1
+                VariableType::PrivateKey,     // bitcoin_sk_2
+            ],
+
             Self::BuildNodeAnnouncement { .. } => vec![
                 VariableType::PrivateKey, // node_sk
                 VariableType::Features,   // features
@@ -701,6 +725,7 @@ impl Operation {
             | Self::ExtractAcceptChannel(_)
             | Self::CreateFundingTransaction
             | Self::BuildOpenChannel
+            | Self::BuildChannelAnnouncement
             | Self::BuildNodeAnnouncement { .. }
             | Self::SendMessage
             | Self::MineBlocks(_)
@@ -740,6 +765,7 @@ impl Operation {
             | Self::DerivePoint
             | Self::CreateFundingTransaction
             | Self::BuildOpenChannel
+            | Self::BuildChannelAnnouncement
             | Self::SendMessage
             | Self::RecvAcceptChannel
             | Self::BroadcastTransaction => false,
