@@ -126,6 +126,9 @@ pub enum Operation {
     RecvAcceptChannel,
     /// Mines the given number of blocks on the Bitcoin network.
     MineBlocks(u8),
+    /// Sign wallet inputs of the transaction and broadcast it via `bitcoin-cli`.
+    /// Input: `FundingTransaction`.
+    BroadcastTransaction,
 }
 
 /// A BOLT 2 compliant `upfront_shutdown_script` template.
@@ -553,6 +556,7 @@ impl fmt::Display for Operation {
             Self::LoadChainHashFromContext => write!(f, "LoadChainHashFromContext()"),
             Self::RecvAcceptChannel => write!(f, "RecvAcceptChannel()"),
             Self::MineBlocks(v) => write!(f, "MineBlocks({v})"),
+            Self::BroadcastTransaction => write!(f, "BroadcastTransaction"),
             // Operations with inputs: parens added by Program::Display.
             Self::DerivePoint => write!(f, "DerivePoint"),
             Self::ExtractAcceptChannel(field) => write!(f, "Extract{field}"),
@@ -592,7 +596,7 @@ impl Operation {
             Self::BuildOpenChannel | Self::BuildNodeAnnouncement { .. } => {
                 Some(VariableType::Message)
             }
-            Self::SendMessage | Self::MineBlocks(_) => None,
+            Self::SendMessage | Self::MineBlocks(_) | Self::BroadcastTransaction => None,
             Self::RecvAcceptChannel => Some(VariableType::AcceptChannel),
         }
     }
@@ -627,6 +631,7 @@ impl Operation {
                 VariableType::FeeratePerKw, // feerate_per_kw
             ],
             Self::SendMessage => vec![VariableType::Message],
+            Self::BroadcastTransaction => vec![VariableType::FundingTransaction],
 
             Self::BuildOpenChannel => vec![
                 VariableType::ChainHash,    // chain_hash
@@ -688,7 +693,8 @@ impl Operation {
             | Self::BuildOpenChannel
             | Self::BuildNodeAnnouncement { .. }
             | Self::SendMessage
-            | Self::MineBlocks(_) => vec![],
+            | Self::MineBlocks(_)
+            | Self::BroadcastTransaction => vec![],
 
             Self::RecvAcceptChannel => AcceptChannelField::ALL
                 .iter()
@@ -724,7 +730,8 @@ impl Operation {
             | Self::CreateFundingTransaction
             | Self::BuildOpenChannel
             | Self::SendMessage
-            | Self::RecvAcceptChannel => false,
+            | Self::RecvAcceptChannel
+            | Self::BroadcastTransaction => false,
         }
     }
 }

@@ -304,6 +304,10 @@ fn postcard_roundtrip() {
                 operation: Operation::CreateFundingTransaction,
                 inputs: vec![1, 8, 4, 9],
             },
+            Instruction {
+                operation: Operation::BroadcastTransaction,
+                inputs: vec![10],
+            },
         ],
     };
 
@@ -369,7 +373,7 @@ fn validate_rejects_mine_blocks_with_wrong_input() {
 }
 
 #[test]
-fn create_funding_transaction_operation() {
+fn create_and_broadcast_tx_operation() {
     let op = Operation::CreateFundingTransaction;
     assert_eq!(
         op.input_types(),
@@ -382,9 +386,14 @@ fn create_funding_transaction_operation() {
     );
     assert_eq!(op.output_type(), Some(VariableType::FundingTransaction));
     assert!(!op.is_param_mutable());
+
+    let op = Operation::BroadcastTransaction;
+    assert_eq!(op.input_types(), vec![VariableType::FundingTransaction]);
+    assert_eq!(op.output_type(), None);
+    assert!(!op.is_param_mutable());
 }
 
-fn create_funding_transaction_instructions() -> Vec<Instruction> {
+fn create_and_broadcast_tx_instructions() -> Vec<Instruction> {
     vec![
         Instruction {
             operation: Operation::LoadPrivateKey(key(1)),
@@ -414,13 +423,17 @@ fn create_funding_transaction_instructions() -> Vec<Instruction> {
             operation: Operation::CreateFundingTransaction,
             inputs: vec![1, 3, 4, 5],
         },
+        Instruction {
+            operation: Operation::BroadcastTransaction,
+            inputs: vec![6],
+        },
     ]
 }
 
 #[test]
-fn displays_create_funding_transaction_program() {
+fn displays_create_and_broadcast_tx_program() {
     let program = Program {
-        instructions: create_funding_transaction_instructions(),
+        instructions: create_and_broadcast_tx_instructions(),
     };
     let text = program.to_string();
     let lines: Vec<&str> = text.lines().collect();
@@ -435,18 +448,19 @@ fn displays_create_funding_transaction_program() {
         "v4 = LoadAmount(10000000)".into(),
         "v5 = LoadFeeratePerKw(15000)".into(),
         "v6 = CreateFundingTransaction(v1, v3, v4, v5)".into(),
+        "BroadcastTransaction(v6)".into(),
     ];
     assert_eq!(lines, expected);
 }
 
 #[test]
-fn validate_accepts_create_funding_transaction() {
+fn validate_accepts_create_and_broadcast_tx() {
     let program = Program {
-        instructions: create_funding_transaction_instructions(),
+        instructions: create_and_broadcast_tx_instructions(),
     };
     program
         .validate()
-        .expect("CreateFundingTransaction should validate");
+        .expect("CreateFundingTransaction and BroadcastTransaction should validate");
 }
 
 #[test]
@@ -471,8 +485,12 @@ fn create_funding_transaction_with_wrong_input(input: usize, wrong: Operation) -
     // We will take the correct set of instructions for creating the funding
     // transaction, and then at given input position insert an invalid input
     // type that `CreateFundingTransaction` does not expect.
-    let mut instructions = create_funding_transaction_instructions();
-    let producer = instructions.last().unwrap().inputs[input];
+    let mut instructions = create_and_broadcast_tx_instructions();
+    let producer = instructions
+        .iter()
+        .find(|i| matches!(i.operation, Operation::CreateFundingTransaction))
+        .unwrap()
+        .inputs[input];
     instructions[producer] = Instruction {
         operation: wrong,
         inputs: vec![],
@@ -532,6 +550,49 @@ fn validate_rejects_create_funding_transaction_with_wrong_feerate_per_kw() {
             instr: 6,
             input: 3,
             expected: VariableType::FeeratePerKw,
+            got: VariableType::Amount,
+        }),
+    );
+}
+
+#[test]
+fn validate_rejects_broadcast_tx_with_wrong_input_count() {
+    let program = Program {
+        instructions: vec![Instruction {
+            operation: Operation::BroadcastTransaction,
+            inputs: vec![],
+        }],
+    };
+    assert_eq!(
+        program.validate(),
+        Err(ValidateError::WrongInputCount {
+            instr: 0,
+            expected: 1,
+            got: 0,
+        }),
+    );
+}
+
+#[test]
+fn validate_rejects_broadcast_tx_with_wrong_input_type() {
+    let program = Program {
+        instructions: vec![
+            Instruction {
+                operation: Operation::LoadAmount(100_000),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::BroadcastTransaction,
+                inputs: vec![0],
+            },
+        ],
+    };
+    assert_eq!(
+        program.validate(),
+        Err(ValidateError::TypeMismatch {
+            instr: 1,
+            input: 0,
+            expected: VariableType::FundingTransaction,
             got: VariableType::Amount,
         }),
     );

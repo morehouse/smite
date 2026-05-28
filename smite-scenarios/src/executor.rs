@@ -26,6 +26,9 @@ pub trait BitcoinRpc {
 
     /// Returns the scriptPubKey for a newly generated wallet address.
     fn get_new_address_script_pubkey(&mut self) -> ScriptBuf;
+
+    /// Signs and broadcasts a transaction
+    fn sign_and_broadcast_tx(&mut self, tx: &bitcoin::Transaction);
 }
 
 impl BitcoinRpc for BitcoinCli {
@@ -39,6 +42,10 @@ impl BitcoinRpc for BitcoinCli {
 
     fn get_new_address_script_pubkey(&mut self) -> ScriptBuf {
         BitcoinCli::get_new_address_script_pubkey(self)
+    }
+
+    fn sign_and_broadcast_tx(&mut self, tx: &bitcoin::Transaction) {
+        BitcoinCli::sign_and_broadcast_tx(self, tx);
     }
 }
 
@@ -227,6 +234,17 @@ pub fn execute(
                 log::debug!("[{:?}] MineBlocks: mined {} block(s)", start.elapsed(), v);
                 None
             }
+
+            Operation::BroadcastTransaction => {
+                let ft = resolve_funding_transaction(&variables, instr.inputs[0])?;
+                log::debug!(
+                    "[{:?}] BroadcastTransaction: txid={}",
+                    start.elapsed(),
+                    ft.tx.compute_txid(),
+                );
+                bitcoin_cli.sign_and_broadcast_tx(&ft.tx);
+                None
+            }
         };
 
         variables.push(result);
@@ -370,6 +388,17 @@ fn resolve_accept_channel(
     match var {
         Variable::AcceptChannel(v) => Ok(v),
         _ => Err(type_err(VariableType::AcceptChannel, var)),
+    }
+}
+
+fn resolve_funding_transaction(
+    variables: &[Option<Variable>],
+    index: usize,
+) -> Result<&FundingTransaction, ExecuteError> {
+    let var = resolve(variables, index)?;
+    match var {
+        Variable::FundingTransaction(v) => Ok(v),
+        _ => Err(type_err(VariableType::FundingTransaction, var)),
     }
 }
 
@@ -548,7 +577,7 @@ mod tests {
 
     use super::*;
     use bitcoin::secp256k1::{Secp256k1, SecretKey};
-    use bitcoin::{Amount, OutPoint};
+    use bitcoin::{Amount, OutPoint, Transaction};
     use smite::bolt::{AcceptChannelTlvs, Init, Ping};
     use smite_ir::Instruction;
 
@@ -590,6 +619,7 @@ mod tests {
     #[derive(Default)]
     struct MockBitcoinCli {
         mine_blocks_calls: Vec<u8>,
+        broadcast_calls: Vec<Transaction>,
         utxos: Vec<Utxo>,
         change_spk: ScriptBuf,
     }
@@ -605,6 +635,10 @@ mod tests {
 
         fn get_new_address_script_pubkey(&mut self) -> ScriptBuf {
             self.change_spk.clone()
+        }
+
+        fn sign_and_broadcast_tx(&mut self, tx: &bitcoin::Transaction) {
+            self.broadcast_calls.push(tx.clone());
         }
     }
 
@@ -759,7 +793,7 @@ mod tests {
         ]
     }
 
-    fn create_funding_transaction_instructions() -> Vec<Instruction> {
+    fn create_and_broadcast_tx_instructions() -> Vec<Instruction> {
         let opener_privkey =
             SecretKey::from_str("30ff4956bbdd3222d44cc5e8a1261dab1e07957bdac5ae88fe3261ef321f3749")
                 .unwrap()
@@ -797,6 +831,10 @@ mod tests {
             Instruction {
                 operation: Operation::CreateFundingTransaction,
                 inputs: vec![1, 3, 4, 5],
+            },
+            Instruction {
+                operation: Operation::BroadcastTransaction,
+                inputs: vec![6],
             },
         ]
     }
@@ -1349,7 +1387,7 @@ mod tests {
     }
 
     #[test]
-    fn execute_create_funding_transaction() {
+    fn execute_create_and_broadcast_tx() {
         let mut conn = MockConnection::new();
         let mut mock_cli = MockBitcoinCli {
             utxos: vec![sample_utxo()],
@@ -1358,19 +1396,21 @@ mod tests {
         };
         execute(
             &Program {
-                instructions: create_funding_transaction_instructions(),
+                instructions: create_and_broadcast_tx_instructions(),
             },
             &sample_context(),
             &mut conn,
             &mut mock_cli,
             std::time::Instant::now(),
         )
-        .expect("funding tx construction should succeed");
+        .expect("tx construction and broadcast should succeed");
 
-        // TODO: Once we have the `BroadcastTransaction` IR operation, we can
-        // add `broadcast_calls` to the `mock_cli` to retrieve the funding tx
-        // here and assert that it matches the expected tx constructed from the
-        // sample UTXO and change script pubkey.
+        assert_eq!(mock_cli.broadcast_calls.len(), 1);
+        let broadcast_tx = &mock_cli.broadcast_calls[0];
+        assert_eq!(
+            broadcast_tx.compute_txid().to_string(),
+            "09b0549b35f14ee862f63bd75811c6c27963c4dea6766ec6836952ec78df1e7e"
+        );
     }
 
     #[test]
@@ -1388,7 +1428,7 @@ mod tests {
         };
         let err = execute(
             &Program {
-                instructions: create_funding_transaction_instructions(),
+                instructions: create_and_broadcast_tx_instructions(),
             },
             &sample_context(),
             &mut conn,
