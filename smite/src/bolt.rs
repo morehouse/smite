@@ -105,6 +105,13 @@ pub enum BoltError {
     /// Unknown even TLV type (must reject per BOLT 1)
     #[error("TLV_UNKNOWN_EVEN_TYPE {0}")]
     TlvUnknownEvenType(u64),
+    /// TLV value longer than the known encoding for its type
+    #[error("TLV_TRAILING_BYTES type {tlv_type} expected {expected} got {actual}")]
+    TlvTrailingBytes {
+        tlv_type: u64,
+        expected: usize,
+        actual: usize,
+    },
 }
 
 /// BOLT message type constants.

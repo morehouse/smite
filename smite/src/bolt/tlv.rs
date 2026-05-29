@@ -63,6 +63,85 @@ impl TlvStream {
             .map(|r| r.value.as_slice())
     }
 
+    /// Gets a record by type and decodes it as a fixed-size `WireFormat` value.
+    ///
+    /// Returns `None` if the record is absent. Rejects TLV values that are
+    /// longer than the type's known wire encoding.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `BoltError` if the value is truncated or contains trailing
+    /// bytes after decoding.
+    pub fn get_as<T: WireFormat>(&self, tlv_type: u64) -> Result<Option<T>, BoltError> {
+        self.get(tlv_type)
+            .map(|data| {
+                let mut cursor = data;
+                let value = T::read(&mut cursor)?;
+                // we must fail to parse the stream
+                // "if length is not exactly equal to that required for the known encoding for type"
+                // [BOLT 1]: https://github.com/lightning/bolts/blob/master/01-messaging.md#type-length-value-format
+                if !cursor.is_empty() {
+                    let bytes_read = data.len() - cursor.len();
+                    return Err(BoltError::TlvTrailingBytes {
+                        tlv_type,
+                        expected: bytes_read,
+                        actual: data.len(),
+                    });
+                }
+                Ok(value)
+            })
+            .transpose()
+    }
+
+    /// Gets all records by type and decodes them as fixed-size `WireFormat`
+    /// values.
+    ///
+    /// Returns `None` if no records are found, or `Some(vec)` if present.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `BoltError` if decoding a TLV value fails or the TLV values
+    /// cannot be divided into fixed-size chunks.
+    pub fn get_as_many<T: WireFormat>(&self, tlv_type: u64) -> Result<Option<Vec<T>>, BoltError> {
+        match self.get(tlv_type) {
+            Some(data) => {
+                if data.is_empty() {
+                    return Ok(Some(Vec::new()));
+                }
+
+                let total_bytes = data.len();
+                let mut cursor = data;
+
+                // read first element to determine chunk size
+                let first = T::read(&mut cursor)?;
+
+                let chunk_size = total_bytes - cursor.len();
+                if chunk_size == 0 {
+                    return Err(BoltError::Truncated {
+                        expected: 1,
+                        actual: 0,
+                    });
+                }
+                if total_bytes % chunk_size != 0 {
+                    return Err(BoltError::TlvTrailingBytes {
+                        tlv_type,
+                        expected: (total_bytes / chunk_size) * chunk_size,
+                        actual: total_bytes,
+                    });
+                }
+
+                let mut values = Vec::with_capacity(total_bytes / chunk_size);
+                values.push(first);
+                for chunk in cursor.chunks(chunk_size) {
+                    let mut chunk_cursor = chunk;
+                    values.push(T::read(&mut chunk_cursor)?);
+                }
+                Ok(Some(values))
+            }
+            None => Ok(None),
+        }
+    }
+
     /// Returns an iterator over all records.
     pub fn iter(&self) -> impl Iterator<Item = &TlvRecord> {
         self.records.iter()
@@ -208,6 +287,81 @@ mod tests {
         assert_eq!(decoded.get(1), Some(&[0x01, 0x02, 0x03][..]));
         assert_eq!(decoded.get(3), Some(&[][..]));
         assert_eq!(decoded.get(255), Some(&[0xff; 100][..]));
+    }
+
+    #[test]
+    fn get_as_missing_returns_none() {
+        let stream = TlvStream::new();
+        assert_eq!(stream.get_as::<u64>(1).unwrap(), None);
+    }
+
+    #[test]
+    fn get_as_exact_length() {
+        let mut stream = TlvStream::new();
+        let mut value = Vec::new();
+        42u64.write(&mut value);
+        stream.add(1, value);
+
+        assert_eq!(stream.get_as::<u64>(1).unwrap(), Some(42));
+    }
+
+    #[test]
+    fn get_as_overlength_rejected() {
+        let mut stream = TlvStream::new();
+        let mut value = Vec::new();
+        42u64.write(&mut value);
+        value.push(0xff);
+        stream.add(1, value);
+
+        assert_eq!(
+            stream.get_as::<u64>(1),
+            Err(BoltError::TlvTrailingBytes {
+                tlv_type: 1,
+                expected: 8,
+                actual: 9
+            })
+        );
+    }
+
+    #[test]
+    fn get_as_underlength_truncated() {
+        let mut stream = TlvStream::new();
+        stream.add(1, vec![0xaa; 4]);
+
+        assert_eq!(
+            stream.get_as::<u64>(1),
+            Err(BoltError::Truncated {
+                expected: 8,
+                actual: 4
+            })
+        );
+    }
+
+    #[test]
+    fn get_as_many() {
+        let mut stream = TlvStream::new();
+        let value = [[0u8; 32], [1u8; 32]].as_flattened().to_vec();
+        stream.add(1, value);
+
+        assert_eq!(
+            stream.get_as_many::<[u8; 32]>(1).unwrap(),
+            Some(vec![[0u8; 32], [1u8; 32]])
+        );
+    }
+
+    #[test]
+    fn get_as_many_reject_trailing_bytes() {
+        let mut stream = TlvStream::new();
+        stream.add(1, vec![0u8; 33]);
+
+        assert_eq!(
+            stream.get_as_many::<[u8; 32]>(1),
+            Err(BoltError::TlvTrailingBytes {
+                tlv_type: 1,
+                expected: 32,
+                actual: 33
+            })
+        );
     }
 
     #[test]
