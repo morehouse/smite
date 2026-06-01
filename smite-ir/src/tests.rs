@@ -1,18 +1,19 @@
 //! Tests for IR types.
 
-use rand::RngExt;
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
+use rand::{Rng, RngExt};
 use smite::bolt::{MAX_MESSAGE_SIZE, ShortChannelId};
 
 use super::*;
 use generators::{
-    ChannelAnnouncementGenerator, ChannelUpdateGenerator, NodeAnnouncementGenerator,
+    AnyGenerator, ChannelAnnouncementGenerator, ChannelUpdateGenerator, NodeAnnouncementGenerator,
     OpenChannelGenerator,
 };
 use minimizers::{CommonSubexpressionEliminator, DeadCodeEliminator, Minimizer};
 use mutators::{
-    InputSwapMutator, InstructionDeleteMutator, InstructionReorderMutator, OperationParamMutator,
+    GeneratorInsertionMutator, InputSwapMutator, InstructionDeleteMutator,
+    InstructionReorderMutator, OperationParamMutator,
 };
 use operation::{AcceptChannelField, ChannelTypeVariant, ShutdownScriptVariant};
 
@@ -827,6 +828,23 @@ fn accept_channel_field_all_is_complete() {
         AcceptChannelField::ALL.len(),
         variant_count(AcceptChannelField::ALL[0]),
     );
+}
+
+// Ensure AnyGenerator and AnyGenerator::ALL stay in sync. The exhaustive
+// match in this test will fail to compile if a variant is added without
+// updating it, and the assertion will fail if the match is updated
+// without updating AnyGenerator::ALL.
+#[test]
+fn any_generator_all_is_complete() {
+    let variant_count = |f: AnyGenerator| -> usize {
+        match f {
+            AnyGenerator::ChannelAnnouncement(_)
+            | AnyGenerator::ChannelUpdate(_)
+            | AnyGenerator::NodeAnnouncement(_)
+            | AnyGenerator::OpenChannel(_) => 4,
+        }
+    };
+    assert_eq!(AnyGenerator::ALL.len(), variant_count(AnyGenerator::ALL[0]));
 }
 
 // -- ShutdownScriptVariant tests --
@@ -2146,6 +2164,150 @@ fn instr_reorder_preserves_well_formedness() {
         },
     ]);
     assert_mutator_preserves_well_formedness(&InstructionReorderMutator, &original);
+}
+
+// -- GeneratorInsertionMutator tests --
+
+// A test generator that doesn't use RNG, ensuring its operations are always predictable.
+struct DummyGenerator;
+impl Generator for DummyGenerator {
+    fn generate(&self, builder: &mut ProgramBuilder, _rng: &mut impl Rng) {
+        // Emit fully static operations.
+        builder.append(Operation::LoadBlockHeight(100), &[]);
+        builder.append(Operation::LoadFeeratePerKw(253), &[]);
+        builder.append(Operation::LoadPrivateKey(key(1)), &[]);
+        builder.append(Operation::DerivePoint, &[2]);
+    }
+}
+
+fn generate_dummy_program(seed: u64) -> Program {
+    let mut builder = ProgramBuilder::new();
+    let mut rng = SmallRng::seed_from_u64(seed);
+    DummyGenerator.generate(&mut builder, &mut rng);
+    builder.build()
+}
+
+#[test]
+fn generator_insertion_does_not_drop_instructions() {
+    let mut program = generate_open_channel_program(0);
+    let original_program_len = program.instructions.len();
+    let dummy_program = generate_dummy_program(0);
+    let dummy_program_len = dummy_program.instructions.len();
+
+    // DummyGenerator emits static instructions (never calls `pick_variable`).
+    // Inserting it in a program deterministically increases instructions count.
+    let mutator = GeneratorInsertionMutator::new(DummyGenerator);
+    let mut rng = SmallRng::seed_from_u64(0);
+
+    mutator.mutate(&mut program, &mut rng);
+    assert_eq!(
+        original_program_len + dummy_program_len,
+        program.instructions.len()
+    );
+}
+
+#[test]
+fn generator_insertion_returns_generated_on_empty_program() {
+    let mut program = Program {
+        instructions: vec![],
+    };
+    let dummy_program = generate_dummy_program(0);
+    let mutator = GeneratorInsertionMutator::new(DummyGenerator);
+    let mut rng = SmallRng::seed_from_u64(0);
+
+    mutator.mutate(&mut program, &mut rng);
+    assert_eq!(
+        program, dummy_program,
+        "GeneratorInsertionMutator didn't insert generated program"
+    );
+}
+
+#[test]
+fn generator_insertion_preserves_generated() {
+    let mut program = generate_open_channel_program(0);
+    let mut rng = SmallRng::seed_from_u64(0);
+
+    let dummy_program = generate_dummy_program(0);
+    let mutator = GeneratorInsertionMutator::new(DummyGenerator);
+    mutator.mutate(&mut program, &mut rng);
+
+    let inserted_correctly = program
+        .instructions
+        .windows(dummy_program.instructions.len())
+        .any(|window| {
+            window
+                .iter()
+                .zip(dummy_program.instructions.iter())
+                .all(|(a, b)| a.operation == b.operation)
+        });
+
+    assert!(
+        inserted_correctly,
+        "Generated sequence not found intact in mutated program"
+    );
+}
+
+#[test]
+fn generator_insertion_shifts_correctly() {
+    let original = generate_open_channel_program(0);
+    let mut program = original.clone();
+
+    let mutator = GeneratorInsertionMutator::new(OpenChannelGenerator);
+    let mut rng = SmallRng::seed_from_u64(0);
+    mutator.mutate(&mut program, &mut rng);
+
+    // Find the exact insert_point chosen by the RNG.
+    let mut insert_point = original.instructions.len();
+    for i in 0..original.instructions.len() {
+        if program.instructions[i].operation != original.instructions[i].operation {
+            insert_point = i;
+            break;
+        }
+    }
+
+    // The length of the generated program.
+    let offset = program.instructions.len() - original.instructions.len();
+
+    for mut_idx in (insert_point + offset)..program.instructions.len() {
+        let orig_idx = mut_idx - offset;
+        let mut_instr = &program.instructions[mut_idx];
+        let orig_instr = &original.instructions[orig_idx];
+
+        // Ensure the operations align perfectly.
+        assert_eq!(mut_instr.operation, orig_instr.operation);
+        assert_eq!(mut_instr.inputs.len(), orig_instr.inputs.len());
+
+        for (i, (&mut_in, &orig_in)) in mut_instr
+            .inputs
+            .iter()
+            .zip(orig_instr.inputs.iter())
+            .enumerate()
+        {
+            if orig_in < insert_point {
+                // If it pointed to something BEFORE the cut, the index should not change.
+                assert_eq!(
+                    mut_in, orig_in,
+                    "Instruction {mut_idx} input {i} shifted, but it points BEFORE the insertion point",
+                );
+            } else {
+                // If it pointed to something AT or AFTER the cut, the index must shift by the offset.
+                assert_eq!(
+                    mut_in,
+                    orig_in + offset,
+                    "Instruction {mut_idx} input {i} failed to shift by exactly {offset}",
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn generator_insertion_preserves_well_formedness() {
+    let original = generate_open_channel_program(0);
+    for &generator in AnyGenerator::ALL {
+        let mutator = GeneratorInsertionMutator::new(generator);
+        assert_mutator_preserves_well_formedness(&mutator, &original);
+    }
 }
 
 // -- DeadCodeEliminator tests --
