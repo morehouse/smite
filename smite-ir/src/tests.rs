@@ -1138,10 +1138,10 @@ fn append_out_of_bounds_panics() {
 fn append_void_reference_panics() {
     let mut rng = SmallRng::seed_from_u64(0);
     let mut builder = ProgramBuilder::new();
-    OpenChannelGenerator.generate(&mut builder, &mut rng);
+    NodeAnnouncementGenerator.generate(&mut builder, &mut rng);
     let program = builder.build();
-    // SendMessage is second-to-last and has void output.
-    let send_idx = program.instructions.len() - 2;
+    // SendMessage is last and has void output.
+    let send_idx = program.instructions.len() - 1;
     assert!(
         program.instructions[send_idx]
             .operation
@@ -1152,7 +1152,7 @@ fn append_void_reference_panics() {
     // Rebuild the same program and try to reference the void instruction.
     let mut rng = SmallRng::seed_from_u64(0);
     let mut builder = ProgramBuilder::new();
-    OpenChannelGenerator.generate(&mut builder, &mut rng);
+    NodeAnnouncementGenerator.generate(&mut builder, &mut rng);
     builder.append(Operation::SendMessage, &[send_idx]);
 }
 
@@ -1280,17 +1280,14 @@ fn validate_rejects_self_reference() {
 
 #[test]
 fn validate_rejects_void_input() {
-    // Build a valid program, then append a DerivePoint that references the void
-    // SendMessage instruction emitted by the generator.
+    // Build a valid program, then append a DerivePoint that references
+    // the void output emitted by SendMessage.
     let mut rng = SmallRng::seed_from_u64(0);
     let mut builder = ProgramBuilder::new();
-    OpenChannelGenerator.generate(&mut builder, &mut rng);
+    NodeAnnouncementGenerator.generate(&mut builder, &mut rng);
     let mut program = builder.build();
-    let send_idx = program
-        .instructions
-        .iter()
-        .position(|i| matches!(i.operation, Operation::SendMessage))
-        .expect("generator emits SendMessage");
+    // SendMessage is the last instruction in the program.
+    let send_idx = program.instructions.len() - 1;
     program.instructions.push(Instruction {
         operation: Operation::DerivePoint,
         inputs: vec![send_idx],

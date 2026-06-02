@@ -46,6 +46,8 @@ pub enum Variable {
     Features(Vec<u8>),
     /// Encoded BOLT message with type prefix, ready to send.
     Message(Vec<u8>),
+    /// Encoded BOLT `open_channel` message with type 32 prefix, ready to send.
+    OpenChannelMessage(Vec<u8>),
     /// Parsed `accept_channel` response.
     AcceptChannel(AcceptChannel),
     /// Constructed funding transaction with funding output index.
@@ -76,6 +78,7 @@ impl Variable {
             Self::U8(_) => VariableType::U8,
             Self::Features(_) => VariableType::Features,
             Self::Message(_) => VariableType::Message,
+            Self::OpenChannelMessage(_) => VariableType::OpenChannelMessage,
             Self::AcceptChannel(_) => VariableType::AcceptChannel,
             Self::FundingTransaction(_) => VariableType::FundingTransaction,
             Self::SentOpenChannel => VariableType::SentOpenChannel,
@@ -102,6 +105,7 @@ pub enum VariableType {
     U8,
     Features,
     Message,
+    OpenChannelMessage,
     AcceptChannel,
     FundingTransaction,
     SentOpenChannel,
@@ -127,6 +131,7 @@ impl VariableType {
             | Self::U8
             | Self::Features
             | Self::Message
+            | Self::OpenChannelMessage
             | Self::AcceptChannel
             | Self::ShortChannelId
             | Self::FundingTransaction => false,

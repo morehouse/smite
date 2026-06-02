@@ -620,9 +620,10 @@ impl Operation {
             Self::LoadChainHashFromContext => Some(VariableType::ChainHash),
             Self::ExtractAcceptChannel(field) => Some(field.output_type()),
             Self::CreateFundingTransaction => Some(VariableType::FundingTransaction),
-            Self::BuildOpenChannel
-            | Self::BuildChannelAnnouncement
-            | Self::BuildNodeAnnouncement { .. } => Some(VariableType::Message),
+            Self::BuildOpenChannel => Some(VariableType::OpenChannelMessage),
+            Self::BuildChannelAnnouncement | Self::BuildNodeAnnouncement { .. } => {
+                Some(VariableType::Message)
+            }
             Self::SendMessage | Self::MineBlocks(_) | Self::BroadcastTransaction => None,
             Self::RecvAcceptChannel => Some(VariableType::AcceptChannel),
         }
