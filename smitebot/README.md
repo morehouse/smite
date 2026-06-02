@@ -19,6 +19,32 @@ smitebot doctor --aflpp-path ~/AFLplusplus --json
 
 ## Commands
 
+### smitebot build
+
+`smitebot build` builds Smite workload Docker images for manual rebuilds and debugging.
+
+```bash
+smitebot build --target lnd --scenario encrypted_bytes
+smitebot build --target cln --scenario noise --coverage
+smitebot build --target ldk --scenario init --image local/ldk-init:debug --no-cache
+```
+
+Flags:
+
+- `--target`: Workload implementation to build an image for (`lnd`, `cln`, `ldk`, or `eclair`).
+- `--scenario`: Scenario that the image should run.
+- `--coverage`: Build a coverage-instrumented image.
+- `--image`: Use a custom image tag instead of the default tag used by Smite.
+- `--smite-dir`: Path to the Smite repository root. Defaults to the current directory.
+- `--no-cache`: Perform a clean rebuild without using cached Docker layers.
+
+By default, image tags follow the existing Smite convention:
+
+```text
+smite-<target>-<scenario>
+smite-<target>-<scenario>-coverage
+```
+
 ### smitebot doctor
 
 `smitebot doctor` validates host prerequisites before running Smite campaigns.
