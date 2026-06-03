@@ -19,6 +19,16 @@ fn key(byte: u8) -> [u8; 32] {
     k
 }
 
+/// Asserts `program` is well-formed by replaying it through `ProgramBuilder`,
+/// which panics on any input-count, SSA-ordering, void-reference, or type
+/// mismatch.
+fn assert_well_formed(program: &Program) {
+    let mut builder = ProgramBuilder::new();
+    for instr in &program.instructions {
+        builder.append(instr.operation.clone(), &instr.inputs);
+    }
+}
+
 #[test]
 #[allow(clippy::too_many_lines)]
 fn display_open_channel_program() {
@@ -1778,7 +1788,7 @@ fn input_swap_returns_false_when_no_alternatives() {
 }
 
 #[test]
-fn input_swap_preserves_types() {
+fn input_swap_preserves_well_formedness() {
     let original = generate_open_channel_program(0);
     let mutator = InputSwapMutator;
     let mut rng = SmallRng::seed_from_u64(0);
@@ -1786,26 +1796,7 @@ fn input_swap_preserves_types() {
     for _ in 0..100 {
         let mut program = original.clone();
         if mutator.mutate(&mut program, &mut rng) {
-            for (i, instr) in program.instructions.iter().enumerate() {
-                let expected_types = instr.operation.input_types();
-                for (j, &input_idx) in instr.inputs.iter().enumerate() {
-                    assert!(
-                        input_idx < i,
-                        "instruction {i} input {j}: references undefined variable {input_idx}",
-                    );
-                    let actual_type = program.instructions[input_idx]
-                        .operation
-                        .output_type()
-                        .unwrap_or_else(|| {
-                            panic!("instruction {i} input {j}: references void at {input_idx}")
-                        });
-                    assert_eq!(
-                        actual_type, expected_types[j],
-                        "instruction {i} input {j}: expected {:?}, got {actual_type:?}",
-                        expected_types[j],
-                    );
-                }
-            }
+            assert_well_formed(&program);
         }
     }
 }
@@ -1870,7 +1861,7 @@ fn dead_code_removes_dead_instructions() {
         program.instructions.is_empty(),
         "all dead instructions should be removed"
     );
-    program.validate().expect("trimmed program should validate");
+    assert_well_formed(&program);
 }
 
 #[test]
@@ -1922,10 +1913,10 @@ fn dead_code_keeps_recv_accept_channel() {
 }
 
 #[test]
-fn dead_code_result_validates() {
+fn dead_code_result_well_formed() {
     let mut program = program_with_dead_load();
     DeadCodeEliminator.minimize(&mut program);
-    program.validate().expect("final program should validate");
+    assert_well_formed(&program);
 }
 
 #[test]
@@ -2073,14 +2064,14 @@ fn cse_rewires_references() {
     };
     assert!(CommonSubexpressionEliminator.minimize(&mut program));
     assert_eq!(program, expected);
-    program.validate().expect("program should still validate");
+    assert_well_formed(&program);
 }
 
 #[test]
-fn cse_result_validates() {
+fn cse_result_well_formed() {
     let mut program = generate_open_channel_program(0);
     CommonSubexpressionEliminator.minimize(&mut program);
-    program.validate().expect("merged program should validate");
+    assert_well_formed(&program);
 }
 
 #[test]
@@ -2121,7 +2112,7 @@ fn cse_merges_compute_ops_through_canonicalized_inputs() {
             },
         ],
     };
-    program.validate().expect("input program should validate");
+    assert_well_formed(&program);
     assert!(CommonSubexpressionEliminator.minimize(&mut program));
     assert_eq!(program.instructions.len(), 2);
     assert!(matches!(
