@@ -141,6 +141,10 @@ pub enum Operation {
     /// Send an encoded message over the connection.
     /// Input: `Message`.
     SendMessage,
+    /// Send an `open_channel` message over the connection.
+    /// Produces a `SentOpenChannel` variable.
+    /// Input: `OpenChannelMessage`.
+    SendOpenChannel,
     /// Receive and parse an `accept_channel` response.
     /// Produces an `AcceptChannel` compound variable.
     RecvAcceptChannel,
@@ -594,6 +598,7 @@ impl fmt::Display for Operation {
                 format_hex(alias),
             ),
             Self::SendMessage => write!(f, "SendMessage"),
+            Self::SendOpenChannel => write!(f, "SendOpenChannel"),
         }
     }
 }
@@ -620,10 +625,12 @@ impl Operation {
             Self::LoadChainHashFromContext => Some(VariableType::ChainHash),
             Self::ExtractAcceptChannel(field) => Some(field.output_type()),
             Self::CreateFundingTransaction => Some(VariableType::FundingTransaction),
-            Self::BuildOpenChannel
-            | Self::BuildChannelAnnouncement
-            | Self::BuildNodeAnnouncement { .. } => Some(VariableType::Message),
+            Self::BuildOpenChannel => Some(VariableType::OpenChannelMessage),
+            Self::BuildChannelAnnouncement | Self::BuildNodeAnnouncement { .. } => {
+                Some(VariableType::Message)
+            }
             Self::SendMessage | Self::MineBlocks(_) | Self::BroadcastTransaction => None,
+            Self::SendOpenChannel => Some(VariableType::SentOpenChannel),
             Self::RecvAcceptChannel => Some(VariableType::AcceptChannel),
         }
     }
@@ -648,8 +655,7 @@ impl Operation {
             | Self::LoadChannelType(_)
             | Self::LoadTargetPubkeyFromContext
             | Self::LoadChainHashFromContext
-            | Self::MineBlocks(_)
-            | Self::RecvAcceptChannel => vec![],
+            | Self::MineBlocks(_) => vec![],
 
             Self::DerivePoint => vec![VariableType::PrivateKey],
             Self::ExtractAcceptChannel(_) => vec![VariableType::AcceptChannel],
@@ -660,6 +666,8 @@ impl Operation {
                 VariableType::FeeratePerKw, // feerate_per_kw
             ],
             Self::SendMessage => vec![VariableType::Message],
+            Self::SendOpenChannel => vec![VariableType::OpenChannelMessage],
+            Self::RecvAcceptChannel => vec![VariableType::SentOpenChannel],
             Self::BroadcastTransaction => vec![VariableType::FundingTransaction],
 
             Self::BuildOpenChannel => vec![
@@ -735,6 +743,7 @@ impl Operation {
             | Self::BuildChannelAnnouncement
             | Self::BuildNodeAnnouncement { .. }
             | Self::SendMessage
+            | Self::SendOpenChannel
             | Self::MineBlocks(_)
             | Self::BroadcastTransaction => vec![],
 
@@ -809,6 +818,7 @@ impl Operation {
             | Self::BuildOpenChannel
             | Self::BuildChannelAnnouncement
             | Self::SendMessage
+            | Self::SendOpenChannel
             | Self::RecvAcceptChannel
             | Self::BroadcastTransaction => false,
         }

@@ -71,6 +71,27 @@ impl ProgramBuilder {
                 actual_type, expected_type,
                 "{operation:?} input {i}: expected {expected_type:?}, got {actual_type:?}",
             );
+            if actual_type.is_affine() {
+                let cands = self.candidates.get_mut(&actual_type).unwrap_or_else(|| {
+                    panic!("{operation:?} input {i}: no candidates for {actual_type:?}")
+                });
+
+                // Find the position, or panic if it doesn't exist.
+                let pos = cands
+                    .iter()
+                    .position(|c| match c {
+                        Candidate::Direct(idx) => *idx == input_idx,
+                        Candidate::Extract { .. } => {
+                            panic!("extractable affine variable in candidate list")
+                        }
+                    })
+                    .unwrap_or_else(|| {
+                        panic!("{operation:?} input {i}: affine {actual_type:?} already consumed")
+                    });
+
+                // Consume it.
+                cands.remove(pos);
+            }
         }
 
         let idx = self.instructions.len();
@@ -78,6 +99,11 @@ impl ProgramBuilder {
         if let Some(out_type) = operation.output_type() {
             // Register extractable fields for compound types.
             for (extract_op, field_type) in operation.extractable_fields() {
+                assert!(
+                    !field_type.is_affine(),
+                    "affine variables cannot be extracted"
+                );
+                assert!(!out_type.is_affine(), "compound variables cannot be affine");
                 self.candidates
                     .entry(field_type)
                     .or_default()
@@ -103,11 +129,30 @@ impl ProgramBuilder {
 
     /// Selects or creates a variable of the given type using probabilistic
     /// variable selection (75% most recent, 15% any existing, 10% fresh).
-    #[allow(clippy::missing_panics_doc)] // candidates is always non-empty
+    /// For affine variables the most recent candidate is always selected.
+    ///
+    /// # Panics
+    ///
+    /// Panics in the following scenarios:
+    /// * An affine type is requested but its candidate pool is empty (all
+    ///   instances have been consumed).
+    /// * Attempts to generate a fresh variable for a type that cannot be
+    ///   instantiated out-of-thin-air (e.g., `Message`, `AcceptChannel`,
+    ///   or affine types).
+    /// * Resolving the chosen candidate triggers a panic in the underlying
+    ///   `append` operation.
     pub fn pick_variable(&mut self, var_type: VariableType, rng: &mut impl Rng) -> usize {
         let Some(candidates) = self.candidates.get(&var_type) else {
             return self.generate_fresh(var_type, rng);
         };
+
+        if var_type.is_affine() {
+            let chosen_candidate = candidates
+                .last()
+                .unwrap_or_else(|| panic!("no candidates for {var_type:?}"))
+                .clone();
+            return self.resolve_candidate(chosen_candidate);
+        }
 
         let roll = rng.random_range(0..20);
         match roll {
@@ -171,11 +216,17 @@ impl ProgramBuilder {
             VariableType::Message => {
                 panic!("cannot generate fresh Message: requires composed inputs")
             }
+            VariableType::OpenChannelMessage => {
+                panic!("cannot generate fresh OpenChannelMessage: requires composed inputs")
+            }
             VariableType::AcceptChannel => {
                 panic!("cannot generate fresh AcceptChannel: requires protocol interaction")
             }
             VariableType::FundingTransaction => {
                 panic!("cannot generate fresh FundingTransaction: requires composed inputs")
+            }
+            VariableType::SentOpenChannel => {
+                panic!("cannot generate fresh SentOpenChannel: affine type")
             }
         }
     }

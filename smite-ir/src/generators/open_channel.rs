@@ -48,7 +48,7 @@ impl Generator for OpenChannelGenerator {
         let channel_type = builder.append(Operation::LoadChannelType(variant), &[]);
 
         // Build and send open_channel.
-        let msg = builder.append(
+        let open_channel_msg = builder.append(
             Operation::BuildOpenChannel,
             &[
                 chain_hash,
@@ -73,9 +73,9 @@ impl Generator for OpenChannelGenerator {
                 channel_type,
             ],
         );
-        builder.append(Operation::SendMessage, &[msg]);
+        let sent_open_channel = builder.append(Operation::SendOpenChannel, &[open_channel_msg]);
 
         // Receive accept_channel.
-        builder.append(Operation::RecvAcceptChannel, &[]);
+        builder.append(Operation::RecvAcceptChannel, &[sent_open_channel]);
     }
 }

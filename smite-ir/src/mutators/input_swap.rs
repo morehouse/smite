@@ -19,7 +19,16 @@ impl Mutator for InputSwapMutator {
             .instructions
             .iter()
             .enumerate()
-            .flat_map(|(i, instr)| (0..instr.inputs.len()).map(move |j| (i, j)))
+            .flat_map(|(i, instr)| {
+                instr
+                    .operation
+                    .input_types()
+                    .into_iter()
+                    .enumerate()
+                    // Affine variables carry no data, so swapping one affine variable with
+                    // another has no practical effect.
+                    .filter_map(move |(j, ty)| (!ty.is_affine()).then_some((i, j)))
+            })
             .choose(rng)
         else {
             return false;

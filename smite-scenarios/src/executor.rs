@@ -117,6 +117,10 @@ pub enum ExecuteError {
     #[error("invalid private key")]
     InvalidPrivateKey,
 
+    /// An affine variable is consumed more than once.
+    #[error("affine variable {index} consumed more than once")]
+    AffineOverUse { index: usize },
+
     /// Connection or send/receive failure.
     #[error("connection: {0}")]
     Connection(#[from] smite::noise::ConnectionError),
@@ -140,6 +144,7 @@ pub enum ExecuteError {
 ///
 /// Returns an error if any instruction fails (type mismatch, connection error,
 /// decode error, etc.).
+#[allow(clippy::too_many_lines)]
 pub fn execute(
     program: &Program,
     context: &ProgramContext,
@@ -204,7 +209,7 @@ pub fn execute(
             Operation::BuildOpenChannel => {
                 let oc = build_open_channel(&variables, &instr.inputs)?;
                 let encoded = Message::OpenChannel(oc).encode();
-                Some(Variable::Message(encoded))
+                Some(Variable::OpenChannelMessage(encoded))
             }
 
             Operation::BuildChannelAnnouncement => {
@@ -232,7 +237,19 @@ pub fn execute(
                 None
             }
 
+            Operation::SendOpenChannel => {
+                let bytes = resolve_open_channel_message(&variables, instr.inputs[0])?;
+                log::debug!(
+                    "[{:?}] SendOpenChannel: {} bytes",
+                    start.elapsed(),
+                    bytes.len(),
+                );
+                conn.send_message(bytes)?;
+                Some(Variable::SentOpenChannel)
+            }
+
             Operation::RecvAcceptChannel => {
+                consume_sent_open_channel(&mut variables, instr.inputs[0])?;
                 log::debug!("[{:?}] RecvAcceptChannel: waiting", start.elapsed());
                 let ac = recv_accept_channel(conn)?;
                 log::debug!("[{:?}] RecvAcceptChannel: received", start.elapsed());
@@ -401,6 +418,17 @@ fn resolve_message(variables: &[Option<Variable>], index: usize) -> Result<&[u8]
     }
 }
 
+fn resolve_open_channel_message(
+    variables: &[Option<Variable>],
+    index: usize,
+) -> Result<&[u8], ExecuteError> {
+    let var = resolve(variables, index)?;
+    match var {
+        Variable::OpenChannelMessage(v) => Ok(v),
+        _ => Err(type_err(VariableType::OpenChannelMessage, var)),
+    }
+}
+
 fn resolve_accept_channel(
     variables: &[Option<Variable>],
     index: usize,
@@ -420,6 +448,23 @@ fn resolve_funding_transaction(
     match var {
         Variable::FundingTransaction(v) => Ok(v),
         _ => Err(type_err(VariableType::FundingTransaction, var)),
+    }
+}
+
+fn consume_sent_open_channel(
+    variables: &mut [Option<Variable>],
+    index: usize,
+) -> Result<(), ExecuteError> {
+    match resolve(variables, index) {
+        Ok(Variable::SentOpenChannel) => {
+            // Consume the affine `SentOpenChannel`.
+            variables[index] = None;
+            Ok(())
+        }
+        Ok(wrong_var) => Err(type_err(VariableType::SentOpenChannel, wrong_var)),
+        // Map `VoidVariable` to `AffineOverUse`.
+        Err(ExecuteError::VoidVariable { index }) => Err(ExecuteError::AffineOverUse { index }),
+        Err(e) => Err(e),
     }
 }
 
@@ -914,6 +959,21 @@ mod tests {
         }
     }
 
+    fn send_open_channel_instructions() -> Vec<Instruction> {
+        let mut instructions = open_channel_instructions();
+        instructions.extend([
+            Instruction {
+                operation: Operation::BuildOpenChannel,
+                inputs: (0..20).collect(),
+            },
+            Instruction {
+                operation: Operation::SendOpenChannel,
+                inputs: vec![20],
+            },
+        ]);
+        instructions
+    }
+
     // -- execute() tests --
 
     #[test]
@@ -925,7 +985,7 @@ mod tests {
             inputs: (0..20).collect(),
         });
         instrs.push(Instruction {
-            operation: Operation::SendMessage,
+            operation: Operation::SendOpenChannel,
             inputs: vec![20],
         });
 
@@ -1134,7 +1194,7 @@ mod tests {
             inputs: (0..20).collect(),
         });
         instrs.push(Instruction {
-            operation: Operation::SendMessage,
+            operation: Operation::SendOpenChannel,
             inputs: vec![20],
         });
 
@@ -1184,7 +1244,7 @@ mod tests {
             inputs: build_inputs,
         });
         instrs.push(Instruction {
-            operation: Operation::SendMessage,
+            operation: Operation::SendOpenChannel,
             inputs: vec![base + 20],
         });
 
@@ -1233,14 +1293,17 @@ mod tests {
             AcceptChannelField::ChannelType,
         ];
 
-        let mut instrs = vec![Instruction {
+        let mut instrs = send_open_channel_instructions();
+        let sent_open_channel = instrs.len() - 1;
+        instrs.push(Instruction {
             operation: Operation::RecvAcceptChannel,
-            inputs: vec![],
-        }];
+            inputs: vec![sent_open_channel],
+        });
+        let accept_channel_idx = instrs.len() - 1;
         for field in fields {
             instrs.push(Instruction {
                 operation: Operation::ExtractAcceptChannel(field),
-                inputs: vec![0],
+                inputs: vec![accept_channel_idx],
             });
         }
 
@@ -1267,10 +1330,12 @@ mod tests {
     fn execute_recv_unexpected_message() {
         let init_bytes = Message::Init(Init::empty()).encode();
 
-        let instrs = vec![Instruction {
+        let mut instrs = send_open_channel_instructions();
+        let sent_open_channel = instrs.len() - 1;
+        instrs.push(Instruction {
             operation: Operation::RecvAcceptChannel,
-            inputs: vec![],
-        }];
+            inputs: vec![sent_open_channel],
+        });
 
         let program = Program {
             instructions: instrs,
@@ -1304,10 +1369,12 @@ mod tests {
         let ping_bytes = Message::Ping(ping).encode();
         let ac_bytes = Message::AcceptChannel(sample_accept_channel()).encode();
 
-        let instrs = vec![Instruction {
+        let mut instrs = send_open_channel_instructions();
+        let sent_open_channel = instrs.len() - 1;
+        instrs.push(Instruction {
             operation: Operation::RecvAcceptChannel,
-            inputs: vec![],
-        }];
+            inputs: vec![sent_open_channel],
+        });
 
         let program = Program {
             instructions: instrs,
@@ -1324,9 +1391,17 @@ mod tests {
         )
         .unwrap();
 
-        // Verify a correctly-sized pong was sent.
-        assert_eq!(conn.sent.len(), 1);
-        let pong = Message::decode(&conn.sent[0]).unwrap();
+        // Verify exactly two messages were sent: `open_channel` and `pong`.
+        assert_eq!(conn.sent.len(), 2);
+
+        // Verify the first message was `open_channel`.
+        let oc = Message::decode(&conn.sent[0]).unwrap();
+        let Message::OpenChannel(_) = oc else {
+            panic!("expected OpenChannel, got {:?}", oc.msg_type());
+        };
+
+        // Verify the second message was the pong.
+        let pong = Message::decode(&conn.sent[1]).unwrap();
         let Message::Pong(pong) = pong else {
             panic!("expected Pong, got {:?}", pong.msg_type());
         };
@@ -1398,7 +1473,7 @@ mod tests {
     #[test]
     fn execute_variable_out_of_bounds() {
         let instrs = vec![Instruction {
-            operation: Operation::SendMessage,
+            operation: Operation::SendOpenChannel,
             inputs: vec![99],
         }];
         let program = Program {
@@ -1446,23 +1521,19 @@ mod tests {
 
     #[test]
     fn execute_void_variable_reference() {
-        // SendMessage produces no output variable. Referencing it should fail.
-        let mut instrs = open_channel_instructions();
-        // v20 = Message
-        instrs.push(Instruction {
-            operation: Operation::BuildOpenChannel,
-            inputs: (0..20).collect(),
-        });
-        // v21 = void
-        instrs.push(Instruction {
-            operation: Operation::SendMessage,
-            inputs: vec![20],
-        });
-        // Try to use the void variable.
-        instrs.push(Instruction {
-            operation: Operation::SendMessage,
-            inputs: vec![21],
-        });
+        // MineBlocks produces no output variable. Referencing it should fail.
+        let instrs = vec![
+            // v0 = void
+            Instruction {
+                operation: Operation::MineBlocks(1),
+                inputs: vec![],
+            },
+            // Try to use the void variable.
+            Instruction {
+                operation: Operation::DerivePoint,
+                inputs: vec![0],
+            },
+        ];
 
         let program = Program {
             instructions: instrs,
@@ -1476,7 +1547,7 @@ mod tests {
             std::time::Instant::now(),
         )
         .unwrap_err();
-        assert!(matches!(err, ExecuteError::VoidVariable { index: 21 }));
+        assert!(matches!(err, ExecuteError::VoidVariable { index: 0 }));
     }
 
     // MineBlocks should track calls to mine_blocks
@@ -1620,6 +1691,71 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, ExecuteError::InvalidPrivateKey));
+    }
+
+    #[test]
+    fn execute_send_open_channel_wrong_type() {
+        let instrs = vec![
+            Instruction {
+                operation: Operation::LoadAmount(42),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::SendOpenChannel,
+                inputs: vec![0],
+            },
+        ];
+
+        let program = Program {
+            instructions: instrs,
+        };
+
+        let err = execute(
+            &program,
+            &sample_context(),
+            &mut MockConnection::new(),
+            &mut MockBitcoinCli::default(),
+            std::time::Instant::now(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            ExecuteError::TypeMismatch {
+                expected: VariableType::OpenChannelMessage,
+                got: VariableType::Amount,
+            }
+        ));
+    }
+
+    #[test]
+    fn execute_affine_overuse() {
+        let mut instrs = send_open_channel_instructions();
+        let sent_open_channel = instrs.len() - 1;
+        instrs.extend([
+            Instruction {
+                operation: Operation::RecvAcceptChannel,
+                inputs: vec![sent_open_channel],
+            },
+            Instruction {
+                operation: Operation::RecvAcceptChannel,
+                inputs: vec![sent_open_channel],
+            },
+        ]);
+        let program = Program {
+            instructions: instrs,
+        };
+        let mut conn = MockConnection::new();
+        let ac_bytes = Message::AcceptChannel(sample_accept_channel()).encode();
+        conn.queue_recv(ac_bytes);
+        let err = execute(
+            &program,
+            &sample_context(),
+            &mut conn,
+            &mut MockBitcoinCli::default(),
+            std::time::Instant::now(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, ExecuteError::AffineOverUse { index } if index == sent_open_channel));
     }
 
     // -- extract_field tests --

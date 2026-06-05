@@ -85,6 +85,14 @@ pub enum ValidateError {
         /// Actual byte length.
         len: usize,
     },
+    /// An affine variable is used more than once.
+    #[error("Variable {index}: affine {var_type:?} consumed twice (max 1)")]
+    AffineOverUse {
+        /// The overused affine variable index.
+        index: usize,
+        /// Type of the affine variable.
+        var_type: VariableType,
+    },
 }
 
 impl Program {
@@ -101,6 +109,8 @@ impl Program {
     ///
     /// Returns the first violation encountered.
     pub fn validate(&self) -> Result<(), ValidateError> {
+        let mut affine_consumed = vec![false; self.instructions.len()];
+
         for (instr_idx, instr) in self.instructions.iter().enumerate() {
             let expected = instr.operation.input_types();
             if instr.inputs.len() != expected.len() {
@@ -134,6 +144,15 @@ impl Program {
                         expected: expected_type,
                         got: actual_type,
                     });
+                }
+                if expected_type.is_affine() {
+                    if affine_consumed[input_idx] {
+                        return Err(ValidateError::AffineOverUse {
+                            index: input_idx,
+                            var_type: expected_type,
+                        });
+                    }
+                    affine_consumed[input_idx] = true;
                 }
             }
             if let Operation::LoadBytes(b) | Operation::LoadFeatures(b) = &instr.operation

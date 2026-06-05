@@ -957,10 +957,10 @@ fn generated_open_channel_program_structure() {
     let program = generate_open_channel_program(0);
     let ops: Vec<_> = program.instructions.iter().map(|i| &i.operation).collect();
 
-    // Must end with SendMessage, RecvAcceptChannel.
+    // Must end with SendOpenChannel, RecvAcceptChannel.
     assert!(
-        matches!(ops[ops.len() - 2], Operation::SendMessage),
-        "second-to-last instruction should be SendMessage",
+        matches!(ops[ops.len() - 2], Operation::SendOpenChannel),
+        "second-to-last instruction should be SendOpenChannel",
     );
     assert!(
         matches!(ops[ops.len() - 1], Operation::RecvAcceptChannel),
@@ -1140,6 +1140,39 @@ fn pick_variable_reuses_existing() {
 }
 
 #[test]
+fn pick_variable_uses_unspent_affine() {
+    let mut rng = SmallRng::seed_from_u64(0);
+    let mut builder = ProgramBuilder::new();
+    OpenChannelGenerator.generate(&mut builder, &mut rng);
+
+    let msg_idx = builder.pick_variable(VariableType::OpenChannelMessage, &mut rng);
+    let unspent_sent_open_channel = builder.append(Operation::SendOpenChannel, &[msg_idx]);
+
+    // pick_variable should prefer an unspent affine variable.
+    let idx = builder.pick_variable(VariableType::SentOpenChannel, &mut rng);
+    assert_eq!(idx, unspent_sent_open_channel);
+}
+
+#[test]
+#[should_panic(expected = "cannot generate fresh SentOpenChannel: affine type")]
+fn pick_variable_panics_on_empty_affine() {
+    let mut rng = SmallRng::seed_from_u64(0);
+    let mut builder = ProgramBuilder::new();
+    builder.pick_variable(VariableType::SentOpenChannel, &mut rng);
+}
+
+#[test]
+#[should_panic(expected = "no candidates for SentOpenChannel")]
+fn pick_variable_panics_on_all_affine_consumed() {
+    let mut rng = SmallRng::seed_from_u64(0);
+    let mut builder = ProgramBuilder::new();
+    OpenChannelGenerator.generate(&mut builder, &mut rng);
+
+    // All `SentOpenChannel` have been already consumed.
+    builder.pick_variable(VariableType::SentOpenChannel, &mut rng);
+}
+
+#[test]
 #[should_panic(expected = "cannot generate fresh Message")]
 fn generate_fresh_message_panics() {
     let mut rng = SmallRng::seed_from_u64(0);
@@ -1164,6 +1197,14 @@ fn generate_fresh_funding_transaction_panics() {
 }
 
 #[test]
+#[should_panic(expected = "cannot generate fresh SentOpenChannel: affine type")]
+fn generate_fresh_sent_open_channel_panics() {
+    let mut rng = SmallRng::seed_from_u64(0);
+    let mut builder = ProgramBuilder::new();
+    builder.generate_fresh(VariableType::SentOpenChannel, &mut rng);
+}
+
+#[test]
 #[should_panic(expected = "expected 1 inputs, got 0")]
 fn append_wrong_input_count_panics() {
     let mut builder = ProgramBuilder::new();
@@ -1182,10 +1223,10 @@ fn append_out_of_bounds_panics() {
 fn append_void_reference_panics() {
     let mut rng = SmallRng::seed_from_u64(0);
     let mut builder = ProgramBuilder::new();
-    OpenChannelGenerator.generate(&mut builder, &mut rng);
+    NodeAnnouncementGenerator.generate(&mut builder, &mut rng);
     let program = builder.build();
-    // SendMessage is second-to-last and has void output.
-    let send_idx = program.instructions.len() - 2;
+    // SendMessage is last and has void output.
+    let send_idx = program.instructions.len() - 1;
     assert!(
         program.instructions[send_idx]
             .operation
@@ -1196,7 +1237,7 @@ fn append_void_reference_panics() {
     // Rebuild the same program and try to reference the void instruction.
     let mut rng = SmallRng::seed_from_u64(0);
     let mut builder = ProgramBuilder::new();
-    OpenChannelGenerator.generate(&mut builder, &mut rng);
+    NodeAnnouncementGenerator.generate(&mut builder, &mut rng);
     builder.append(Operation::SendMessage, &[send_idx]);
 }
 
@@ -1207,6 +1248,20 @@ fn append_type_mismatch_panics() {
     let mut builder = ProgramBuilder::new();
     let amount = builder.generate_fresh(VariableType::Amount, &mut rng);
     builder.append(Operation::DerivePoint, &[amount]);
+}
+
+#[test]
+#[should_panic(expected = "RecvAcceptChannel input 0: affine SentOpenChannel already consumed")]
+fn append_rejects_affine_overuse() {
+    let mut rng = SmallRng::seed_from_u64(0);
+    let mut builder = ProgramBuilder::new();
+    OpenChannelGenerator.generate(&mut builder, &mut rng);
+
+    let msg_idx = builder.pick_variable(VariableType::OpenChannelMessage, &mut rng);
+    let sent_open_channel = builder.append(Operation::SendOpenChannel, &[msg_idx]);
+    // Add consecutive `RecvAcceptChannel`s.
+    builder.append(Operation::RecvAcceptChannel, &[sent_open_channel]);
+    builder.append(Operation::RecvAcceptChannel, &[sent_open_channel]);
 }
 
 // -- Program::validate tests --
@@ -1334,17 +1389,14 @@ fn validate_rejects_self_reference() {
 
 #[test]
 fn validate_rejects_void_input() {
-    // Build a valid program, then append a DerivePoint that references the void
-    // SendMessage instruction emitted by the generator.
+    // Build a valid program, then append a DerivePoint that references
+    // the void output emitted by SendMessage.
     let mut rng = SmallRng::seed_from_u64(0);
     let mut builder = ProgramBuilder::new();
-    OpenChannelGenerator.generate(&mut builder, &mut rng);
+    NodeAnnouncementGenerator.generate(&mut builder, &mut rng);
     let mut program = builder.build();
-    let send_idx = program
-        .instructions
-        .iter()
-        .position(|i| matches!(i.operation, Operation::SendMessage))
-        .expect("generator emits SendMessage");
+    // SendMessage is the last instruction in the program.
+    let send_idx = program.instructions.len() - 1;
     program.instructions.push(Instruction {
         operation: Operation::DerivePoint,
         inputs: vec![send_idx],
@@ -1430,6 +1482,34 @@ fn validate_rejects_oversized_features() {
             instr: 0,
             len: MAX_MESSAGE_SIZE + 1,
         }),
+    );
+}
+
+#[test]
+fn validate_accepts_unused_affine() {
+    let mut program = generate_open_channel_program(0);
+    // Remove the `RecvAcceptChannel` instruction at the end.
+    program.instructions.pop();
+
+    // Validation should pass despite the unspent `SentOpenChannel`.
+    assert_eq!(program.validate(), Ok(()));
+}
+
+#[test]
+fn validate_rejects_affine_overuse() {
+    let mut program = generate_open_channel_program(0);
+    let sent_open_channel = program.instructions.len() - 2;
+    // Add another `RecvAcceptChannel` in addition to the existing one.
+    program.instructions.push(Instruction {
+        operation: Operation::RecvAcceptChannel,
+        inputs: vec![sent_open_channel],
+    });
+    assert_eq!(
+        program.validate(),
+        Err(ValidateError::AffineOverUse {
+            index: sent_open_channel,
+            var_type: VariableType::SentOpenChannel,
+        })
     );
 }
 
@@ -1727,6 +1807,40 @@ fn input_swap_preserves_types() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn input_swap_preserves_affine() {
+    let mut program = generate_open_channel_program(0);
+    // Get rid of the last instruction in the program: `RecvAcceptChannel`.
+    program.instructions.pop();
+    // `BuildOpenChannel` is the second-to-last, while `SendOpenChannel`
+    // is the last instruction in the program now.
+    let open_channel_msg = program.instructions.len() - 2;
+    let send_open_channel_1 = program.instructions.len() - 1;
+
+    program.instructions.extend([
+        Instruction {
+            operation: Operation::SendOpenChannel,
+            inputs: vec![open_channel_msg],
+        },
+        Instruction {
+            operation: Operation::RecvAcceptChannel,
+            inputs: vec![send_open_channel_1],
+        },
+    ]);
+    let accept_channel = program.instructions.len() - 1;
+
+    let mutator = InputSwapMutator;
+    let mut rng = SmallRng::seed_from_u64(0);
+    for _ in 0..100 {
+        mutator.mutate(&mut program, &mut rng);
+        // Ensure `RecvAcceptChannel`'s input never changed to the inserted `SentOpenChannel`.
+        assert_eq!(
+            send_open_channel_1,
+            program.instructions[accept_channel].inputs[0]
+        );
     }
 }
 
