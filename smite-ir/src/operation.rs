@@ -20,7 +20,7 @@ use super::VariableType;
 
 /// An IR operation.  Each instruction in a program contains one operation plus
 /// input variable indices.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Operation {
     // -- Load: produce a variable from an embedded literal or the context --
     /// Load a satoshi or millisatoshi amount.
@@ -156,7 +156,7 @@ pub enum Operation {
 /// Each variant encodes to a script matching one of the formats required by
 /// BOLT 2 for the upfront shutdown TLV. `Empty` opts out of upfront shutdown
 /// entirely and is accepted regardless of feature negotiation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ShutdownScriptVariant {
     /// Zero-length script. Opts out of upfront shutdown.
     Empty,
@@ -327,7 +327,7 @@ impl fmt::Display for ShutdownScriptVariant {
 /// Additionally, the following bits can be added to any channel type:
 /// - `option_scid_alias` (bit 46)
 /// - `option_zeroconf` (bit 50)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ChannelTypeVariant {
     /// bit 12
     StaticRemoteKey,
@@ -470,7 +470,7 @@ impl fmt::Display for ChannelTypeVariant {
 }
 
 /// Fields that can be extracted from an `AcceptChannel` compound variable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AcceptChannelField {
     TemporaryChannelId,
     DustLimitSatoshis,
@@ -742,6 +742,40 @@ impl Operation {
                 .iter()
                 .map(|&f| (Self::ExtractAcceptChannel(f), f.output_type()))
                 .collect(),
+        }
+    }
+
+    /// Returns `true` if this operation has I/O side effects and therefore
+    /// cannot be dropped by DCE or deduplicated by CSE.
+    #[must_use]
+    pub fn has_side_effects(&self) -> bool {
+        match self {
+            Self::SendMessage
+            | Self::RecvAcceptChannel
+            | Self::MineBlocks(_)
+            | Self::CreateFundingTransaction
+            | Self::BroadcastTransaction => true,
+            Self::LoadAmount(_)
+            | Self::LoadShortChannelId(_)
+            | Self::BuildChannelAnnouncement
+            | Self::LoadFeeratePerKw(_)
+            | Self::LoadForwardingFee(_)
+            | Self::LoadBlockHeight(_)
+            | Self::LoadTimestamp(_)
+            | Self::LoadU16(_)
+            | Self::LoadU8(_)
+            | Self::LoadBytes(_)
+            | Self::LoadFeatures(_)
+            | Self::LoadPrivateKey(_)
+            | Self::LoadChannelId(_)
+            | Self::LoadShutdownScript(_)
+            | Self::LoadChannelType(_)
+            | Self::LoadTargetPubkeyFromContext
+            | Self::LoadChainHashFromContext
+            | Self::DerivePoint
+            | Self::ExtractAcceptChannel(_)
+            | Self::BuildOpenChannel
+            | Self::BuildNodeAnnouncement { .. } => false,
         }
     }
 

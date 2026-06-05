@@ -14,3 +14,5 @@ crate-type = ["cdylib"]
 smite-ir = { path = "../smite-ir" }
 rand.workspace = true
 postcard.workspace = true
+log.workspace = true
+simple_logger.workspace = true

@@ -66,13 +66,11 @@ printf '\x00' > /tmp/smite-seeds/empty
 AFL_CUSTOM_MUTATOR_LIBRARY=target/release/libsmite_ir_mutator.so \
 AFL_CUSTOM_MUTATOR_ONLY=1 \
 AFL_FRAMESHIFT_DISABLE=1 \
-AFL_DISABLE_TRIM=1 \
 ~/AFLplusplus/afl-fuzz -X -i /tmp/smite-seeds -o /tmp/smite-out -- /tmp/smite-nyx
 ```
 
 `AFL_CUSTOM_MUTATOR_ONLY=1` disables AFL++'s built-in mutators (which would
-corrupt the postcard encoding). `AFL_DISABLE_TRIM=1` prevents AFL++ from
-trimming inputs (which would also corrupt the encoding).
+corrupt the postcard encoding).
 
 ## Running Modes
 

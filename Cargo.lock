@@ -613,8 +613,10 @@ dependencies = [
 name = "smite-ir-mutator"
 version = "0.0.0"
 dependencies = [
+ "log",
  "postcard",
  "rand",
+ "simple_logger",
  "smite-ir",
 ]
 
