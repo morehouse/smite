@@ -111,15 +111,9 @@ mod tests {
 
     #[test]
     fn roundtrip() {
-        let mut htlc_hold_times = [0u32; ATTRIBUTION_MAX_HOPS];
-        for (i, ht) in htlc_hold_times.iter_mut().enumerate() {
-            *ht = u32::try_from(i).unwrap() * 1000;
-        }
-        let mut truncated_hmacs = [TruncatedHmac::default(); ATTRIBUTION_NUM_HMACS];
-        for (i, hmac) in truncated_hmacs.iter_mut().enumerate() {
-            let byte = u8::try_from(i & 0xff).unwrap();
-            *hmac = TruncatedHmac([byte; TRUNCATED_HMAC_SIZE]);
-        }
+        let htlc_hold_times = std::array::from_fn(|i| u32::try_from(i).unwrap() * 1000);
+        let truncated_hmacs =
+            std::array::from_fn(|i| TruncatedHmac([u8::try_from(i).unwrap(); TRUNCATED_HMAC_SIZE]));
         let original = AttributionData {
             htlc_hold_times,
             truncated_hmacs,
