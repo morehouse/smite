@@ -136,6 +136,25 @@ pub enum Operation {
         /// 32-byte node alias, zero-padded.
         alias: [u8; 32],
     },
+    /// Build a `channel_update` message (BOLT 7, type 258).
+    ///
+    /// The signature is computed internally over the double-SHA256 of the
+    /// message body following the signature field, using the supplied node
+    /// secret key (per BOLT 7).
+    ///
+    /// Inputs (11):
+    ///   0: `node_sk` (`PrivateKey`) -- signs the body
+    ///   1: `chain_hash` (`ChainHash`)
+    ///   2: `short_channel_id` (`ShortChannelId`)
+    ///   3: `timestamp` (`Timestamp`)
+    ///   4: `message_flags` (`U8`)
+    ///   5: `channel_flags` (`U8`)
+    ///   6: `cltv_expiry_delta` (`U16`)
+    ///   7: `htlc_minimum_msat` (`Amount`)
+    ///   8: `fee_base_msat` (`ForwardingFee`)
+    ///   9: `fee_proportional_millionths` (`ForwardingFee`)
+    ///  10: `htlc_maximum_msat` (`Amount`)
+    BuildChannelUpdate,
 
     // -- Act: side effects against the target --
     /// Send an encoded message over the connection.
@@ -597,6 +616,7 @@ impl fmt::Display for Operation {
                 format_hex(rgb_color),
                 format_hex(alias),
             ),
+            Self::BuildChannelUpdate => write!(f, "BuildChannelUpdate"),
             Self::SendMessage => write!(f, "SendMessage"),
             Self::SendOpenChannel => write!(f, "SendOpenChannel"),
         }
@@ -626,9 +646,9 @@ impl Operation {
             Self::ExtractAcceptChannel(field) => Some(field.output_type()),
             Self::CreateFundingTransaction => Some(VariableType::FundingTransaction),
             Self::BuildOpenChannel => Some(VariableType::OpenChannelMessage),
-            Self::BuildChannelAnnouncement | Self::BuildNodeAnnouncement { .. } => {
-                Some(VariableType::Message)
-            }
+            Self::BuildChannelAnnouncement
+            | Self::BuildNodeAnnouncement { .. }
+            | Self::BuildChannelUpdate => Some(VariableType::Message),
             Self::SendMessage | Self::MineBlocks(_) | Self::BroadcastTransaction => None,
             Self::SendOpenChannel => Some(VariableType::SentOpenChannel),
             Self::RecvAcceptChannel => Some(VariableType::AcceptChannel),
@@ -709,6 +729,20 @@ impl Operation {
                 VariableType::Timestamp,  // timestamp
                 VariableType::Bytes,      // addresses
             ],
+
+            Self::BuildChannelUpdate => vec![
+                VariableType::PrivateKey,     // node_sk
+                VariableType::ChainHash,      // chain_hash
+                VariableType::ShortChannelId, // short_channel_id
+                VariableType::Timestamp,      // timestamp
+                VariableType::U8,             // message_flags
+                VariableType::U8,             // channel_flags
+                VariableType::U16,            // cltv_expiry_delta
+                VariableType::Amount,         // htlc_minimum_msat
+                VariableType::ForwardingFee,  // fee_base_msat
+                VariableType::ForwardingFee,  // fee_proportional_millionths
+                VariableType::Amount,         // htlc_maximum_msat
+            ],
         }
     }
 
@@ -742,6 +776,7 @@ impl Operation {
             | Self::BuildOpenChannel
             | Self::BuildChannelAnnouncement
             | Self::BuildNodeAnnouncement { .. }
+            | Self::BuildChannelUpdate
             | Self::SendMessage
             | Self::SendOpenChannel
             | Self::MineBlocks(_)
@@ -785,7 +820,8 @@ impl Operation {
             | Self::DerivePoint
             | Self::ExtractAcceptChannel(_)
             | Self::BuildOpenChannel
-            | Self::BuildNodeAnnouncement { .. } => false,
+            | Self::BuildNodeAnnouncement { .. }
+            | Self::BuildChannelUpdate => false,
         }
     }
 
@@ -818,6 +854,7 @@ impl Operation {
             | Self::CreateFundingTransaction
             | Self::BuildOpenChannel
             | Self::BuildChannelAnnouncement
+            | Self::BuildChannelUpdate
             | Self::SendMessage
             | Self::SendOpenChannel
             | Self::RecvAcceptChannel

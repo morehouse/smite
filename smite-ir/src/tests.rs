@@ -331,6 +331,90 @@ fn display_build_node_announcement_program() {
 }
 
 #[test]
+fn display_build_channel_update_program() {
+    let scid = ShortChannelId::new(538_532, 845, 1);
+    let instructions = vec![
+        Instruction {
+            operation: Operation::LoadPrivateKey(key(1)),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::LoadChainHashFromContext,
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::LoadShortChannelId(scid.as_u64()),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::LoadTimestamp(1_715_000_000),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::LoadU8(0x01), // message_flags
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::LoadU8(0x00), // channel_flags
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::LoadU16(144), // cltv_expiry_delta
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::LoadAmount(1_000), // htlc_minimum_msat
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::LoadForwardingFee(1_000), // fee_base_msat
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::LoadForwardingFee(100), // fee_proportional_millionths
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::LoadAmount(99_000_000), // htlc_maximum_msat
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::BuildChannelUpdate,
+            inputs: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        },
+        Instruction {
+            operation: Operation::SendMessage,
+            inputs: vec![11],
+        },
+    ];
+
+    let program = Program { instructions };
+    let text = program.to_string();
+    let lines: Vec<&str> = text.lines().collect();
+
+    let z31 = "00".repeat(31);
+    let expected: Vec<String> = vec![
+        format!("v0 = LoadPrivateKey(0x{z31}01)"),
+        "v1 = LoadChainHashFromContext()".into(),
+        "v2 = LoadShortChannelId(538532x845x1)".into(),
+        "v3 = LoadTimestamp(1715000000)".into(),
+        "v4 = LoadU8(1)".into(),
+        "v5 = LoadU8(0)".into(),
+        "v6 = LoadU16(144)".into(),
+        "v7 = LoadAmount(1000)".into(),
+        "v8 = LoadForwardingFee(1000)".into(),
+        "v9 = LoadForwardingFee(100)".into(),
+        "v10 = LoadAmount(99000000)".into(),
+        "v11 = BuildChannelUpdate(v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10)".into(),
+        "SendMessage(v11)".into(),
+    ];
+    assert_eq!(lines.len(), expected.len(), "line count mismatch");
+    for (i, (got, want)) in lines.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(got, want, "line {i} mismatch");
+    }
+}
+
+#[test]
 fn postcard_roundtrip() {
     let program = Program {
         instructions: vec![

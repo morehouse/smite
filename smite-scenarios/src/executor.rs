@@ -8,8 +8,8 @@ use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use smite::bitcoin::{BitcoinCli, Utxo};
 use smite::bolt::{
-    AcceptChannel, ChannelAnnouncement, ChannelId, Message, NodeAnnouncement, OpenChannel,
-    OpenChannelTlvs, Pong, ShortChannelId, msg_type,
+    AcceptChannel, ChannelAnnouncement, ChannelId, ChannelUpdate, Message, NodeAnnouncement,
+    OpenChannel, OpenChannelTlvs, Pong, ShortChannelId, msg_type,
 };
 use smite::channel_tx::{FundingTransaction, build_funding_transaction};
 use smite::noise::{ConnectionError, NoiseConnection};
@@ -215,6 +215,12 @@ pub fn execute(
                 Some(Variable::Message(encoded))
             }
 
+            Operation::BuildChannelUpdate => {
+                let cu = build_channel_update(&variables, &instr.inputs);
+                let encoded = Message::ChannelUpdate(cu).encode();
+                Some(Variable::Message(encoded))
+            }
+
             // -- Act operations --
             Operation::SendMessage => {
                 let bytes = resolve_message(&variables, instr.inputs[0]);
@@ -301,6 +307,16 @@ fn resolve_feerate(variables: &[Option<Variable>], index: usize) -> u32 {
         Variable::FeeratePerKw(v) => *v,
         other => panic!(
             "variable {index}: expected FeeratePerKw, got {:?}",
+            other.var_type(),
+        ),
+    }
+}
+
+fn resolve_forwarding_fee(variables: &[Option<Variable>], index: usize) -> u32 {
+    match resolve(variables, index) {
+        Variable::ForwardingFee(v) => *v,
+        other => panic!(
+            "variable {index}: expected ForwardingFee, got {:?}",
             other.var_type(),
         ),
     }
@@ -590,6 +606,41 @@ fn build_node_announcement(
     };
     na.sign(&sk);
     na
+}
+
+/// Builds a signed `ChannelUpdate` from 11 input variables.
+fn build_channel_update(variables: &[Option<Variable>], inputs: &[usize]) -> ChannelUpdate {
+    let sk_bytes = resolve_private_key(variables, inputs[0]);
+    let chain_hash = resolve_chain_hash(variables, inputs[1]);
+    let short_channel_id = resolve_short_channel_id(variables, inputs[2]);
+    let timestamp = resolve_timestamp(variables, inputs[3]);
+    let message_flags = resolve_u8(variables, inputs[4]);
+    let channel_flags = resolve_u8(variables, inputs[5]);
+    let cltv_expiry_delta = resolve_u16(variables, inputs[6]);
+    let htlc_minimum_msat = resolve_amount(variables, inputs[7]);
+    let fee_base_msat = resolve_forwarding_fee(variables, inputs[8]);
+    let fee_proportional_millionths = resolve_forwarding_fee(variables, inputs[9]);
+    let htlc_maximum_msat = resolve_amount(variables, inputs[10]);
+
+    let sk = SecretKey::from_slice(&sk_bytes).expect("valid private key");
+
+    let mut cu = ChannelUpdate {
+        signature: bitcoin::secp256k1::ecdsa::Signature::from_compact(&[0u8; 64])
+            .expect("zero bytes parse as a signature"),
+        chain_hash,
+        short_channel_id,
+        timestamp,
+        message_flags,
+        channel_flags,
+        cltv_expiry_delta,
+        htlc_minimum_msat,
+        fee_base_msat,
+        fee_proportional_millionths,
+        htlc_maximum_msat,
+        extra: Vec::new(),
+    };
+    cu.sign(&sk);
+    cu
 }
 
 /// Receives the next message of interest, auto-responding to pings and silently
@@ -1157,6 +1208,104 @@ mod tests {
         assert_eq!(na.addresses, addresses);
         assert!(na.extra.is_empty());
         assert!(na.verify());
+    }
+
+    #[test]
+    fn execute_build_channel_update() {
+        let mut sk_bytes = [0u8; 32];
+        sk_bytes[31] = 0x42;
+        let scid = ShortChannelId::new(538_532, 845, 1);
+
+        let instrs = vec![
+            Instruction {
+                operation: Operation::LoadPrivateKey(sk_bytes),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadChainHashFromContext,
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadShortChannelId(scid.as_u64()),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadTimestamp(1_715_000_000),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadU8(0x01), // message_flags: must_be_one
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadU8(0x00), // channel_flags
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadU16(144), // cltv_expiry_delta
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadAmount(1_000), // htlc_minimum_msat
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadForwardingFee(1_000), // fee_base_msat
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadForwardingFee(100), // fee_proportional_millionths
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadAmount(99_000_000), // htlc_maximum_msat
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::BuildChannelUpdate,
+                inputs: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            },
+            Instruction {
+                operation: Operation::SendMessage,
+                inputs: vec![11],
+            },
+        ];
+
+        let program = Program {
+            instructions: instrs,
+        };
+        let mut conn = MockConnection::new();
+        execute(
+            &program,
+            &sample_context(),
+            &mut conn,
+            &mut MockBitcoinCli::default(),
+            std::time::Instant::now(),
+        )
+        .unwrap();
+
+        assert_eq!(conn.sent.len(), 1);
+        let cu = match Message::decode(&conn.sent[0]).expect("valid message") {
+            Message::ChannelUpdate(cu) => cu,
+            other => panic!("expected ChannelUpdate, got type {}", other.msg_type()),
+        };
+
+        assert_eq!(cu.chain_hash, sample_context().chain_hash);
+        assert_eq!(cu.short_channel_id, scid);
+        assert_eq!(cu.timestamp, 1_715_000_000);
+        assert_eq!(cu.message_flags, 0x01);
+        assert_eq!(cu.channel_flags, 0x00);
+        assert_eq!(cu.cltv_expiry_delta, 144);
+        assert_eq!(cu.htlc_minimum_msat, 1_000);
+        assert_eq!(cu.fee_base_msat, 1_000);
+        assert_eq!(cu.fee_proportional_millionths, 100);
+        assert_eq!(cu.htlc_maximum_msat, 99_000_000);
+        assert!(cu.extra.is_empty());
+
+        let secp = Secp256k1::new();
+        let expected_node_id =
+            PublicKey::from_secret_key(&secp, &SecretKey::from_slice(&sk_bytes).unwrap());
+        assert!(cu.verify(&expected_node_id));
     }
 
     #[test]

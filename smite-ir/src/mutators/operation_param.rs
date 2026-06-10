@@ -102,6 +102,7 @@ fn mutate_operation(op: &mut Operation, rng: &mut impl Rng) -> bool {
         | Operation::LoadChainHashFromContext
         | Operation::BuildOpenChannel
         | Operation::BuildChannelAnnouncement
+        | Operation::BuildChannelUpdate
         | Operation::SendMessage
         | Operation::SendOpenChannel
         | Operation::RecvAcceptChannel
