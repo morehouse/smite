@@ -5,6 +5,7 @@
 
 mod accept_channel;
 mod accept_channel2;
+mod announcement_signatures;
 mod attribution_data;
 mod channel_announcement;
 mod channel_ready;
@@ -37,6 +38,7 @@ mod wire;
 
 pub use accept_channel::{AcceptChannel, AcceptChannelTlvs};
 pub use accept_channel2::{AcceptChannel2, AcceptChannel2Tlvs};
+pub use announcement_signatures::AnnouncementSignatures;
 pub use attribution_data::{AttributionData, TruncatedHmac};
 pub use channel_announcement::ChannelAnnouncement;
 pub use channel_ready::{ChannelReady, ChannelReadyTlvs};
@@ -168,6 +170,8 @@ pub mod msg_type {
     pub const NODE_ANNOUNCEMENT: u16 = 257;
     /// `channel_update` message (BOLT 7).
     pub const CHANNEL_UPDATE: u16 = 258;
+    /// `announcement_signatures` message (BOLT 7).
+    pub const ANNOUNCEMENT_SIGNATURES: u16 = 259;
     /// Gossip timestamp filter message (BOLT 7).
     pub const GOSSIP_TIMESTAMP_FILTER: u16 = 265;
 }
@@ -228,6 +232,8 @@ pub enum Message {
     NodeAnnouncement(NodeAnnouncement),
     /// `channel_update` message (type 258).
     ChannelUpdate(ChannelUpdate),
+    /// `announcement_signatures` message (type 259).
+    AnnouncementSignatures(AnnouncementSignatures),
     /// Gossip timestamp filter message (type 265).
     GossipTimestampFilter(GossipTimestampFilter),
     /// Unknown message type.
@@ -273,6 +279,7 @@ impl Message {
             Self::ChannelAnnouncement(_) => msg_type::CHANNEL_ANNOUNCEMENT,
             Self::NodeAnnouncement(_) => msg_type::NODE_ANNOUNCEMENT,
             Self::ChannelUpdate(_) => msg_type::CHANNEL_UPDATE,
+            Self::AnnouncementSignatures(_) => msg_type::ANNOUNCEMENT_SIGNATURES,
             Self::GossipTimestampFilter(_) => msg_type::GOSSIP_TIMESTAMP_FILTER,
             Self::Unknown { msg_type, .. } => *msg_type,
         }
@@ -310,6 +317,7 @@ impl Message {
             Self::ChannelAnnouncement(m) => out.extend(m.encode()),
             Self::NodeAnnouncement(m) => out.extend(m.encode()),
             Self::ChannelUpdate(m) => out.extend(m.encode()),
+            Self::AnnouncementSignatures(m) => out.extend(m.encode()),
             Self::GossipTimestampFilter(m) => out.extend(m.encode()),
             Self::Unknown { payload, .. } => out.extend(payload),
         }
@@ -362,6 +370,9 @@ impl Message {
                 Ok(Self::NodeAnnouncement(NodeAnnouncement::decode(cursor)?))
             }
             msg_type::CHANNEL_UPDATE => Ok(Self::ChannelUpdate(ChannelUpdate::decode(cursor)?)),
+            msg_type::ANNOUNCEMENT_SIGNATURES => Ok(Self::AnnouncementSignatures(
+                AnnouncementSignatures::decode(cursor)?,
+            )),
             msg_type::GOSSIP_TIMESTAMP_FILTER => Ok(Self::GossipTimestampFilter(
                 GossipTimestampFilter::decode(cursor)?,
             )),
@@ -903,6 +914,29 @@ mod tests {
         assert_eq!(decoded, Message::ChannelUpdate(cu));
     }
 
+    /// Valid `AnnouncementSignatures` message for testing.
+    fn sample_announcement_signatures() -> AnnouncementSignatures {
+        let secp = Secp256k1::new();
+        let node_sk = SecretKey::from_slice(&[0x11; 32]).expect("valid secret");
+        let bitcoin_sk = SecretKey::from_slice(&[0x22; 32]).expect("valid secret");
+        let digest = secp256k1::Message::from_digest([0xab; 32]);
+
+        AnnouncementSignatures {
+            channel_id: ChannelId::new([0xbb; CHANNEL_ID_SIZE]),
+            short_channel_id: ShortChannelId::new(539_268, 845, 1),
+            node_signature: secp.sign_ecdsa(&digest, &node_sk),
+            bitcoin_signature: secp.sign_ecdsa(&digest, &bitcoin_sk),
+        }
+    }
+
+    #[test]
+    fn message_announcement_signatures_roundtrip() {
+        let ann_sigs = sample_announcement_signatures();
+        let encoded = Message::AnnouncementSignatures(ann_sigs.clone()).encode();
+        let decoded = Message::decode(&encoded).unwrap();
+        assert_eq!(decoded, Message::AnnouncementSignatures(ann_sigs));
+    }
+
     #[test]
     fn message_gossip_timestamp_filter_roundtrip() {
         let chain_hash = [0x6f; 32];
@@ -1060,6 +1094,10 @@ mod tests {
         assert_eq!(
             Message::ChannelUpdate(sample_channel_update()).msg_type(),
             msg_type::CHANNEL_UPDATE
+        );
+        assert_eq!(
+            Message::AnnouncementSignatures(sample_announcement_signatures()).msg_type(),
+            msg_type::ANNOUNCEMENT_SIGNATURES
         );
         assert_eq!(
             Message::GossipTimestampFilter(GossipTimestampFilter::no_gossip([0u8; 32])).msg_type(),
