@@ -195,6 +195,10 @@ pub enum Operation {
     /// Receive and parse an `accept_channel` response.
     /// Produces an `AcceptChannel` compound variable.
     RecvAcceptChannel,
+    /// Receive and parse a `funding_signed` response.
+    /// Produces the `ChannelId` carried in the message.
+    /// TODO: Add `ExtractFundingSigned` when implementing force-close scenarios.
+    RecvFundingSigned,
     /// Mines the given number of blocks on the Bitcoin network.
     MineBlocks(u8),
     /// Sign wallet inputs of the transaction and broadcast it via `bitcoin-cli`.
@@ -648,6 +652,7 @@ impl fmt::Display for Operation {
             Self::SendOpenChannel => write!(f, "SendOpenChannel"),
             Self::SendFundingCreated => write!(f, "SendFundingCreated"),
             Self::RecvAcceptChannel => write!(f, "RecvAcceptChannel"),
+            Self::RecvFundingSigned => write!(f, "RecvFundingSigned"),
             Self::BroadcastTransaction => write!(f, "BroadcastTransaction"),
         }
     }
@@ -670,7 +675,7 @@ impl Operation {
             Self::LoadBytes(_) | Self::LoadShutdownScript(_) => Some(VariableType::Bytes),
             Self::LoadFeatures(_) | Self::LoadChannelType(_) => Some(VariableType::Features),
             Self::LoadPrivateKey(_) => Some(VariableType::PrivateKey),
-            Self::LoadChannelId(_) => Some(VariableType::ChannelId),
+            Self::LoadChannelId(_) | Self::RecvFundingSigned => Some(VariableType::ChannelId),
             Self::LoadTargetPubkeyFromContext | Self::DerivePoint => Some(VariableType::Point),
             Self::LoadChainHashFromContext => Some(VariableType::ChainHash),
             Self::ExtractAcceptChannel(field) => Some(field.output_type()),
@@ -722,6 +727,7 @@ impl Operation {
             Self::SendOpenChannel => vec![VariableType::OpenChannelMessage],
             Self::SendFundingCreated => vec![VariableType::FundingCreatedMessage],
             Self::RecvAcceptChannel => vec![VariableType::SentOpenChannel],
+            Self::RecvFundingSigned => vec![VariableType::SentFundingCreated],
             Self::BroadcastTransaction => vec![VariableType::FundingTransaction],
 
             Self::BuildOpenChannel => vec![
@@ -838,6 +844,7 @@ impl Operation {
             | Self::SendMessage
             | Self::SendOpenChannel
             | Self::SendFundingCreated
+            | Self::RecvFundingSigned
             | Self::MineBlocks(_)
             | Self::BroadcastTransaction => vec![],
 
@@ -857,6 +864,7 @@ impl Operation {
             | Self::SendOpenChannel
             | Self::SendFundingCreated
             | Self::RecvAcceptChannel
+            | Self::RecvFundingSigned
             | Self::MineBlocks(_)
             | Self::CreateFundingTransaction
             | Self::BroadcastTransaction => true,
@@ -921,6 +929,7 @@ impl Operation {
             | Self::SendOpenChannel
             | Self::SendFundingCreated
             | Self::RecvAcceptChannel
+            | Self::RecvFundingSigned
             | Self::BroadcastTransaction => false,
         }
     }

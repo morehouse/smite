@@ -597,7 +597,8 @@ fn displays_create_and_broadcast_tx_program() {
 }
 
 #[test]
-fn displays_build_and_send_funding_created_program() {
+#[allow(clippy::too_many_lines)]
+fn displays_send_funding_created_recv_funding_signed_program() {
     let instructions = vec![
         // Funding transaction.
         Instruction {
@@ -673,6 +674,11 @@ fn displays_build_and_send_funding_created_program() {
             operation: Operation::SendFundingCreated,
             inputs: vec![15],
         },
+        // receive funding_signed.
+        Instruction {
+            operation: Operation::RecvFundingSigned,
+            inputs: vec![16],
+        },
     ];
 
     let program = Program { instructions };
@@ -700,6 +706,7 @@ fn displays_build_and_send_funding_created_program() {
         "v14 = LoadFeeratePerKw(253)".into(),
         "v15 = BuildFundingCreated(v4, v2, v5, v0, v7, v7, v7, v8, v9, v11, v11, v11, v11, v8, v9, v12, v13, v14, v7, v11)".into(),
         "v16 = SendFundingCreated(v15)".into(),
+        "v17 = RecvFundingSigned(v16)".into(),
     ];
 
     assert_eq!(lines.len(), expected.len(), "line count mismatch");
