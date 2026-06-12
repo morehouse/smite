@@ -1,10 +1,10 @@
 //! BOLT 2 `closing_sig` message.
 
 use super::BoltError;
+use super::closing_complete::ClosingTlvs;
 use super::tlv::TlvStream;
 use super::types::ChannelId;
 use super::wire::WireFormat;
-use bitcoin::secp256k1::ecdsa::Signature;
 
 /// TLV type for closer output only.
 const TLV_CLOSER_OUTPUT_ONLY: u64 = 1;
@@ -31,18 +31,7 @@ pub struct ClosingSig {
     // Suggested locktime for the closing tx.
     pub locktime: u32,
     // Optional TLV extensions.
-    pub tlvs: ClosingSigTlvs,
-}
-
-/// TLV extensions for the `closing_sig` message.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ClosingSigTlvs {
-    // Signature if closing tx only has closer output.
-    pub closer_output_only: Option<Signature>,
-    // Signature if closing tx only has closee output.
-    pub closee_output_only: Option<Signature>,
-    // Signature if closing tx has closer and closee output.
-    pub closer_and_closee_outputs: Option<Signature>,
+    pub tlvs: ClosingTlvs,
 }
 
 impl ClosingSig {
@@ -100,7 +89,7 @@ impl ClosingSig {
 
         // Decode TLVs (remaining bytes)
         let tlv_stream = TlvStream::decode_with_known(cursor, &[TLV_CLOSEE_OUTPUT_ONLY])?;
-        let tlvs = ClosingSigTlvs::from_stream(&tlv_stream)?;
+        let tlvs = ClosingTlvs::from_stream(&tlv_stream)?;
 
         Ok(Self {
             channel_id,
@@ -109,47 +98,6 @@ impl ClosingSig {
             fee_satoshis,
             locktime,
             tlvs,
-        })
-    }
-}
-
-impl ClosingSigTlvs {
-    /// Extracts `closing_sig` TLVs from a parsed TLV stream.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Truncated` if a signature TLV has invalid length, or
-    /// `InvalidSignature` if the bytes are not a valid compact ECDSA signature.
-    #[allow(clippy::similar_names)]
-    fn from_stream(stream: &TlvStream) -> Result<Self, BoltError> {
-        let closer_output_only = stream
-            .get(TLV_CLOSER_OUTPUT_ONLY)
-            .map(|data| {
-                let mut cursor = data;
-                Signature::read(&mut cursor)
-            })
-            .transpose()?;
-
-        let closee_output_only = stream
-            .get(TLV_CLOSEE_OUTPUT_ONLY)
-            .map(|data| {
-                let mut cursor = data;
-                Signature::read(&mut cursor)
-            })
-            .transpose()?;
-
-        let closer_and_closee_outputs = stream
-            .get(TLV_CLOSER_AND_CLOSEE_OUTPUTS)
-            .map(|data| {
-                let mut cursor = data;
-                Signature::read(&mut cursor)
-            })
-            .transpose()?;
-
-        Ok(Self {
-            closer_output_only,
-            closee_output_only,
-            closer_and_closee_outputs,
         })
     }
 }
@@ -283,7 +231,7 @@ mod tests {
     fn roundtrip_with_tlvs() {
         let sig = Signature::from_compact(&[1u8; 64]).expect("valid signature");
         let original = ClosingSig {
-            tlvs: ClosingSigTlvs {
+            tlvs: ClosingTlvs {
                 closer_output_only: Some(sig),
                 closee_output_only: Some(sig),
                 closer_and_closee_outputs: Some(sig),
@@ -307,7 +255,7 @@ mod tests {
 
     #[test]
     fn default_tlvs_are_none() {
-        let tlvs = ClosingSigTlvs::default();
+        let tlvs = ClosingTlvs::default();
         assert!(tlvs.closer_output_only.is_none());
         assert!(tlvs.closee_output_only.is_none());
         assert!(tlvs.closer_and_closee_outputs.is_none());
@@ -317,7 +265,7 @@ mod tests {
     fn decode_invalid_signature_tlv() {
         let sig = Signature::from_compact(&[1u8; 64]).expect("valid signature");
         let cs = ClosingSig {
-            tlvs: ClosingSigTlvs {
+            tlvs: ClosingTlvs {
                 closer_output_only: Some(sig),
                 ..Default::default()
             },

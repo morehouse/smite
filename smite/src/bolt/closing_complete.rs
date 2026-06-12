@@ -30,12 +30,12 @@ pub struct ClosingComplete {
     // Suggested locktime for the closing tx.
     pub locktime: u32,
     // Optional TLV extensions.
-    pub tlvs: ClosingCompleteTlvs,
+    pub tlvs: ClosingTlvs,
 }
 
-/// TLV extensions for the `closing_complete` message.
+/// TLV extensions for the `closing_complete` and `closing_sig` message.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ClosingCompleteTlvs {
+pub struct ClosingTlvs {
     // Signature if closing tx only has local output.
     pub closer_output_only: Option<Signature>,
     // Signature if closing tx only has remote output.
@@ -99,7 +99,7 @@ impl ClosingComplete {
 
         // Decode TLVs (remaining bytes)
         let tlv_stream = TlvStream::decode_with_known(cursor, &[TLV_CLOSEE_OUTPUT_ONLY])?;
-        let tlvs = ClosingCompleteTlvs::from_stream(&tlv_stream)?;
+        let tlvs = ClosingTlvs::from_stream(&tlv_stream)?;
 
         Ok(Self {
             channel_id,
@@ -112,15 +112,16 @@ impl ClosingComplete {
     }
 }
 
-impl ClosingCompleteTlvs {
-    /// Extracts `closing_complete` TLVs from a parsed TLV stream.
+impl ClosingTlvs {
+    /// Extracts `closing_complete` or `closing_sig` TLVs from a parsed TLV
+    /// stream.
     ///
     /// # Errors
     ///
     /// Returns `Truncated` if a signature TLV has invalid length, or
     /// `InvalidSignature` if the bytes are not a valid compact ECDSA signature.
     #[allow(clippy::similar_names)]
-    fn from_stream(stream: &TlvStream) -> Result<Self, BoltError> {
+    pub fn from_stream(stream: &TlvStream) -> Result<Self, BoltError> {
         let closer_output_only = stream
             .get(TLV_CLOSER_OUTPUT_ONLY)
             .map(|data| {
@@ -282,7 +283,7 @@ mod tests {
     fn roundtrip_with_tlvs() {
         let sig = Signature::from_compact(&[1u8; 64]).expect("valid signature");
         let original = ClosingComplete {
-            tlvs: ClosingCompleteTlvs {
+            tlvs: ClosingTlvs {
                 closer_output_only: Some(sig),
                 closee_output_only: Some(sig),
                 closer_and_closee_outputs: Some(sig),
@@ -306,7 +307,7 @@ mod tests {
 
     #[test]
     fn default_tlvs_are_none() {
-        let tlvs = ClosingCompleteTlvs::default();
+        let tlvs = ClosingTlvs::default();
         assert!(tlvs.closer_output_only.is_none());
         assert!(tlvs.closee_output_only.is_none());
         assert!(tlvs.closer_and_closee_outputs.is_none());
@@ -316,7 +317,7 @@ mod tests {
     fn decode_invalid_signature_tlv() {
         let sig = Signature::from_compact(&[1u8; 64]).expect("valid signature");
         let cc = ClosingComplete {
-            tlvs: ClosingCompleteTlvs {
+            tlvs: ClosingTlvs {
                 closer_output_only: Some(sig),
                 ..Default::default()
             },
