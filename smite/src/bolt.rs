@@ -9,6 +9,8 @@ mod attribution_data;
 mod channel_announcement;
 mod channel_ready;
 mod channel_update;
+mod closing_complete;
+mod closing_sig;
 mod error;
 mod funding_created;
 mod funding_signed;
@@ -41,6 +43,8 @@ pub use attribution_data::{AttributionData, TruncatedHmac};
 pub use channel_announcement::ChannelAnnouncement;
 pub use channel_ready::{ChannelReady, ChannelReadyTlvs};
 pub use channel_update::ChannelUpdate;
+pub use closing_complete::ClosingComplete;
+pub use closing_sig::ClosingSig;
 pub use error::Error;
 pub use funding_created::FundingCreated;
 pub use funding_signed::FundingSigned;
@@ -138,6 +142,10 @@ pub mod msg_type {
     pub const CHANNEL_READY: u16 = 36;
     /// Shutdown message (BOLT 2).
     pub const SHUTDOWN: u16 = 38;
+    /// `closing_complete` message (BOLT 2).
+    pub const CLOSING_COMPLETE: u16 = 40;
+    /// `closing_sig` message (BOLT 2).
+    pub const CLOSING_SIG: u16 = 41;
     /// `open_channel2` message (BOLT 2).
     pub const OPEN_CHANNEL2: u16 = 64;
     /// `accept_channel2` message (BOLT 2).
@@ -198,6 +206,10 @@ pub enum Message {
     ChannelReady(ChannelReady),
     /// Shutdown message (type 38).
     Shutdown(Shutdown),
+    /// `closing_complete` message (type 40).
+    ClosingComplete(ClosingComplete),
+    /// `closing_sig` message (type 41).
+    ClosingSig(ClosingSig),
     /// `open_channel2` message (type 64).
     OpenChannel2(OpenChannel2),
     /// `accept_channel2` message (type 65).
@@ -258,6 +270,8 @@ impl Message {
             Self::FundingSigned(_) => msg_type::FUNDING_SIGNED,
             Self::ChannelReady(_) => msg_type::CHANNEL_READY,
             Self::Shutdown(_) => msg_type::SHUTDOWN,
+            Self::ClosingComplete(_) => msg_type::CLOSING_COMPLETE,
+            Self::ClosingSig(_) => msg_type::CLOSING_SIG,
             Self::OpenChannel2(_) => msg_type::OPEN_CHANNEL2,
             Self::AcceptChannel2(_) => msg_type::ACCEPT_CHANNEL2,
             Self::TxAddInput(_) => msg_type::TX_ADD_INPUT,
@@ -295,6 +309,8 @@ impl Message {
             Self::FundingSigned(m) => out.extend(m.encode()),
             Self::ChannelReady(m) => out.extend(m.encode()),
             Self::Shutdown(m) => out.extend(m.encode()),
+            Self::ClosingComplete(m) => out.extend(m.encode()),
+            Self::ClosingSig(m) => out.extend(m.encode()),
             Self::OpenChannel2(m) => out.extend(m.encode()),
             Self::AcceptChannel2(m) => out.extend(m.encode()),
             Self::TxAddInput(m) => out.extend(m.encode()),
@@ -339,6 +355,10 @@ impl Message {
             msg_type::FUNDING_SIGNED => Ok(Self::FundingSigned(FundingSigned::decode(cursor)?)),
             msg_type::CHANNEL_READY => Ok(Self::ChannelReady(ChannelReady::decode(cursor)?)),
             msg_type::SHUTDOWN => Ok(Self::Shutdown(Shutdown::decode(cursor)?)),
+            msg_type::CLOSING_COMPLETE => {
+                Ok(Self::ClosingComplete(ClosingComplete::decode(cursor)?))
+            }
+            msg_type::CLOSING_SIG => Ok(Self::ClosingSig(ClosingSig::decode(cursor)?)),
             msg_type::OPEN_CHANNEL2 => Ok(Self::OpenChannel2(OpenChannel2::decode(cursor)?)),
             msg_type::ACCEPT_CHANNEL2 => Ok(Self::AcceptChannel2(AcceptChannel2::decode(cursor)?)),
             msg_type::TX_ADD_INPUT => Ok(Self::TxAddInput(TxAddInput::decode(cursor)?)),
@@ -595,6 +615,24 @@ mod tests {
         let encoded = msg.encode();
         let decoded = Message::decode(&encoded).unwrap();
         assert_eq!(decoded, Message::Shutdown(shutdown));
+    }
+
+    #[test]
+    fn message_closing_complete_roundtrip() {
+        let cc = ClosingComplete::default();
+        let msg = Message::ClosingComplete(cc.clone());
+        let encoded = msg.encode();
+        let decoded = Message::decode(&encoded).unwrap();
+        assert_eq!(decoded, Message::ClosingComplete(cc));
+    }
+
+    #[test]
+    fn message_closing_sig_roundtrip() {
+        let cs = ClosingSig::default();
+        let msg = Message::ClosingSig(cs.clone());
+        let encoded = msg.encode();
+        let decoded = Message::decode(&encoded).unwrap();
+        assert_eq!(decoded, Message::ClosingSig(cs));
     }
 
     /// Valid `OpenChannel2` message for testing.
@@ -961,6 +999,14 @@ mod tests {
         assert_eq!(
             Message::Shutdown(Shutdown::for_channel(ChannelId([0; 32]), vec![])).msg_type(),
             msg_type::SHUTDOWN
+        );
+        assert_eq!(
+            Message::ClosingComplete(ClosingComplete::default()).msg_type(),
+            msg_type::CLOSING_COMPLETE,
+        );
+        assert_eq!(
+            Message::ClosingSig(ClosingSig::default()).msg_type(),
+            msg_type::CLOSING_SIG,
         );
         assert_eq!(
             Message::OpenChannel2(sample_open_channel2()).msg_type(),
