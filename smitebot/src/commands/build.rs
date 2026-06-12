@@ -1,11 +1,12 @@
 //! Docker image builds for Smite workloads.
 //! The command keeps Docker's output visible so rebuild failures are easy to debug.
 
-use std::fmt;
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus};
 
-use clap::{Args, ValueEnum};
+use clap::Args;
+
+use crate::config::Target;
 
 /// Command handler for `smitebot build`.
 pub struct BuildCommand;
@@ -15,7 +16,7 @@ pub struct BuildCommand;
 pub struct BuildArgs {
     /// Target implementation to build.
     #[arg(long)]
-    target: WorkloadTarget,
+    target: Target,
     /// Scenario binary selected by the workload Dockerfile.
     #[arg(long)]
     scenario: String,
@@ -31,31 +32,6 @@ pub struct BuildArgs {
     /// Pass --no-cache to docker build.
     #[arg(long)]
     no_cache: bool,
-}
-
-/// Smite workload targets with Dockerfiles under `workloads/`.
-#[derive(Clone, Copy, Debug, ValueEnum)]
-enum WorkloadTarget {
-    /// Lightning Network Daemon workload.
-    Lnd,
-    /// Core Lightning workload.
-    Cln,
-    /// LDK Node workload.
-    Ldk,
-    /// Eclair workload.
-    Eclair,
-}
-
-impl fmt::Display for WorkloadTarget {
-    /// Formats the lowercase target name used in paths and Docker image tags.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Lnd => write!(f, "lnd"),
-            Self::Cln => write!(f, "cln"),
-            Self::Ldk => write!(f, "ldk"),
-            Self::Eclair => write!(f, "eclair"),
-        }
-    }
 }
 
 /// Fully resolved Docker build inputs.
@@ -132,7 +108,7 @@ impl BuildCommand {
 }
 
 /// Returns the default image tag used by Smite's manual Docker build flow.
-fn default_workload_image_tag(target: WorkloadTarget, scenario: &str, coverage: bool) -> String {
+fn default_workload_image_tag(target: Target, scenario: &str, coverage: bool) -> String {
     let suffix = if coverage { "-coverage" } else { "" };
     format!("smite-{target}-{scenario}{suffix}")
 }
@@ -161,7 +137,7 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    fn sample_build_args(target: WorkloadTarget, scenario: &str) -> BuildArgs {
+    fn sample_build_args(target: Target, scenario: &str) -> BuildArgs {
         BuildArgs {
             target,
             scenario: scenario.to_string(),
@@ -175,18 +151,18 @@ mod tests {
     #[test]
     fn default_workload_image_tag_matches_smite_convention() {
         assert_eq!(
-            default_workload_image_tag(WorkloadTarget::Lnd, "encrypted_bytes", false),
+            default_workload_image_tag(Target::Lnd, "encrypted_bytes", false),
             "smite-lnd-encrypted_bytes"
         );
         assert_eq!(
-            default_workload_image_tag(WorkloadTarget::Cln, "noise", true),
+            default_workload_image_tag(Target::Cln, "noise", true),
             "smite-cln-noise-coverage"
         );
     }
 
     #[test]
     fn build_inputs_use_normal_dockerfile_by_default() {
-        let args = sample_build_args(WorkloadTarget::Ldk, "init");
+        let args = sample_build_args(Target::Ldk, "init");
         let inputs = BuildInputs::from_args(&args);
 
         assert_eq!(inputs.image, "smite-ldk-init");
@@ -202,13 +178,10 @@ mod tests {
     #[test]
     fn build_inputs_select_expected_dockerfile_for_each_target() {
         let cases = [
-            (WorkloadTarget::Lnd, "/repo/smite/workloads/lnd/Dockerfile"),
-            (WorkloadTarget::Cln, "/repo/smite/workloads/cln/Dockerfile"),
-            (WorkloadTarget::Ldk, "/repo/smite/workloads/ldk/Dockerfile"),
-            (
-                WorkloadTarget::Eclair,
-                "/repo/smite/workloads/eclair/Dockerfile",
-            ),
+            (Target::Lnd, "/repo/smite/workloads/lnd/Dockerfile"),
+            (Target::Cln, "/repo/smite/workloads/cln/Dockerfile"),
+            (Target::Ldk, "/repo/smite/workloads/ldk/Dockerfile"),
+            (Target::Eclair, "/repo/smite/workloads/eclair/Dockerfile"),
         ];
 
         for (target, expected_dockerfile) in cases {
@@ -221,7 +194,7 @@ mod tests {
 
     #[test]
     fn build_inputs_support_coverage_and_custom_image() {
-        let mut args = sample_build_args(WorkloadTarget::Eclair, "encrypted_bytes");
+        let mut args = sample_build_args(Target::Eclair, "encrypted_bytes");
         args.coverage = true;
         args.image = Some("local/eclair-eb:debug".to_string());
         args.no_cache = true;
@@ -238,7 +211,7 @@ mod tests {
 
     #[test]
     fn build_inputs_use_default_coverage_image_when_not_overridden() {
-        let mut args = sample_build_args(WorkloadTarget::Cln, "noise");
+        let mut args = sample_build_args(Target::Cln, "noise");
         args.coverage = true;
 
         let inputs = BuildInputs::from_args(&args);
@@ -252,7 +225,7 @@ mod tests {
 
     #[test]
     fn build_inputs_preserve_custom_smite_dir() {
-        let mut args = sample_build_args(WorkloadTarget::Lnd, "encrypted_bytes");
+        let mut args = sample_build_args(Target::Lnd, "encrypted_bytes");
         args.smite_dir = PathBuf::from("/tmp/local-smite");
 
         let inputs = BuildInputs::from_args(&args);

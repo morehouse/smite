@@ -17,7 +17,33 @@ smitebot doctor --aflpp-path ~/AFLplusplus
 smitebot doctor --aflpp-path ~/AFLplusplus --json
 ```
 
+## Configuration
+
+Campaign settings are stored in a TOML file. See [`sample-campaign.toml`](sample-campaign.toml) for a complete example.
+
+| Field        | Required | Description                                                          |
+| ------------ | -------- | -------------------------------------------------------------------- |
+| `target`     | yes      | Lightning implementation to fuzz (`lnd`, `cln`, `ldk`, or `eclair`). |
+| `scenario`   | yes      | Scenario binary selected by the workload Dockerfile.                 |
+| `aflpp_path` | yes      | Path to the AFL++ source tree.                                       |
+| `smite_dir`  | yes      | Path to the smite repository root.                                   |
+| `runners`    | yes      | Number of parallel AFL++ instances to launch (must be at least 1).   |
+| `seed_dir`   | no       | Directory containing seed inputs; omit to start from an empty corpus.|
+| `output_dir` | yes      | AFL++ output directory for findings and stats.                       |
+| `sharedir`   | yes      | Nyx shared directory path; created automatically by `smitebot start`.|
+| `image`      | no       | Docker image tag override; defaults to `smite-<target>-<scenario>`.  |
+| `afl_env`    | no       | Extra environment variables passed to AFL++ instances.               |
+| `afl_flags`  | no       | Extra CLI flags appended to `afl-fuzz`.                              |
+
 ## Commands
+
+### smitebot config
+
+`smitebot config` validates a campaign configuration file, reports the resolved settings, and checks that referenced paths exist on disk.
+
+```bash
+smitebot config sample-campaign.toml
+```
 
 ### smitebot build
 

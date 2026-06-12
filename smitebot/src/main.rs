@@ -1,13 +1,14 @@
 //! `smitebot` command-line interface.
 
 mod commands;
+mod config;
 mod utils;
 
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-use commands::{BuildArgs, BuildCommand, DoctorArgs, DoctorCommand};
+use commands::{BuildArgs, BuildCommand, ConfigArgs, ConfigCommand, DoctorArgs, DoctorCommand};
 
 #[derive(Debug, Parser)]
 #[command(name = "smitebot", version, about = "Smite campaign manager")]
@@ -20,6 +21,8 @@ struct Cli {
 enum Commands {
     /// Build Smite workload Docker images.
     Build(BuildArgs),
+    /// Validate a campaign configuration file.
+    Config(ConfigArgs),
     /// Validate host prerequisites for running Smite campaigns.
     Doctor(DoctorArgs),
 }
@@ -30,6 +33,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let success = match cli.command {
         Commands::Build(args) => BuildCommand::execute(&args),
+        Commands::Config(args) => ConfigCommand::execute(&args),
         Commands::Doctor(args) => DoctorCommand::execute(&args),
     };
 
