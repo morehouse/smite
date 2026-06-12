@@ -149,13 +149,13 @@ fn display_open_channel_program() {
             ],
         },
         Instruction {
-            operation: Operation::SendMessage,
+            operation: Operation::SendOpenChannel,
             inputs: vec![26],
         },
         // Receive accept_channel and extract fields.
         Instruction {
             operation: Operation::RecvAcceptChannel,
-            inputs: vec![],
+            inputs: vec![27],
         },
         Instruction {
             operation: Operation::ExtractAcceptChannel(AcceptChannelField::FundingPubkey),
@@ -203,8 +203,8 @@ fn display_open_channel_program() {
         "v24 = LoadShutdownScript(Empty)".into(),
         "v25 = LoadFeatures()".into(),
         "v26 = BuildOpenChannel(v13, v12, v14, v15, v16, v17, v18, v19, v20, v21, v22, v1, v3, v5, v7, v9, v11, v23, v24, v25)".into(),
-        "SendMessage(v26)".into(),
-        "v28 = RecvAcceptChannel()".into(),
+        "v27 = SendOpenChannel(v26)".into(),
+        "v28 = RecvAcceptChannel(v27)".into(),
         "v29 = ExtractFundingPubkey(v28)".into(),
         "v30 = ExtractFirstPerCommitmentPoint(v28)".into(),
     ];
@@ -597,7 +597,8 @@ fn displays_create_and_broadcast_tx_program() {
 }
 
 #[test]
-fn displays_build_and_send_funding_created_program() {
+#[allow(clippy::too_many_lines)]
+fn displays_send_funding_created_recv_funding_signed_program() {
     let instructions = vec![
         // Funding transaction.
         Instruction {
@@ -673,6 +674,11 @@ fn displays_build_and_send_funding_created_program() {
             operation: Operation::SendFundingCreated,
             inputs: vec![15],
         },
+        // receive funding_signed.
+        Instruction {
+            operation: Operation::RecvFundingSigned,
+            inputs: vec![16],
+        },
     ];
 
     let program = Program { instructions };
@@ -700,6 +706,7 @@ fn displays_build_and_send_funding_created_program() {
         "v14 = LoadFeeratePerKw(253)".into(),
         "v15 = BuildFundingCreated(v4, v2, v5, v0, v7, v7, v7, v8, v9, v11, v11, v11, v11, v8, v9, v12, v13, v14, v7, v11)".into(),
         "v16 = SendFundingCreated(v15)".into(),
+        "v17 = RecvFundingSigned(v16)".into(),
     ];
 
     assert_eq!(lines.len(), expected.len(), "line count mismatch");

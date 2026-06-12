@@ -8,8 +8,8 @@ use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use bitcoin::{OutPoint, ScriptBuf};
 use smite::bitcoin::{BitcoinCli, Utxo};
 use smite::bolt::{
-    AcceptChannel, ChannelAnnouncement, ChannelId, ChannelUpdate, FundingCreated, Message,
-    NodeAnnouncement, OpenChannel, OpenChannelTlvs, Pong, ShortChannelId, msg_type,
+    AcceptChannel, ChannelAnnouncement, ChannelId, ChannelUpdate, FundingCreated, FundingSigned,
+    Message, NodeAnnouncement, OpenChannel, OpenChannelTlvs, Pong, ShortChannelId, msg_type,
 };
 use smite::channel_tx::{
     ChannelConfig, ChannelPartyConfig, ChannelState, FundingTransaction, HolderIdentity, Side,
@@ -120,6 +120,19 @@ pub enum ExecuteError {
     /// Failed to construct the initial commitment state.
     #[error("commitment: {0}")]
     Commitment(#[from] smite::channel_tx::CommitmentError),
+
+    /// Received a `funding_signed` for a channel with no tracked state.
+    #[error("unknown channel: no tracked state for channel_id {0:?}")]
+    UnknownChannel(ChannelId),
+
+    /// The opener cannot afford the feerate for the commitment transaction.
+    #[error("opener cannot afford commitment fee for channel_id {0:?}")]
+    OpenerCannotAffordFee(ChannelId),
+
+    /// The counterparty's signature in `funding_signed` failed to verify
+    /// against the holder's first commitment transaction.
+    #[error("invalid counterparty signature for channel_id {0:?}")]
+    InvalidCounterpartySignature(ChannelId),
 }
 
 /// Executes IR programs against a target over an established connection.
@@ -160,8 +173,10 @@ impl<C: Connection, B: BitcoinRpc> Executor<C, B> {
     ///
     /// Returns an error on a connection/send/receive failure, a decode failure of
     /// a received message, an unexpected message type from the target, when
-    /// wallet funds are insufficient to perform a channel operation, or when the
-    /// initial commitment transaction cannot be constructed.
+    /// wallet funds are insufficient to perform a channel operation, when the
+    /// initial commitment transaction cannot be constructed, when no channel state
+    /// exists for a received `funding_signed`, when the opener cannot afford the
+    /// commitment feerate, or when the counterparty's signature fails verification.
     ///
     /// # Panics
     ///
@@ -316,6 +331,15 @@ impl<C: Connection, B: BitcoinRpc> Executor<C, B> {
                     let ac = recv_accept_channel(&mut self.conn)?;
                     log::debug!("[{:?}] RecvAcceptChannel: received", start.elapsed());
                     Some(Variable::AcceptChannel(ac))
+                }
+
+                Operation::RecvFundingSigned => {
+                    consume_sent_funding_created(&mut variables, instr.inputs[0]);
+                    log::debug!("[{:?}] RecvFundingSigned: waiting", start.elapsed());
+                    let fs = recv_funding_signed(&mut self.conn)?;
+                    log::debug!("[{:?}] RecvFundingSigned: received", start.elapsed());
+                    verify_funding_signed(&fs, &self.channel_states)?;
+                    Some(Variable::ChannelId(fs.channel_id))
                 }
 
                 Operation::MineBlocks(v) => {
@@ -543,6 +567,19 @@ fn consume_sent_open_channel(variables: &mut [Option<Variable>], index: usize) {
         }
         other => panic!(
             "variable {index}: expected SentOpenChannel, got {:?}",
+            other.var_type(),
+        ),
+    }
+}
+
+fn consume_sent_funding_created(variables: &mut [Option<Variable>], index: usize) {
+    match resolve(variables, index) {
+        Variable::SentFundingCreated => {
+            // Consume the affine `SentFundingCreated`.
+            variables[index] = None;
+        }
+        other => panic!(
+            "variable {index}: expected SentFundingCreated, got {:?}",
             other.var_type(),
         ),
     }
@@ -832,6 +869,47 @@ fn recv_accept_channel(conn: &mut impl Connection) -> Result<AcceptChannel, Exec
             got: other.msg_type(),
         }),
     }
+}
+
+/// Receives and decodes a `funding_signed` message.
+fn recv_funding_signed(conn: &mut impl Connection) -> Result<FundingSigned, ExecuteError> {
+    match recv_non_ping(conn)? {
+        Message::FundingSigned(fs) => Ok(fs),
+        other => Err(ExecuteError::UnexpectedMessage {
+            expected: msg_type::FUNDING_SIGNED,
+            got: other.msg_type(),
+        }),
+    }
+}
+
+/// Verifies the counterparty's signature from a `funding_signed` message using
+/// the channel state associated with the message's `channel_id`.
+///
+/// # Errors
+///
+/// Returns [`ExecuteError::UnknownChannel`] if no channel state exists for the
+/// given `channel_id`, [`ExecuteError::OpenerCannotAffordFee`] if the opener
+/// cannot afford the commitment feerate, or [`ExecuteError::InvalidCounterpartySignature`]
+/// if the signature is invalid for the holder's initial commitment transaction.
+fn verify_funding_signed(
+    fs: &FundingSigned,
+    channel_states: &HashMap<ChannelId, ChannelState>,
+) -> Result<(), ExecuteError> {
+    let state = channel_states
+        .get(&fs.channel_id)
+        .ok_or(ExecuteError::UnknownChannel(fs.channel_id))?;
+
+    // The opener cannot afford the fee, so the acceptor must not send
+    // `funding_signed`. Receiving one is a protocol violation.
+    if !state.config.can_opener_afford_feerate(&state.commitment) {
+        return Err(ExecuteError::OpenerCannotAffordFee(fs.channel_id));
+    }
+
+    state
+        .config
+        .verify_counterparty_signature(&state.commitment, &state.holder, &fs.signature)
+        .then_some(())
+        .ok_or(ExecuteError::InvalidCounterpartySignature(fs.channel_id))
 }
 
 /// Extracts a field from a parsed `accept_channel` message.
@@ -1971,7 +2049,7 @@ mod tests {
         assert_eq!(funds_err.required, Amount::from_sat(10_007_290));
     }
 
-    fn build_and_send_funding_created_instructions() -> Vec<Instruction> {
+    fn send_funding_created_and_recv_funding_signed_instructions() -> Vec<Instruction> {
         let mut instrs = create_and_broadcast_tx_instructions();
         instrs.extend(vec![
             Instruction {
@@ -2012,22 +2090,42 @@ mod tests {
                 operation: Operation::SendFundingCreated,
                 inputs: vec![15],
             },
+            Instruction {
+                operation: Operation::RecvFundingSigned,
+                inputs: vec![16],
+            },
         ]);
         instrs
     }
 
     #[test]
-    fn execute_build_and_send_funding_created() {
+    fn execute_send_funding_created_and_recv_funding_signed() {
         let mock_cli = MockBitcoinCli {
             utxos: vec![sample_utxo()],
             change_spk: sample_change_spk(),
             ..Default::default()
         };
+
+        // The acceptor replies with funding_signed carrying its signature over
+        // the opener's commitment.
+        let channel_id = ChannelId::v1_from_funding_outpoint(OutPoint {
+            txid: "09b0549b35f14ee862f63bd75811c6c27963c4dea6766ec6836952ec78df1e7e"
+                .parse()
+                .unwrap(),
+            vout: 0,
+        });
+        let fs_bytes = Message::FundingSigned(FundingSigned {
+            channel_id,
+            signature: "304402203dbf3dbf337b042a72576488c1fb019086089d8d790a47f652346cff2511b6e70220395fdf700cb82b0abfcfe8e0b7c822181f2ee72409c82c3ff8e04e36593662c7".parse().unwrap(),
+        })
+        .encode();
+
         let mut executor = Executor::new(MockConnection::new(), mock_cli, sample_context());
+        executor.conn.queue_recv(fs_bytes);
         executor
             .execute(
                 &Program {
-                    instructions: build_and_send_funding_created_instructions(),
+                    instructions: send_funding_created_and_recv_funding_signed_instructions(),
                 },
                 std::time::Instant::now(),
             )
@@ -2047,10 +2145,6 @@ mod tests {
         assert_eq!(fc.funding_output_index, 0);
 
         // Verify the signature sent by the opener on the acceptor side.
-        let channel_id = ChannelId::v1_from_funding_outpoint(OutPoint {
-            txid: fc.funding_txid,
-            vout: u32::from(fc.funding_output_index),
-        });
         let state = executor.channel_states.get(&channel_id).unwrap();
         let holder = HolderIdentity {
             side: Side::Acceptor,
@@ -2071,7 +2165,7 @@ mod tests {
     fn execute_build_funding_created_push_exceeds_funding() {
         // push_msat (v12) larger than the funding amount surfaces the commitment
         // construction error.
-        let mut instrs = build_and_send_funding_created_instructions();
+        let mut instrs = send_funding_created_and_recv_funding_signed_instructions();
         instrs[12] = Instruction {
             operation: Operation::LoadAmount(20_000_000_000),
             inputs: vec![],
@@ -2099,7 +2193,7 @@ mod tests {
     fn execute_build_funding_created_funding_msat_overflow() {
         // Re-point funding_satoshis (input index 1) to the u64::MAX amount (v14)
         // so converting it to millisatoshis overflows.
-        let mut instrs = build_and_send_funding_created_instructions();
+        let mut instrs = send_funding_created_and_recv_funding_signed_instructions();
         instrs[15].inputs[1] = 14;
         let mock_cli = MockBitcoinCli {
             utxos: vec![sample_utxo()],
@@ -2117,6 +2211,113 @@ mod tests {
         assert!(matches!(
             err,
             ExecuteError::Commitment(smite::channel_tx::CommitmentError::FundingMsatOverflow)
+        ));
+    }
+
+    #[test]
+    fn execute_recv_funding_signed_unknown_channel() {
+        let mock_cli = MockBitcoinCli {
+            utxos: vec![sample_utxo()],
+            change_spk: sample_change_spk(),
+            ..Default::default()
+        };
+
+        let channel_id = ChannelId::new([0xbb; 32]);
+        let fs_bytes = Message::FundingSigned(FundingSigned {
+            channel_id,
+            signature: "304402203dbf3dbf337b042a72576488c1fb019086089d8d790a47f652346cff2511b6e70220395fdf700cb82b0abfcfe8e0b7c822181f2ee72409c82c3ff8e04e36593662c7".parse().unwrap(),
+        })
+        .encode();
+
+        let mut executor = Executor::new(MockConnection::new(), mock_cli, sample_context());
+        executor.conn.queue_recv(fs_bytes);
+        let err = executor
+            .execute(
+                &Program {
+                    instructions: send_funding_created_and_recv_funding_signed_instructions(),
+                },
+                std::time::Instant::now(),
+            )
+            .unwrap_err();
+        assert!(matches!(err, ExecuteError::UnknownChannel(id) if id == channel_id));
+    }
+
+    #[test]
+    fn execute_recv_funding_signed_opener_cannot_afford_fee() {
+        let mock_cli = MockBitcoinCli {
+            utxos: vec![sample_utxo()],
+            change_spk: sample_change_spk(),
+            ..Default::default()
+        };
+
+        let channel_id = ChannelId::v1_from_funding_outpoint(OutPoint {
+            txid: "09b0549b35f14ee862f63bd75811c6c27963c4dea6766ec6836952ec78df1e7e"
+                .parse()
+                .unwrap(),
+            vout: 0,
+        });
+        let fs_bytes = Message::FundingSigned(FundingSigned {
+            channel_id,
+            signature: "304402203dbf3dbf337b042a72576488c1fb019086089d8d790a47f652346cff2511b6e70220395fdf700cb82b0abfcfe8e0b7c822181f2ee72409c82c3ff8e04e36593662c7".parse().unwrap(),
+        })
+        .encode();
+
+        let mut executor = Executor::new(MockConnection::new(), mock_cli, sample_context());
+        executor.conn.queue_recv(fs_bytes);
+
+        let mut instrs = send_funding_created_and_recv_funding_signed_instructions();
+        // Increase the pushed amount so the opener cannot afford the required
+        // fee when the commitment is built and funding_signed is received.
+        instrs[12].operation = Operation::LoadAmount(10_000_000_000);
+
+        let err = executor
+            .execute(
+                &Program {
+                    instructions: instrs,
+                },
+                std::time::Instant::now(),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ExecuteError::OpenerCannotAffordFee(id) if id == channel_id
+        ));
+    }
+
+    #[test]
+    fn execute_recv_funding_signed_invalid_signature() {
+        let mock_cli = MockBitcoinCli {
+            utxos: vec![sample_utxo()],
+            change_spk: sample_change_spk(),
+            ..Default::default()
+        };
+
+        let channel_id = ChannelId::v1_from_funding_outpoint(OutPoint {
+            txid: "09b0549b35f14ee862f63bd75811c6c27963c4dea6766ec6836952ec78df1e7e"
+                .parse()
+                .unwrap(),
+            vout: 0,
+        });
+        let fs_bytes = Message::FundingSigned(FundingSigned {
+            channel_id,
+            signature: Signature::from_compact(&[0u8; 64])
+                .expect("zero bytes parse as a signature"),
+        })
+        .encode();
+
+        let mut executor = Executor::new(MockConnection::new(), mock_cli, sample_context());
+        executor.conn.queue_recv(fs_bytes);
+        let err = executor
+            .execute(
+                &Program {
+                    instructions: send_funding_created_and_recv_funding_signed_instructions(),
+                },
+                std::time::Instant::now(),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ExecuteError::InvalidCounterpartySignature(id) if id == channel_id
         ));
     }
 

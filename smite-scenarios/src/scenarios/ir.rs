@@ -91,6 +91,23 @@ impl<T: Target, S: SnapshotSetup<T>> Scenario for IrScenario<T, S> {
                 // bug in the target.
                 log::debug!("[{:?}] invalid commitment: {e}", start.elapsed());
             }
+            Err(ExecuteError::UnknownChannel(id)) => {
+                // The target sent a funding_signed for a channel it was never
+                // asked to open. This is a protocol violation by the target.
+                return ScenarioResult::Fail(format!("unknown channel: {id:?}"));
+            }
+            Err(ExecuteError::OpenerCannotAffordFee(id)) => {
+                // The opener cannot afford the commitment feerate. This is a
+                // protocol violation by the target (it should not have sent
+                // funding_signed if the opener cannot afford the fee).
+                return ScenarioResult::Fail(format!("opener cannot afford fee: {id:?}"));
+            }
+            Err(ExecuteError::InvalidCounterpartySignature(id)) => {
+                // The target's funding_signed signature did not verify against
+                // the holder's commitment transaction. This is a protocol
+                // violation by the target.
+                return ScenarioResult::Fail(format!("invalid counterparty signature: {id:?}"));
+            }
         }
 
         // Ping-pong sync to ensure the target has at least done the initial
