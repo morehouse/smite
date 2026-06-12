@@ -15,6 +15,15 @@
 
 #include "nyx.h"
 
+// Due to a bug in QEMU-Nyx's write_virtual_memory(), any guest memory that is
+// written to via that function must either be page-aligned or not cross a page
+// boundary. See https://github.com/nyx-fuzz/QEMU-Nyx/pull/73.
+//
+// Currently the only hypercall we use that is affected by this bug is
+// HYPERCALL_KAFL_GET_HOST_CONFIG, so we page-align the host_config_t used in
+// that hypercall.
+#define NYX_HYPERCALL_ALIGN _Alignas(4096)
+
 // If we're keeping track of coverage for both the target and the scenario
 // processes, then we use a single large map to combine the coverage:
 //
@@ -40,7 +49,7 @@ size_t nyx_init() {
   }
   done = 1;
 
-  host_config_t host_config;
+  NYX_HYPERCALL_ALIGN host_config_t host_config;
   kAFL_hypercall(HYPERCALL_KAFL_GET_HOST_CONFIG, (uintptr_t)&host_config);
 
   if (host_config.host_magic != NYX_HOST_MAGIC) {
