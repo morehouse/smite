@@ -1,7 +1,7 @@
 //! Docker image builds for Smite workloads.
 //! The command keeps Docker's output visible so rebuild failures are easy to debug.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 
 use clap::Args;
@@ -89,7 +89,13 @@ impl BuildCommand {
             inputs.dockerfile.display()
         );
 
-        let status = match run_docker_build(&inputs) {
+        let status = match run_docker_build(
+            &inputs.smite_dir,
+            &inputs.image,
+            &inputs.scenario,
+            &inputs.dockerfile,
+            inputs.no_cache,
+        ) {
             Ok(status) => status,
             Err(e) => {
                 log::error!("failed to run docker build: {e}");
@@ -114,20 +120,26 @@ fn default_workload_image_tag(target: Target, scenario: &str, coverage: bool) ->
 }
 
 /// Runs `docker build`, streaming stdout/stderr directly to the terminal.
-fn run_docker_build(inputs: &BuildInputs) -> std::io::Result<ExitStatus> {
+pub(crate) fn run_docker_build(
+    smite_dir: &Path,
+    image: &str,
+    scenario: &str,
+    dockerfile: &Path,
+    no_cache: bool,
+) -> std::io::Result<ExitStatus> {
     let mut command = Command::new("docker");
     command.arg("build");
-    if inputs.no_cache {
+    if no_cache {
         command.arg("--no-cache");
     }
     command
         .arg("-t")
-        .arg(&inputs.image)
+        .arg(image)
         .arg("--build-arg")
-        .arg(format!("SCENARIO={}", inputs.scenario))
+        .arg(format!("SCENARIO={scenario}"))
         .arg("-f")
-        .arg(&inputs.dockerfile)
-        .arg(&inputs.smite_dir);
+        .arg(dockerfile)
+        .arg(smite_dir);
 
     command.status()
 }

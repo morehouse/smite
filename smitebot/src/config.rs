@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use clap::ValueEnum;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// A parsed and validated smitebot campaign configuration.
 #[derive(Debug, Deserialize)]
@@ -39,7 +39,7 @@ pub struct CampaignConfig {
 }
 
 /// Lightning Network implementation to target.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, ValueEnum)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum Target {
     /// Lightning Network Daemon.
