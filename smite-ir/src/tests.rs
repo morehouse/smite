@@ -418,6 +418,76 @@ fn display_build_channel_update_program() {
 }
 
 #[test]
+fn display_build_announcement_signatures_program() {
+    let scid = ShortChannelId::new(539_268, 845, 1);
+    let instructions = vec![
+        Instruction {
+            operation: Operation::LoadChannelId([0xbb; 32]),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::LoadFeatures(vec![0x01, 0x02]),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::LoadChainHashFromContext,
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::LoadShortChannelId(scid.as_u64()),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::LoadPrivateKey(key(1)),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::LoadPrivateKey(key(2)),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::LoadPrivateKey(key(3)),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::LoadPrivateKey(key(4)),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::BuildAnnouncementSignatures,
+            inputs: vec![0, 1, 2, 3, 4, 5, 6, 7],
+        },
+        Instruction {
+            operation: Operation::SendMessage,
+            inputs: vec![8],
+        },
+    ];
+
+    let program = Program { instructions };
+    let text = program.to_string();
+    let lines: Vec<&str> = text.lines().collect();
+
+    let bb32 = "bb".repeat(32);
+    let z31 = "00".repeat(31);
+    let expected: Vec<String> = vec![
+        format!("v0 = LoadChannelId(0x{bb32})"),
+        "v1 = LoadFeatures(0x0102)".into(),
+        "v2 = LoadChainHashFromContext()".into(),
+        format!("v3 = LoadShortChannelId({scid})"),
+        format!("v4 = LoadPrivateKey(0x{z31}01)"),
+        format!("v5 = LoadPrivateKey(0x{z31}02)"),
+        format!("v6 = LoadPrivateKey(0x{z31}03)"),
+        format!("v7 = LoadPrivateKey(0x{z31}04)"),
+        "v8 = BuildAnnouncementSignatures(v0, v1, v2, v3, v4, v5, v6, v7)".into(),
+        "SendMessage(v8)".into(),
+    ];
+    assert_eq!(lines.len(), expected.len(), "line count mismatch");
+    for (i, (got, want)) in lines.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(got, want, "line {i} mismatch");
+    }
+}
+
+#[test]
 fn postcard_roundtrip() {
     let program = Program {
         instructions: vec![

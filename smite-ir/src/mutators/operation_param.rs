@@ -104,6 +104,7 @@ fn mutate_operation(op: &mut Operation, rng: &mut impl Rng) -> bool {
         | Operation::BuildFundingCreated
         | Operation::BuildChannelAnnouncement
         | Operation::BuildChannelUpdate
+        | Operation::BuildAnnouncementSignatures
         | Operation::SendMessage
         | Operation::SendOpenChannel
         | Operation::SendFundingCreated

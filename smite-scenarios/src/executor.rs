@@ -8,8 +8,9 @@ use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use bitcoin::{OutPoint, ScriptBuf};
 use smite::bitcoin::{BitcoinCli, Utxo};
 use smite::bolt::{
-    AcceptChannel, ChannelAnnouncement, ChannelId, ChannelUpdate, FundingCreated, Message,
-    NodeAnnouncement, OpenChannel, OpenChannelTlvs, Pong, ShortChannelId, msg_type,
+    AcceptChannel, AnnouncementSignatures, ChannelAnnouncement, ChannelId, ChannelUpdate,
+    FundingCreated, Message, NodeAnnouncement, OpenChannel, OpenChannelTlvs, Pong, ShortChannelId,
+    msg_type,
 };
 use smite::channel_tx::{
     ChannelConfig, ChannelPartyConfig, ChannelState, FundingTransaction, HolderIdentity, Side,
@@ -272,6 +273,12 @@ impl<C: Connection, B: BitcoinRpc> Executor<C, B> {
                 Operation::BuildChannelUpdate => {
                     let cu = build_channel_update(&variables, &instr.inputs);
                     let encoded = Message::ChannelUpdate(cu).encode();
+                    Some(Variable::Message(encoded))
+                }
+
+                Operation::BuildAnnouncementSignatures => {
+                    let ann_sigs = build_announcement_signatures(&variables, &instr.inputs);
+                    let encoded = Message::AnnouncementSignatures(ann_sigs).encode();
                     Some(Variable::Message(encoded))
                 }
 
@@ -736,6 +743,64 @@ fn build_channel_announcement(
     };
     ca.sign(&node_sk_1, &node_sk_2, &bitcoin_sk_1, &bitcoin_sk_2);
     ca
+}
+
+/// Builds an `AnnouncementSignatures` message from 8 input variables.
+///
+/// The two signatures are produced over the `channel_announcement` body for
+/// the same `(features, chain_hash, short_channel_id, 4 keys)` tuple. We treat
+/// slot-1 keys as the local side and emit `node_signature_1` / `bitcoin_signature_1`
+/// from the signed `ChannelAnnouncement`; slot-2 keys are needed only so the
+/// receiver can verify each signature against one of the four advertised keys.
+fn build_announcement_signatures(
+    variables: &[Option<Variable>],
+    inputs: &[usize],
+) -> AnnouncementSignatures {
+    let channel_id = resolve_channel_id(variables, inputs[0]);
+    let features = resolve_features(variables, inputs[1]).to_vec();
+    let chain_hash = resolve_chain_hash(variables, inputs[2]);
+    let short_channel_id = resolve_short_channel_id(variables, inputs[3]);
+    let node_sk_1_bytes = resolve_private_key(variables, inputs[4]);
+    let node_sk_2_bytes = resolve_private_key(variables, inputs[5]);
+    let bitcoin_sk_1_bytes = resolve_private_key(variables, inputs[6]);
+    let bitcoin_sk_2_bytes = resolve_private_key(variables, inputs[7]);
+
+    let node_sk_1 = SecretKey::from_slice(&node_sk_1_bytes).expect("valid private key");
+    let node_sk_2 = SecretKey::from_slice(&node_sk_2_bytes).expect("valid private key");
+    let bitcoin_sk_1 = SecretKey::from_slice(&bitcoin_sk_1_bytes).expect("valid private key");
+    let bitcoin_sk_2 = SecretKey::from_slice(&bitcoin_sk_2_bytes).expect("valid private key");
+
+    let secp = Secp256k1::new();
+    let node_id_1 = PublicKey::from_secret_key(&secp, &node_sk_1);
+    let node_id_2 = PublicKey::from_secret_key(&secp, &node_sk_2);
+    let bitcoin_key_1 = PublicKey::from_secret_key(&secp, &bitcoin_sk_1);
+    let bitcoin_key_2 = PublicKey::from_secret_key(&secp, &bitcoin_sk_2);
+
+    // Build the channel_announcement body and sign it with all four keys, then
+    // extract just the slot-1 signatures for our announcement_signatures message.
+    let placeholder = Signature::from_compact(&[0u8; 64]).expect("zero bytes parse as a signature");
+    let mut ca = ChannelAnnouncement {
+        node_signature_1: placeholder,
+        node_signature_2: placeholder,
+        bitcoin_signature_1: placeholder,
+        bitcoin_signature_2: placeholder,
+        features,
+        chain_hash,
+        short_channel_id,
+        node_id_1,
+        node_id_2,
+        bitcoin_key_1,
+        bitcoin_key_2,
+        extra: Vec::new(),
+    };
+    ca.sign(&node_sk_1, &node_sk_2, &bitcoin_sk_1, &bitcoin_sk_2);
+
+    AnnouncementSignatures {
+        channel_id,
+        short_channel_id,
+        node_signature: ca.node_signature_1,
+        bitcoin_signature: ca.bitcoin_signature_1,
+    }
 }
 
 /// Builds a signed `NodeAnnouncement` from 4 input variables.
@@ -1462,6 +1527,112 @@ mod tests {
         let expected_node_id =
             PublicKey::from_secret_key(&secp, &SecretKey::from_slice(&sk_bytes).unwrap());
         assert!(cu.verify(&expected_node_id));
+    }
+
+    #[test]
+    fn execute_build_announcement_signatures() {
+        let node_sk_1_bytes = [0x11; 32];
+        let node_sk_2_bytes = [0x22; 32];
+        let bitcoin_sk_1_bytes = [0x33; 32];
+        let bitcoin_sk_2_bytes = [0x44; 32];
+        let channel_id_bytes = [0xbb; 32];
+        let scid = ShortChannelId::new(539_268, 845, 1);
+        let features = vec![0x01, 0x02];
+
+        let instrs = vec![
+            Instruction {
+                operation: Operation::LoadChannelId(channel_id_bytes),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadFeatures(features.clone()),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadChainHashFromContext,
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadShortChannelId(scid.as_u64()),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadPrivateKey(node_sk_1_bytes),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadPrivateKey(node_sk_2_bytes),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadPrivateKey(bitcoin_sk_1_bytes),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadPrivateKey(bitcoin_sk_2_bytes),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::BuildAnnouncementSignatures,
+                inputs: vec![0, 1, 2, 3, 4, 5, 6, 7],
+            },
+            Instruction {
+                operation: Operation::SendMessage,
+                inputs: vec![8],
+            },
+        ];
+
+        let program = Program {
+            instructions: instrs,
+        };
+        let mut executor = Executor::new(
+            MockConnection::new(),
+            MockBitcoinCli::default(),
+            sample_context(),
+        );
+        executor
+            .execute(&program, std::time::Instant::now())
+            .unwrap();
+
+        assert_eq!(executor.conn.sent.len(), 1);
+        let ann_sigs = match Message::decode(&executor.conn.sent[0]).expect("valid message") {
+            Message::AnnouncementSignatures(s) => s,
+            other => panic!(
+                "expected AnnouncementSignatures, got type {}",
+                other.msg_type()
+            ),
+        };
+
+        assert_eq!(ann_sigs.channel_id, ChannelId::new(channel_id_bytes));
+        assert_eq!(ann_sigs.short_channel_id, scid);
+
+        // The two signatures must match what signing the corresponding
+        // channel_announcement body with slot-1 keys produces. We build a
+        // reference ChannelAnnouncement, sign it with all four keys, and
+        // compare its slot-1 signatures against ours.
+        let secp = Secp256k1::new();
+        let node_sk_1 = SecretKey::from_slice(&node_sk_1_bytes).unwrap();
+        let node_sk_2 = SecretKey::from_slice(&node_sk_2_bytes).unwrap();
+        let bitcoin_sk_1 = SecretKey::from_slice(&bitcoin_sk_1_bytes).unwrap();
+        let bitcoin_sk_2 = SecretKey::from_slice(&bitcoin_sk_2_bytes).unwrap();
+        let placeholder = Signature::from_compact(&[0u8; 64]).unwrap();
+        let mut expected_ca = ChannelAnnouncement {
+            node_signature_1: placeholder,
+            node_signature_2: placeholder,
+            bitcoin_signature_1: placeholder,
+            bitcoin_signature_2: placeholder,
+            features,
+            chain_hash: sample_context().chain_hash,
+            short_channel_id: scid,
+            node_id_1: PublicKey::from_secret_key(&secp, &node_sk_1),
+            node_id_2: PublicKey::from_secret_key(&secp, &node_sk_2),
+            bitcoin_key_1: PublicKey::from_secret_key(&secp, &bitcoin_sk_1),
+            bitcoin_key_2: PublicKey::from_secret_key(&secp, &bitcoin_sk_2),
+            extra: Vec::new(),
+        };
+        expected_ca.sign(&node_sk_1, &node_sk_2, &bitcoin_sk_1, &bitcoin_sk_2);
+        assert_eq!(ann_sigs.node_signature, expected_ca.node_signature_1);
+        assert_eq!(ann_sigs.bitcoin_signature, expected_ca.bitcoin_signature_1);
     }
 
     #[test]
