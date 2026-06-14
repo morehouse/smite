@@ -233,7 +233,7 @@ fn spawn_runner(
 
     cmd.arg("--").arg(&config.sharedir);
 
-    // AFL++ needs these env vars to use the smite-ir custom mutator library.
+    // Environment contract defined in smite-ir-mutator/src/lib.rs.
     if config.scenario.starts_with("ir") {
         let mutator_lib = config
             .smite_dir
@@ -457,5 +457,73 @@ sharedir = "/tmp/nyx"
         )
         .unwrap();
         assert!(has_nonzero_execs(&stats));
+    }
+
+    #[test]
+    fn ensure_seed_dir_returns_user_path_when_specified() {
+        let dir = tempfile::tempdir().unwrap();
+        let seed = dir.path().join("my-seeds");
+        fs::create_dir(&seed).unwrap();
+        fs::write(seed.join("input0"), b"\x00").unwrap();
+
+        let config_path = dir.path().join("campaign.toml");
+        fs::write(
+            &config_path,
+            format!(
+                r#"
+target = "lnd"
+scenario = "encrypted_bytes"
+aflpp_path = "{}"
+smite_dir = "{}"
+runners = 1
+seed_dir = "{}"
+output_dir = "{}"
+sharedir = "{}"
+"#,
+                dir.path().display(),
+                dir.path().display(),
+                seed.display(),
+                dir.path().join("out").display(),
+                dir.path().join("nyx").display(),
+            ),
+        )
+        .unwrap();
+        let config = CampaignConfig::load(&config_path).unwrap();
+
+        let result = ensure_seed_dir(&config).unwrap();
+        assert_eq!(result, seed);
+    }
+
+    #[test]
+    fn ensure_seed_dir_creates_minimal_corpus_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let output_dir = dir.path().join("out");
+        fs::create_dir(&output_dir).unwrap();
+
+        let config_path = dir.path().join("campaign.toml");
+        fs::write(
+            &config_path,
+            format!(
+                r#"
+target = "lnd"
+scenario = "encrypted_bytes"
+aflpp_path = "{}"
+smite_dir = "{}"
+runners = 1
+output_dir = "{}"
+sharedir = "{}"
+"#,
+                dir.path().display(),
+                dir.path().display(),
+                output_dir.display(),
+                dir.path().join("nyx").display(),
+            ),
+        )
+        .unwrap();
+        let config = CampaignConfig::load(&config_path).unwrap();
+
+        let result = ensure_seed_dir(&config).unwrap();
+        assert_eq!(result, output_dir.join(".seeds"));
+        assert!(result.join("seed0").exists());
     }
 }
