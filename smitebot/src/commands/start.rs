@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use clap::Args;
 
-use crate::commands::build::run_docker_build;
+use crate::commands::build::{BuildInputs, run_build};
 use crate::config::CampaignConfig;
 use crate::state::{CampaignState, RunnerState, Status};
 
@@ -44,11 +44,20 @@ impl StartCommand {
             }
         };
 
+        let path_errors = config.check_paths();
+        if !path_errors.is_empty() {
+            for err in &path_errors {
+                log::error!("{err}");
+            }
+            return false;
+        }
+
         let image = config.image_tag();
 
         if !args.skip_build {
             log::info!("building Docker image {image}");
-            if !build_image(&config, &image) {
+            let inputs = BuildInputs::from_config(&config, &image);
+            if !run_build(&inputs) {
                 return false;
             }
         }
@@ -60,6 +69,14 @@ impl StartCommand {
             }
         }
 
+        let seed_dir = match ensure_seed_dir(&config) {
+            Ok(dir) => dir,
+            Err(e) => {
+                log::error!("failed to prepare seed directory: {e}");
+                return false;
+            }
+        };
+
         let Some(campaign_id) = generate_campaign_id(&config) else {
             log::error!("failed to generate campaign ID: could not determine current time");
             return false;
@@ -70,42 +87,12 @@ impl StartCommand {
         };
 
         let state_path = runs_dir.join(&campaign_id).join("state.json");
-        let git_hash = smite_git_hash(&config.smite_dir);
-        let image_digest = docker_image_id(&image);
-
-        if git_hash.is_none() {
-            log::warn!("could not determine smite git hash");
-        }
-        if image_digest.is_none() {
-            log::warn!("could not determine Docker image digest for {image}");
-        }
-
-        let mut state = CampaignState {
-            id: campaign_id,
-            status: Status::Starting,
-            target: config.target,
-            scenario: config.scenario.clone(),
-            image: image.clone(),
-            image_digest,
-            output_dir: config.output_dir.clone(),
-            sharedir: config.sharedir.clone(),
-            smite_git_hash: git_hash,
-            start_time: run_date("--iso-8601=seconds").unwrap_or_else(|| "unknown".to_string()),
-            runners: Vec::new(),
-        };
+        let mut state = init_campaign_state(&config, campaign_id, &image);
 
         if let Err(e) = state.save(&state_path) {
             log::error!("{e}");
             return false;
         }
-
-        let seed_dir = match ensure_seed_dir(&config) {
-            Ok(dir) => dir,
-            Err(e) => {
-                log::error!("failed to prepare seed directory: {e}");
-                return false;
-            }
-        };
 
         log::info!("starting {} runners", config.runners);
 
@@ -154,41 +141,6 @@ impl StartCommand {
     }
 }
 
-/// Builds the Docker image for the campaign.
-fn build_image(config: &CampaignConfig, image: &str) -> bool {
-    let dockerfile = config
-        .smite_dir
-        .join("workloads")
-        .join(config.target.to_string())
-        .join("Dockerfile");
-
-    if !dockerfile.exists() {
-        log::error!("Dockerfile not found: {}", dockerfile.display());
-        return false;
-    }
-
-    match run_docker_build(
-        &config.smite_dir,
-        image,
-        &config.scenario,
-        &dockerfile,
-        false,
-    ) {
-        Ok(s) if s.success() => {
-            log::info!("built {image}");
-            true
-        }
-        Ok(s) => {
-            log::error!("docker build failed with {s}");
-            false
-        }
-        Err(e) => {
-            log::error!("failed to run docker build: {e}");
-            false
-        }
-    }
-}
-
 /// Runs `scripts/setup-nyx.sh` to prepare the Nyx sharedir.
 fn setup_nyx(config: &CampaignConfig, image: &str) -> bool {
     let script = config.smite_dir.join("scripts").join("setup-nyx.sh");
@@ -197,26 +149,26 @@ fn setup_nyx(config: &CampaignConfig, image: &str) -> bool {
         return false;
     }
 
-    let status = Command::new(&script)
+    let status = match Command::new(&script)
         .arg(&config.sharedir)
         .arg(image)
         .arg(&config.aflpp_path)
-        .status();
-
-    match status {
-        Ok(s) if s.success() => {
-            log::info!("Nyx sharedir ready at {}", config.sharedir.display());
-            true
-        }
-        Ok(s) => {
-            log::error!("setup-nyx.sh failed with {s}");
-            false
-        }
+        .status()
+    {
+        Ok(status) => status,
         Err(e) => {
             log::error!("failed to run setup-nyx.sh: {e}");
-            false
+            return false;
         }
+    };
+
+    if !status.success() {
+        log::error!("setup-nyx.sh failed with {status}");
+        return false;
     }
+
+    log::info!("Nyx sharedir ready at {}", config.sharedir.display());
+    true
 }
 
 /// Ensures a seed directory exists for AFL++, creating a minimal corpus if needed.
@@ -233,6 +185,33 @@ fn ensure_seed_dir(config: &CampaignConfig) -> std::io::Result<PathBuf> {
         fs::write(seed_dir.join("seed0"), b"\x00")?;
     }
     Ok(seed_dir)
+}
+
+/// Builds the initial campaign state before runners are spawned.
+fn init_campaign_state(config: &CampaignConfig, campaign_id: String, image: &str) -> CampaignState {
+    let git_hash = smite_git_hash(&config.smite_dir);
+    let image_digest = docker_image_id(image);
+
+    if git_hash.is_none() {
+        log::warn!("could not determine smite git hash");
+    }
+    if image_digest.is_none() {
+        log::warn!("could not determine Docker image digest for {image}");
+    }
+
+    CampaignState {
+        id: campaign_id,
+        status: Status::Starting,
+        target: config.target,
+        scenario: config.scenario.clone(),
+        image: image.to_string(),
+        image_digest,
+        output_dir: config.output_dir.clone(),
+        sharedir: config.sharedir.clone(),
+        smite_git_hash: git_hash,
+        start_time: run_date("--iso-8601=seconds").unwrap_or_else(|| "unknown".to_string()),
+        runners: Vec::new(),
+    }
 }
 
 /// Spawns a single `afl-fuzz` process in its own process group and returns its PID.
@@ -284,12 +263,7 @@ fn spawn_runner(
     cmd.process_group(0);
 
     let child = cmd.spawn()?;
-    let pid = child.id();
-
-    // Intentionally drop so afl-fuzz outlives smitebot, managed via PID later.
-    drop(child);
-
-    Ok(pid)
+    Ok(child.id())
 }
 
 /// Returns the AFL++ runner name for the given index.
@@ -300,9 +274,11 @@ fn runner_name(id: u16) -> String {
     id.to_string()
 }
 
-/// Polls for `fuzzer_stats` files to confirm all runners have started.
+/// Polls for `fuzzer_stats` files to confirm all runners have started executing.
 ///
 /// AFL++ creates `<output_dir>/<runner_name>/fuzzer_stats` once fuzzing begins.
+/// We verify `execs_per_sec` is non-zero to confirm actual execution, not just
+/// file creation.
 fn verify_startup(output_dir: &Path, runners: &[RunnerState]) -> bool {
     let timeout = Duration::from_mins(5);
     let poll_interval = Duration::from_secs(5);
@@ -311,7 +287,7 @@ fn verify_startup(output_dir: &Path, runners: &[RunnerState]) -> bool {
     while Instant::now() < deadline {
         let all_started = runners
             .iter()
-            .all(|r| output_dir.join(&r.name).join("fuzzer_stats").exists());
+            .all(|r| has_nonzero_execs(&output_dir.join(&r.name).join("fuzzer_stats")));
 
         if all_started {
             return true;
@@ -322,9 +298,9 @@ fn verify_startup(output_dir: &Path, runners: &[RunnerState]) -> bool {
 
     for runner in runners {
         let stats = output_dir.join(&runner.name).join("fuzzer_stats");
-        if !stats.exists() {
+        if !has_nonzero_execs(&stats) {
             log::error!(
-                "runner {} (pid {}) did not produce fuzzer_stats",
+                "runner {} (pid {}) did not reach non-zero execs_per_sec",
                 runner.name,
                 runner.pid
             );
@@ -332,6 +308,21 @@ fn verify_startup(output_dir: &Path, runners: &[RunnerState]) -> bool {
     }
 
     false
+}
+
+/// Returns true if the `fuzzer_stats` file exists and reports non-zero `execs_per_sec`.
+fn has_nonzero_execs(path: &Path) -> bool {
+    let Ok(contents) = fs::read_to_string(path) else {
+        return false;
+    };
+    contents.lines().any(|line| {
+        line.trim_start().starts_with("execs_per_sec")
+            && line
+                .split(':')
+                .nth(1)
+                .and_then(|v| v.trim().parse::<f64>().ok())
+                .is_some_and(|n| n > 0.0)
+    })
 }
 
 /// Generates a campaign ID from the target, scenario, and current time.
@@ -439,12 +430,43 @@ sharedir = "/tmp/nyx"
             },
         ];
 
+        let stats_content = "start_time        : 1718000000\nexecs_per_sec     : 531.23\n";
         for runner in &runners {
             let runner_dir = dir.path().join(&runner.name);
             fs::create_dir_all(&runner_dir).unwrap();
-            fs::write(runner_dir.join("fuzzer_stats"), "start_time: 0\n").unwrap();
+            fs::write(runner_dir.join("fuzzer_stats"), stats_content).unwrap();
         }
 
         assert!(verify_startup(dir.path(), &runners));
+    }
+
+    #[test]
+    fn has_nonzero_execs_rejects_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let stats = dir.path().join("fuzzer_stats");
+        fs::write(
+            &stats,
+            "start_time        : 1718000000\nexecs_per_sec     : 0.00\n",
+        )
+        .unwrap();
+        assert!(!has_nonzero_execs(&stats));
+    }
+
+    #[test]
+    fn has_nonzero_execs_rejects_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!has_nonzero_execs(&dir.path().join("missing")));
+    }
+
+    #[test]
+    fn has_nonzero_execs_accepts_positive_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let stats = dir.path().join("fuzzer_stats");
+        fs::write(
+            &stats,
+            "start_time        : 1718000000\nexecs_per_sec     : 531.23\n",
+        )
+        .unwrap();
+        assert!(has_nonzero_execs(&stats));
     }
 }
