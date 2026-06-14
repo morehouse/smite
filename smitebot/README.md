@@ -43,14 +43,7 @@ Campaign settings are stored in a TOML file. See [`sample-campaign.toml`](sample
 
 ```bash
 smitebot start campaign.toml
-smitebot start campaign.toml --skip-build
-smitebot start campaign.toml --skip-build --skip-setup
 ```
-
-Flags:
-
-- `--skip-build`: Skip the Docker image build step (use when the image is already built).
-- `--skip-setup`: Skip the Nyx sharedir setup step (use when the sharedir is already prepared).
 
 For IR scenarios (scenario names starting with `ir`), the required AFL++ custom mutator environment variables are injected automatically.
 

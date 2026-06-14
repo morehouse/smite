@@ -25,12 +25,6 @@ pub struct StartCommand;
 pub struct StartArgs {
     /// Path to the campaign configuration TOML file.
     path: PathBuf,
-    /// Skip the Docker image build step.
-    #[arg(long)]
-    skip_build: bool,
-    /// Skip the Nyx sharedir setup step.
-    #[arg(long)]
-    skip_setup: bool,
 }
 
 impl StartCommand {
@@ -54,19 +48,15 @@ impl StartCommand {
 
         let image = config.image_tag();
 
-        if !args.skip_build {
-            log::info!("building Docker image {image}");
-            let inputs = BuildInputs::from_config(&config, &image);
-            if !run_build(&inputs) {
-                return false;
-            }
+        log::info!("building Docker image {image}");
+        let inputs = BuildInputs::from_config(&config, &image);
+        if !run_build(&inputs) {
+            return false;
         }
 
-        if !args.skip_setup {
-            log::info!("setting up Nyx sharedir at {}", config.sharedir.display());
-            if !setup_nyx(&config, &image) {
-                return false;
-            }
+        log::info!("setting up Nyx sharedir at {}", config.sharedir.display());
+        if !setup_nyx(&config, &image) {
+            return false;
         }
 
         let seed_dir = match ensure_seed_dir(&config) {
@@ -253,7 +243,6 @@ fn spawn_runner(
         cmd.env("AFL_CUSTOM_MUTATOR_LIBRARY", &mutator_lib);
         cmd.env("AFL_CUSTOM_MUTATOR_ONLY", "1");
         cmd.env("AFL_FRAMESHIFT_DISABLE", "1");
-        cmd.env("AFL_DISABLE_TRIM", "1");
     }
 
     for (key, val) in &config.afl_env {
