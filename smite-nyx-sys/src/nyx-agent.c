@@ -49,7 +49,9 @@ size_t nyx_init() {
   }
   done = 1;
 
-  NYX_HYPERCALL_ALIGN host_config_t host_config;
+  // Zero-initialize host_config to ensure its memory page is faulted in.
+  // Otherwise the hypercall will fail to populate it.
+  NYX_HYPERCALL_ALIGN host_config_t host_config = {0};
   kAFL_hypercall(HYPERCALL_KAFL_GET_HOST_CONFIG, (uintptr_t)&host_config);
 
   if (host_config.host_magic != NYX_HOST_MAGIC) {
