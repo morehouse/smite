@@ -1995,15 +1995,7 @@ fn instr_delete_redirects_affine_consumer() {
 #[test]
 fn instr_delete_maintains_validity() {
     let original = generate_open_channel_program(0);
-    let mutator = InstructionDeleteMutator;
-    let mut rng = SmallRng::seed_from_u64(0);
-
-    for _ in 0..100 {
-        let mut program = original.clone();
-        if mutator.mutate(&mut program, &mut rng) {
-            assert_well_formed(&program);
-        }
-    }
+    assert_mutator_preserves_well_formedness(&InstructionDeleteMutator, &original);
 }
 
 // -- InstructionReorderMutator tests --
