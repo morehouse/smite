@@ -5,7 +5,7 @@
 
 use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
-use bitcoin::{OutPoint, ScriptBuf};
+use bitcoin::{OutPoint, ScriptBuf, Txid};
 use smite::bitcoin::{BitcoinCli, Utxo};
 use smite::bolt::{
     AcceptChannel, AnnouncementSignatures, ChannelAnnouncement, ChannelId, ChannelReady,
@@ -21,6 +21,11 @@ use smite_ir::operation::AcceptChannelField;
 use smite_ir::{Operation, Program, Variable};
 use std::collections::HashMap;
 
+/// Default maximum `minimum_depth` that Lightning implementations advertise in
+/// `accept_channel`. Once the funding transaction reaches this many
+/// confirmations the target is guaranteed to have sent its `channel_ready`.
+const MAX_MINIMUM_DEPTH: u32 = 8;
+
 /// Abstraction over bitcoin-cli operations, allowing mock implementations in tests.
 pub trait BitcoinRpc {
     /// Mines the given number of blocks.
@@ -34,6 +39,10 @@ pub trait BitcoinRpc {
 
     /// Signs and broadcasts a transaction
     fn sign_and_broadcast_tx(&mut self, tx: &bitcoin::Transaction);
+
+    /// Returns the number of confirmations for the transaction with the given
+    /// txid, or `0` if it is unconfirmed or unknown to the node.
+    fn get_transaction_confirmations(&mut self, txid: Txid) -> u32;
 }
 
 impl BitcoinRpc for BitcoinCli {
@@ -51,6 +60,10 @@ impl BitcoinRpc for BitcoinCli {
 
     fn sign_and_broadcast_tx(&mut self, tx: &bitcoin::Transaction) {
         BitcoinCli::sign_and_broadcast_tx(self, tx);
+    }
+
+    fn get_transaction_confirmations(&mut self, txid: Txid) -> u32 {
+        BitcoinCli::get_transaction_confirmations(self, txid)
     }
 }
 
@@ -361,6 +374,15 @@ impl<C: Connection, B: BitcoinRpc> Executor<C, B> {
                     log::debug!("[{:?}] RecvFundingSigned: received", start.elapsed());
                     verify_funding_signed(&fs, &self.channel_states)?;
                     Some(Variable::ChannelId(fs.channel_id))
+                }
+
+                Operation::RecvChannelReady => {
+                    if is_channel_ready_expected(&self.channel_states, &mut self.bitcoin_cli) {
+                        log::debug!("[{:?}] RecvChannelReady: waiting", start.elapsed());
+                        recv_channel_ready(&mut self.conn, &mut self.channel_states)?;
+                        log::debug!("[{:?}] RecvChannelReady: received", start.elapsed());
+                    }
+                    None
                 }
 
                 Operation::MineBlocks(v) => {
@@ -994,6 +1016,55 @@ fn recv_funding_signed(conn: &mut impl Connection) -> Result<FundingSigned, Exec
     }
 }
 
+/// Receives and decodes a `channel_ready` message.
+///
+/// The `second_per_commitment_point` is recorded as the counterparty's next
+/// per-commitment point on the channel it identifies.
+///
+/// # Errors
+///
+/// Returns [`ExecuteError::UnexpectedMessage`] if the received message is not a
+/// `channel_ready`, or [`ExecuteError::UnknownChannel`] if no channel state
+/// exists for the message's `channel_id`.
+fn recv_channel_ready(
+    conn: &mut impl Connection,
+    channel_states: &mut HashMap<ChannelId, ChannelState>,
+) -> Result<(), ExecuteError> {
+    let cr = match recv_non_ping(conn)? {
+        Message::ChannelReady(cr) => cr,
+        other => {
+            return Err(ExecuteError::UnexpectedMessage {
+                expected: msg_type::CHANNEL_READY,
+                got: other.msg_type(),
+            });
+        }
+    };
+
+    let state = channel_states
+        .get_mut(&cr.channel_id)
+        .ok_or(ExecuteError::UnknownChannel(cr.channel_id))?;
+    *state.next_counterparty_per_commitment_point_mut() = Some(cr.second_per_commitment_point);
+
+    Ok(())
+}
+
+/// Returns `true` if the target owes us a `channel_ready` message.
+///
+/// A `channel_ready` is expected when a tracked channel is still at commitment
+/// number 0, the counterparty's next per-commitment point is unknown, and the
+/// funding transaction has at least [`MAX_MINIMUM_DEPTH`] confirmations.
+fn is_channel_ready_expected(
+    channel_states: &HashMap<ChannelId, ChannelState>,
+    bitcoin_cli: &mut impl BitcoinRpc,
+) -> bool {
+    channel_states.values().any(|state| {
+        state.commitment.commitment_number == 0
+            && state.next_counterparty_per_commitment_point().is_none()
+            && bitcoin_cli.get_transaction_confirmations(state.config.funding_outpoint.txid)
+                >= MAX_MINIMUM_DEPTH
+    })
+}
+
 /// Verifies the counterparty's signature from a `funding_signed` message using
 /// the channel state associated with the message's `channel_id`.
 ///
@@ -1117,11 +1188,13 @@ mod tests {
         broadcast_calls: Vec<Transaction>,
         utxos: Vec<Utxo>,
         change_spk: ScriptBuf,
+        confirmations: u32,
     }
 
     impl BitcoinRpc for MockBitcoinCli {
         fn mine_blocks(&mut self, num_blocks: u8) {
             self.mine_blocks_calls.push(num_blocks);
+            self.confirmations += u32::from(num_blocks);
         }
 
         fn get_utxos(&mut self) -> Vec<Utxo> {
@@ -1134,6 +1207,10 @@ mod tests {
 
         fn sign_and_broadcast_tx(&mut self, tx: &bitcoin::Transaction) {
             self.broadcast_calls.push(tx.clone());
+        }
+
+        fn get_transaction_confirmations(&mut self, _txid: Txid) -> u32 {
+            self.confirmations
         }
     }
 
@@ -2693,6 +2770,119 @@ mod tests {
             *state.next_holder_per_commitment_point(),
             Some(expected_pcp1)
         );
+    }
+
+    fn recv_channel_ready_executor() -> (
+        Executor<MockConnection, MockBitcoinCli>,
+        ChannelId,
+        PublicKey,
+    ) {
+        let channel_id = ChannelId::v1_from_funding_outpoint(OutPoint {
+            txid: "09b0549b35f14ee862f63bd75811c6c27963c4dea6766ec6836952ec78df1e7e"
+                .parse()
+                .unwrap(),
+            vout: 0,
+        });
+        let mock_cli = MockBitcoinCli {
+            utxos: vec![sample_utxo()],
+            change_spk: sample_change_spk(),
+            ..Default::default()
+        };
+
+        // We also need to send this `funding_signed`, since the instructions reused
+        // by this test expect one to be present in the executor's receive queue.
+        // The expected signature here was computed using LDK as the source of
+        // truth.
+        let fs_bytes = Message::FundingSigned(FundingSigned {
+            channel_id,
+            signature: "304402203dbf3dbf337b042a72576488c1fb019086089d8d790a47f652346cff2511b6e70220395fdf700cb82b0abfcfe8e0b7c822181f2ee72409c82c3ff8e04e36593662c7".parse().unwrap(),
+        })
+        .encode();
+
+        let target_pcp = sample_pubkey(1);
+        let cr_bytes = Message::ChannelReady(ChannelReady {
+            channel_id,
+            second_per_commitment_point: target_pcp,
+            tlvs: ChannelReadyTlvs::default(),
+        })
+        .encode();
+
+        let mut executor = Executor::new(MockConnection::new(), mock_cli, sample_context());
+        executor.conn.queue_recv(fs_bytes);
+        executor.conn.queue_recv(cr_bytes);
+
+        (executor, channel_id, target_pcp)
+    }
+
+    #[test]
+    fn execute_recv_channel_ready_below_eight_confirmations_is_noop() {
+        let (mut executor, channel_id, _) = recv_channel_ready_executor();
+
+        let mut instrs = send_funding_created_and_recv_funding_signed_instructions();
+        instrs.extend([
+            Instruction {
+                operation: Operation::MineBlocks(6),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::RecvChannelReady,
+                inputs: vec![],
+            },
+        ]);
+
+        // With fewer than 8 confirmations the target does not yet owe us a
+        // `channel_ready`, so `RecvChannelReady` must be a no-op.
+        executor
+            .execute(
+                &Program {
+                    instructions: instrs,
+                },
+                std::time::Instant::now(),
+            )
+            .unwrap();
+
+        // The target's next per-commitment point is still unknown and the queued
+        // `channel_ready` remains untouched.
+        let state = executor.channel_states.get_mut(&channel_id).unwrap();
+        assert!(state.next_counterparty_per_commitment_point().is_none());
+        assert_eq!(executor.conn.recv_queue.len(), 1);
+    }
+
+    #[test]
+    fn execute_recv_channel_ready_at_eight_confirmations_records_point() {
+        let (mut executor, channel_id, target_pcp) = recv_channel_ready_executor();
+
+        let mut instrs = send_funding_created_and_recv_funding_signed_instructions();
+        instrs.extend([
+            Instruction {
+                operation: Operation::MineBlocks(8),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::RecvChannelReady,
+                inputs: vec![],
+            },
+        ]);
+
+        // At 8 confirmations the target owes us a `channel_ready`, which
+        // `RecvChannelReady` receives and records.
+        executor
+            .execute(
+                &Program {
+                    instructions: instrs,
+                },
+                std::time::Instant::now(),
+            )
+            .unwrap();
+
+        // The `channel_ready` was consumed and the target's next per-commitment
+        // point is now recorded.
+        let state = executor.channel_states.get_mut(&channel_id).unwrap();
+        assert_eq!(
+            *state.next_counterparty_per_commitment_point(),
+            Some(target_pcp)
+        );
+        assert!(executor.conn.recv_queue.is_empty());
     }
 
     // -- extract_field tests --
