@@ -428,7 +428,7 @@ impl ChannelConfig {
             let revocationpubkey =
                 derive_revocation_pubkey(&remote.revocation_basepoint, &local_per_commitment_point);
 
-            let to_local_spk = build_to_local_scriptpubkey(
+            let to_local_spk = build_revocable_scriptpubkey(
                 &local_delayedpubkey,
                 &revocationpubkey,
                 remote.to_self_delay,
@@ -580,6 +580,19 @@ fn derive_pubkey(basepoint: &PublicKey, per_commitment_point: &PublicKey) -> Pub
         .expect("point addition of two valid pubkeys cannot produce infinity")
 }
 
+/// Derives a private key from a basepoint secret and a per-commitment point per
+/// BOLT 3.
+#[allow(dead_code)]
+fn derive_privkey(basepoint_secret: &SecretKey, per_commitment_point: &PublicKey) -> SecretKey {
+    let secp = Secp256k1::new();
+    let basepoint = basepoint_secret.public_key(&secp);
+    let tweak = hash_pubkeys(per_commitment_point, &basepoint);
+    let scalar = Scalar::from_be_bytes(tweak).expect("SHA256 output is a valid scalar");
+    basepoint_secret
+        .add_tweak(&scalar)
+        .expect("derived HTLC privkey tweak must be valid")
+}
+
 /// Derives the `revocationpubkey` per BOLT 3.
 fn derive_revocation_pubkey(
     revocation_basepoint: &PublicKey,
@@ -611,8 +624,9 @@ fn derive_revocation_pubkey(
         .expect("point addition of two valid pubkeys cannot produce infinity")
 }
 
-/// Builds the `to_local` P2WSH `script_pubkey` per BOLT 3.
-fn build_to_local_scriptpubkey(
+/// Builds the revocable P2WSH `script_pubkey` per BOLT 3.
+/// Used by the `to_local` commitment output and by 2nd-stage HTLC outputs.
+fn build_revocable_scriptpubkey(
     local_delayedpubkey: &PublicKey,
     revocationpubkey: &PublicKey,
     to_self_delay: u16,
