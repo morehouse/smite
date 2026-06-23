@@ -26,6 +26,15 @@ const COMMITMENT_TX_BASE_WEIGHT_NON_ANCHOR: u64 = 724;
 /// Weight of an anchor commitment transaction without HTLCs.
 const COMMITMENT_TX_BASE_WEIGHT_ANCHOR: u64 = 1124;
 
+/// Additional commitment weight per non-trimmed HTLC output.
+const COMMITMENT_TX_WEIGHT_PER_HTLC: u64 = 172;
+
+/// Weight of an HTLC-timeout transaction on a non-anchor channel.
+const HTLC_TIMEOUT_TX_WEIGHT_NON_ANCHOR: u64 = 663;
+
+/// Weight of an HTLC-success transaction on a non-anchor channel.
+const HTLC_SUCCESS_TX_WEIGHT_NON_ANCHOR: u64 = 703;
+
 /// `option_anchors` feature bits (BOLT 9, bits 22/23).
 const OPTION_ANCHORS_FEATURE_BITS: &[usize] = &[22, 23];
 
@@ -276,7 +285,7 @@ impl ChannelConfig {
     /// feerate, after accounting for the anchor outputs.
     #[must_use]
     pub fn can_opener_afford_feerate(&self, state: &CommitmentState) -> bool {
-        let fee = commit_tx_fee_sat(state.feerate_per_kw, &self.channel_type);
+        let fee = commit_tx_fee_sat(state.feerate_per_kw, 0, &self.channel_type);
         let anchor_cost = total_anchors_sat(&self.channel_type);
 
         (state.opener.balance_msat / 1000)
@@ -392,7 +401,7 @@ impl ChannelConfig {
         let anchor = supports_option_anchors(&self.channel_type);
 
         // Fee and balances.
-        let fee = commit_tx_fee_sat(state.feerate_per_kw, &self.channel_type);
+        let fee = commit_tx_fee_sat(state.feerate_per_kw, 0, &self.channel_type);
         let anchor_cost = total_anchors_sat(&self.channel_type);
 
         let acceptor_balance = state.acceptor.balance_msat / 1000;
@@ -477,14 +486,18 @@ impl CommitmentState {
     // commitment state based on the previous state and the HTLCs claimed by both sides.
 }
 
-/// Get the fee cost of a commitment tx in satoshis.
-fn commit_tx_fee_sat(feerate_per_kw: u32, channel_type: &[u8]) -> u64 {
-    let commitment_weight = if supports_option_anchors(channel_type) {
+/// Get the fee cost of a commitment tx with a given number of HTLC outputs in
+/// satoshis.
+/// Note that `num_htlcs` should not include dust HTLCs.
+fn commit_tx_fee_sat(feerate_per_kw: u32, num_htlcs: usize, channel_type: &[u8]) -> u64 {
+    let commitment_base_weight = if supports_option_anchors(channel_type) {
         COMMITMENT_TX_BASE_WEIGHT_ANCHOR
     } else {
         COMMITMENT_TX_BASE_WEIGHT_NON_ANCHOR
     };
 
+    let commitment_weight =
+        commitment_base_weight + (num_htlcs as u64) * COMMITMENT_TX_WEIGHT_PER_HTLC;
     u64::from(feerate_per_kw) * commitment_weight / 1000
 }
 
@@ -494,6 +507,21 @@ fn total_anchors_sat(channel_type: &[u8]) -> u64 {
         ANCHOR_OUTPUT_VALUE * 2
     } else {
         0
+    }
+}
+
+/// Get the fee cost of a second-stage HTLC transaction in satoshis.
+/// `is_offered` selects between the HTLC-timeout and HTLC-success weights.
+#[allow(dead_code)]
+fn htlc_tx_fee_sat(channel_type: &[u8], feerate_per_kw: u32, is_offered: bool) -> u64 {
+    if supports_option_anchors(channel_type) {
+        return 0;
+    }
+
+    if is_offered {
+        u64::from(feerate_per_kw) * HTLC_TIMEOUT_TX_WEIGHT_NON_ANCHOR / 1000
+    } else {
+        u64::from(feerate_per_kw) * HTLC_SUCCESS_TX_WEIGHT_NON_ANCHOR / 1000
     }
 }
 
