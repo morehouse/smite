@@ -1,8 +1,17 @@
-//! Small filesystem helpers shared across smitebot commands.
+//! Small helpers shared across smitebot commands.
 
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Returns the current Unix timestamp in seconds.
+pub fn epoch_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is before Unix epoch")
+        .as_secs()
+}
 
 /// Returns true if `path` exists and has at least one executable bit set.
 pub fn is_executable(path: &Path) -> bool {

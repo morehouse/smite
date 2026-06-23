@@ -6,7 +6,7 @@ use std::process::{Command, ExitStatus};
 
 use clap::Args;
 
-use crate::config::Target;
+use crate::config::{CampaignConfig, Target};
 
 /// Command handler for `smitebot build`.
 pub struct BuildCommand;
@@ -36,20 +36,35 @@ pub struct BuildArgs {
 
 /// Fully resolved Docker build inputs.
 #[derive(Debug, PartialEq, Eq)]
-struct BuildInputs {
+pub struct BuildInputs {
     /// Docker image tag to produce.
-    image: String,
+    pub image: String,
     /// Workload Dockerfile selected from `--target` and `--coverage`.
-    dockerfile: PathBuf,
+    pub dockerfile: PathBuf,
     /// Smite repository root used as the Docker build context.
-    smite_dir: PathBuf,
+    pub smite_dir: PathBuf,
     /// Scenario passed to Docker as `--build-arg SCENARIO=...`.
-    scenario: String,
+    pub scenario: String,
     /// Whether Docker should rebuild without using its layer cache.
-    no_cache: bool,
+    pub no_cache: bool,
 }
 
 impl BuildInputs {
+    /// Resolves Docker build inputs from a campaign configuration.
+    pub fn from_config(config: &CampaignConfig, image: &str) -> Self {
+        Self {
+            image: image.to_string(),
+            dockerfile: config
+                .smite_dir
+                .join("workloads")
+                .join(config.target.to_string())
+                .join("Dockerfile"),
+            smite_dir: config.smite_dir.clone(),
+            scenario: config.scenario.clone(),
+            no_cache: false,
+        }
+    }
+
     /// Resolves Docker build inputs from parsed CLI arguments.
     fn from_args(args: &BuildArgs) -> Self {
         let dockerfile_name = if args.coverage {
@@ -78,33 +93,39 @@ impl BuildCommand {
     /// Builds the requested Smite Docker image and returns whether Docker succeeded.
     pub fn execute(args: &BuildArgs) -> bool {
         let inputs = BuildInputs::from_args(args);
-        if !inputs.dockerfile.exists() {
-            log::error!("Dockerfile not found: {}", inputs.dockerfile.display());
-            return false;
-        }
-
         log::info!(
             "building {} with {}",
             inputs.image,
             inputs.dockerfile.display()
         );
+        run_build(&inputs)
+    }
+}
 
-        let status = match run_docker_build(&inputs) {
-            Ok(status) => status,
-            Err(e) => {
-                log::error!("failed to run docker build: {e}");
-                return false;
-            }
-        };
+/// Checks that the Dockerfile exists, runs `docker build`, and reports success.
+///
+/// Shared by `smitebot build` and `smitebot start`.
+pub fn run_build(inputs: &BuildInputs) -> bool {
+    if !inputs.dockerfile.exists() {
+        log::error!("Dockerfile not found: {}", inputs.dockerfile.display());
+        return false;
+    }
 
-        if !status.success() {
-            log::error!("docker build failed with {status}");
+    let status = match run_docker_build(inputs) {
+        Ok(status) => status,
+        Err(e) => {
+            log::error!("failed to run docker build: {e}");
             return false;
         }
+    };
 
-        log::info!("built {}", inputs.image);
-        true
+    if !status.success() {
+        log::error!("docker build failed with {status}");
+        return false;
     }
+
+    log::info!("built {}", inputs.image);
+    true
 }
 
 /// Returns the default image tag used by Smite's manual Docker build flow.

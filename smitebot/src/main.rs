@@ -2,13 +2,17 @@
 
 mod commands;
 mod config;
+mod state;
 mod utils;
 
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-use commands::{BuildArgs, BuildCommand, ConfigArgs, ConfigCommand, DoctorArgs, DoctorCommand};
+use commands::{
+    BuildArgs, BuildCommand, ConfigArgs, ConfigCommand, DoctorArgs, DoctorCommand, StartArgs,
+    StartCommand,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "smitebot", version, about = "Smite campaign manager")]
@@ -25,6 +29,8 @@ enum Commands {
     Config(ConfigArgs),
     /// Validate host prerequisites for running Smite campaigns.
     Doctor(DoctorArgs),
+    /// Launch a fuzzing campaign.
+    Start(StartArgs),
 }
 
 fn main() -> ExitCode {
@@ -35,6 +41,7 @@ fn main() -> ExitCode {
         Commands::Build(args) => BuildCommand::execute(&args),
         Commands::Config(args) => ConfigCommand::execute(&args),
         Commands::Doctor(args) => DoctorCommand::execute(&args),
+        Commands::Start(args) => StartCommand::execute(&args),
     };
 
     if success {

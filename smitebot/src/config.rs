@@ -6,7 +6,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use clap::ValueEnum;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+use crate::utils;
 
 /// A parsed and validated smitebot campaign configuration.
 #[derive(Debug, Deserialize)]
@@ -39,7 +41,7 @@ pub struct CampaignConfig {
 }
 
 /// Lightning Network implementation to target.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, ValueEnum)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum Target {
     /// Lightning Network Daemon.
@@ -98,12 +100,28 @@ impl CampaignConfig {
         Ok(config)
     }
 
+    /// Returns a unique campaign ID from the target, scenario, and current time.
+    #[must_use]
+    pub fn campaign_id(&self) -> String {
+        let epoch_secs = utils::epoch_secs();
+        format!("{}-{}-{epoch_secs}", self.target, self.scenario)
+    }
+
     /// Returns the Docker image tag, using the Smite convention as the default.
     #[must_use]
     pub fn image_tag(&self) -> String {
         self.image
             .clone()
             .unwrap_or_else(|| format!("smite-{}-{}", self.target, self.scenario))
+    }
+
+    /// Returns the path to the smite-ir custom mutator shared library.
+    #[must_use]
+    pub fn ir_mutator_path(&self) -> PathBuf {
+        self.smite_dir
+            .join("target")
+            .join("release")
+            .join("libsmite_ir_mutator.so")
     }
 
     /// Checks that referenced filesystem paths exist and are usable.
@@ -236,6 +254,20 @@ sharedir = "/tmp/smite-nyx"
     fn load_reports_missing_file() {
         let err = CampaignConfig::load(Path::new("/no/such/config.toml")).unwrap_err();
         assert!(matches!(err, ConfigError::Read { .. }));
+    }
+
+    #[test]
+    fn campaign_id_contains_target_and_scenario() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_config(dir.path(), VALID_CONFIG);
+        let config = CampaignConfig::load(&path).unwrap();
+
+        let id = config.campaign_id();
+
+        assert!(
+            id.starts_with("lnd-encrypted_bytes-"),
+            "id should start with target-scenario: {id}"
+        );
     }
 
     #[test]

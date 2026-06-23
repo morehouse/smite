@@ -37,6 +37,18 @@ Campaign settings are stored in a TOML file. See [`sample-campaign.toml`](sample
 
 ## Commands
 
+### smitebot start
+
+`smitebot start` launches a fuzzing campaign in the background. It builds the Docker image, sets up the Nyx sharedir, and spawns parallel AFL++ instances.
+
+```bash
+smitebot start campaign.toml
+```
+
+For IR scenarios (scenario names starting with `ir`), the required AFL++ custom mutator environment variables are injected automatically.
+
+Campaign state is saved to `~/.smitebot/runs/<campaign-id>/state.json` for use by future `stop` and `status` commands.
+
 ### smitebot config
 
 `smitebot config` validates a campaign configuration file, reports the resolved settings, and checks that referenced paths exist on disk.
