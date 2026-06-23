@@ -3,6 +3,7 @@
 use super::funding::build_funding_witness_script;
 
 use bitcoin::absolute::LockTime;
+use bitcoin::hashes::ripemd160::Hash as Ripemd160;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::opcodes::all as opcodes;
@@ -12,7 +13,8 @@ use bitcoin::secp256k1::{Message, PublicKey, Scalar, Secp256k1, SecretKey};
 use bitcoin::sighash::{EcdsaSighashType, SighashCache};
 use bitcoin::transaction::Version;
 use bitcoin::{
-    Amount, CompressedPublicKey, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness,
+    Amount, CompressedPublicKey, OutPoint, PubkeyHash, ScriptBuf, Sequence, Transaction, TxIn,
+    TxOut, Witness,
 };
 
 /// Anchor output value in satoshis.
@@ -631,6 +633,77 @@ fn build_anchor_scriptpubkey(funding_pubkey: &PublicKey) -> ScriptBuf {
         .push_opcode(opcodes::OP_ENDIF)
         .into_script()
         .to_p2wsh()
+}
+
+/// Builds the HTLC output witness script per BOLT 3.
+///
+/// `is_offered` selects between the offered and received HTLC scripts.
+#[allow(dead_code)]
+fn build_htlc_witness_script(
+    payment_hash: &[u8; 32],
+    revocationpubkey: &PublicKey,
+    remote_htlcpubkey: &PublicKey,
+    local_htlcpubkey: &PublicKey,
+    cltv_expiry: u32,
+    is_offered: bool,
+    anchor: bool,
+) -> ScriptBuf {
+    let payment_hash160 = Ripemd160::hash(payment_hash).to_byte_array();
+
+    let mut bldr = Builder::new()
+        .push_opcode(opcodes::OP_DUP)
+        .push_opcode(opcodes::OP_HASH160)
+        .push_slice(PubkeyHash::hash(&revocationpubkey.serialize()))
+        .push_opcode(opcodes::OP_EQUAL)
+        .push_opcode(opcodes::OP_IF)
+        .push_opcode(opcodes::OP_CHECKSIG)
+        .push_opcode(opcodes::OP_ELSE)
+        .push_slice(remote_htlcpubkey.serialize())
+        .push_opcode(opcodes::OP_SWAP)
+        .push_opcode(opcodes::OP_SIZE)
+        .push_int(32)
+        .push_opcode(opcodes::OP_EQUAL);
+
+    bldr = if is_offered {
+        bldr.push_opcode(opcodes::OP_NOTIF)
+            .push_opcode(opcodes::OP_DROP)
+            .push_int(2)
+            .push_opcode(opcodes::OP_SWAP)
+            .push_slice(local_htlcpubkey.serialize())
+            .push_int(2)
+            .push_opcode(opcodes::OP_CHECKMULTISIG)
+            .push_opcode(opcodes::OP_ELSE)
+            .push_opcode(opcodes::OP_HASH160)
+            .push_slice(payment_hash160)
+            .push_opcode(opcodes::OP_EQUALVERIFY)
+            .push_opcode(opcodes::OP_CHECKSIG)
+            .push_opcode(opcodes::OP_ENDIF)
+    } else {
+        bldr.push_opcode(opcodes::OP_IF)
+            .push_opcode(opcodes::OP_HASH160)
+            .push_slice(payment_hash160)
+            .push_opcode(opcodes::OP_EQUALVERIFY)
+            .push_int(2)
+            .push_opcode(opcodes::OP_SWAP)
+            .push_slice(local_htlcpubkey.serialize())
+            .push_int(2)
+            .push_opcode(opcodes::OP_CHECKMULTISIG)
+            .push_opcode(opcodes::OP_ELSE)
+            .push_opcode(opcodes::OP_DROP)
+            .push_int(i64::from(cltv_expiry))
+            .push_opcode(opcodes::OP_CLTV)
+            .push_opcode(opcodes::OP_DROP)
+            .push_opcode(opcodes::OP_CHECKSIG)
+            .push_opcode(opcodes::OP_ENDIF)
+    };
+
+    if anchor {
+        bldr = bldr
+            .push_opcode(opcodes::OP_PUSHNUM_1)
+            .push_opcode(opcodes::OP_CSV)
+            .push_opcode(opcodes::OP_DROP);
+    }
+    bldr.push_opcode(opcodes::OP_ENDIF).into_script()
 }
 
 /// Signs a sighash with the given private key.
