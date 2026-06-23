@@ -300,12 +300,8 @@ impl ChannelConfig {
         signature: &Signature,
     ) -> bool {
         let sighash = self.build_commitment_sighash(state, &holder.side);
-        let secp = Secp256k1::new();
-        let msg = Message::from_digest(sighash);
         let counterparty = self.party(holder.counterparty_side());
-
-        secp.verify_ecdsa(&msg, signature, &counterparty.funding_pubkey)
-            .is_ok()
+        verify(&sighash, signature, &counterparty.funding_pubkey)
     }
 
     /// Builds the signature for the holder's commitment transaction.
@@ -633,11 +629,18 @@ fn build_anchor_scriptpubkey(funding_pubkey: &PublicKey) -> ScriptBuf {
         .to_p2wsh()
 }
 
-/// Signs a commitment sighash with the given funding private key.
-fn sign(sighash: &[u8; 32], funding_privkey: &SecretKey) -> Signature {
+/// Signs a sighash with the given private key.
+fn sign(sighash: &[u8; 32], privkey: &SecretKey) -> Signature {
     let secp = Secp256k1::new();
     let msg = Message::from_digest(*sighash);
-    secp.sign_ecdsa(&msg, funding_privkey)
+    secp.sign_ecdsa(&msg, privkey)
+}
+
+/// Verifies that `sig` is a valid signature for `sighash` under `pubkey`.
+fn verify(sighash: &[u8; 32], sig: &Signature, pubkey: &PublicKey) -> bool {
+    let secp = Secp256k1::new();
+    let msg = Message::from_digest(*sighash);
+    secp.verify_ecdsa(&msg, sig, pubkey).is_ok()
 }
 
 #[cfg(test)]
