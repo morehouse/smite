@@ -51,6 +51,8 @@ pub struct HolderIdentity {
     pub side: Side,
     /// Holder's funding private key.
     pub funding_privkey: SecretKey,
+    /// Holder's HTLC basepoint private key.
+    pub htlc_basepoint_privkey: SecretKey,
 }
 
 /// Static public keys and channel parameters for one side of a channel (opener or acceptor).
@@ -63,6 +65,8 @@ pub struct ChannelPartyConfig {
     pub revocation_basepoint: PublicKey,
     /// Delayed payment basepoint used to derive the time-locked `to_local` output key.
     pub delayed_payment_basepoint: PublicKey,
+    /// HTLC basepoint used to derive HTLC keys.
+    pub htlc_basepoint: PublicKey,
     /// Minimum output value below which outputs are trimmed as dust.
     pub dust_limit_satoshis: u64,
     /// CSV delay this party imposes on the other's `to_local` output.
@@ -728,6 +732,9 @@ mod tests {
                 delayed_payment_basepoint: pubkey(
                     "023c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
                 ),
+                htlc_basepoint: pubkey(
+                    "034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+                ),
                 dust_limit_satoshis,
                 to_self_delay: 144,
             },
@@ -743,6 +750,9 @@ mod tests {
                 ),
                 delayed_payment_basepoint: pubkey(
                     "02a1633caf7bf0b7d9e5c4b8a1d6f2e3c4b5a6978877665544332211ffeeddccbb",
+                ),
+                htlc_basepoint: pubkey(
+                    "032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991",
                 ),
                 dust_limit_satoshis,
                 to_self_delay: 144,
@@ -770,11 +780,17 @@ mod tests {
         let opener_holder = HolderIdentity {
             side: Side::Opener,
             funding_privkey: secret(OPENER_FUNDING_PRIVKEY),
+            htlc_basepoint_privkey: secret(
+                "1111111111111111111111111111111111111111111111111111111111111111",
+            ),
         };
 
         let acceptor_holder = HolderIdentity {
             side: Side::Acceptor,
             funding_privkey: secret(ACCEPTOR_FUNDING_PRIVKEY),
+            htlc_basepoint_privkey: secret(
+                "4444444444444444444444444444444444444444444444444444444444444444",
+            ),
         };
 
         (chan_config, state, opener_holder, acceptor_holder)
@@ -1330,6 +1346,7 @@ mod tests {
             payment_basepoint: sample_key,
             revocation_basepoint: sample_key,
             delayed_payment_basepoint: sample_key,
+            htlc_basepoint: sample_key,
             dust_limit_satoshis: 546,
             to_self_delay: 144,
         };
