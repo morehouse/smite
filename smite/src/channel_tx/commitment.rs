@@ -311,10 +311,22 @@ impl ChannelConfig {
     }
 
     /// Checks whether the opener can afford the commitment fee at the given
-    /// feerate, after accounting for the anchor outputs.
+    /// feerate, after accounting for the non-dust HTLCs and the anchor outputs.
     #[must_use]
-    pub fn can_opener_afford_feerate(&self, state: &CommitmentState) -> bool {
-        let fee = commit_tx_fee_sat(state.feerate_per_kw, 0, &self.channel_type);
+    pub fn can_opener_afford_feerate(&self, state: &CommitmentState, local_side: Side) -> bool {
+        let nondust_htlc_count = state
+            .htlcs
+            .iter()
+            .filter(|htlc| {
+                !htlc.is_dust(
+                    self.party(local_side).dust_limit_satoshis,
+                    state.feerate_per_kw,
+                    &self.channel_type,
+                    local_side,
+                )
+            })
+            .count();
+        let fee = commit_tx_fee_sat(state.feerate_per_kw, nondust_htlc_count, &self.channel_type);
         let anchor_cost = total_anchors_sat(&self.channel_type);
 
         (state.opener.balance_msat / 1000)
@@ -595,6 +607,21 @@ impl Htlc {
     #[allow(dead_code)]
     fn is_offered(&self, local_side: Side) -> bool {
         self.offerer == local_side
+    }
+
+    /// Returns whether this HTLC would be trimmed from the commitment
+    /// transaction due to dust limits.
+    #[allow(dead_code)]
+    fn is_dust(
+        &self,
+        dust_limit_satoshis: u64,
+        feerate_per_kw: u32,
+        channel_type: &[u8],
+        local_side: Side,
+    ) -> bool {
+        let stage_fee = htlc_tx_fee_sat(channel_type, feerate_per_kw, self.is_offered(local_side));
+        let amount_sat = self.amount_msat / 1000;
+        amount_sat < dust_limit_satoshis.saturating_add(stage_fee)
     }
 
     /// Converts the HTLC amount from millisatoshis to satoshis.
@@ -1630,27 +1657,117 @@ mod tests {
         let state = chan_config
             .new_initial_commitment(0, feerate_per_kw, sample_key, sample_key)
             .expect("valid commitment");
-        assert!(chan_config.can_opener_afford_feerate(&state));
+        assert!(chan_config.can_opener_afford_feerate(&state, Side::Opener));
 
         // Exact zero opener balance
         let chan_config = sample_chan_config(11_860, vec![]);
         let state = chan_config
             .new_initial_commitment(1_000_000, feerate_per_kw, sample_key, sample_key)
             .expect("valid commitment");
-        assert!(chan_config.can_opener_afford_feerate(&state));
+        assert!(chan_config.can_opener_afford_feerate(&state, Side::Opener));
 
         // Push fits but fee does not
         let chan_config = sample_chan_config(10_000, vec![]);
         let state = chan_config
             .new_initial_commitment(0, feerate_per_kw, sample_key, sample_key)
             .expect("valid commitment");
-        assert!(!chan_config.can_opener_afford_feerate(&state));
+        assert!(!chan_config.can_opener_afford_feerate(&state, Side::Opener));
 
         // Push + fee fit but anchor cost does not
         let chan_config = sample_chan_config(17_500, vec![0x40, 0x00, 0x00]);
         let state = chan_config
             .new_initial_commitment(0, feerate_per_kw, sample_key, sample_key)
             .expect("valid commitment");
-        assert!(!chan_config.can_opener_afford_feerate(&state));
+        assert!(!chan_config.can_opener_afford_feerate(&state, Side::Opener));
+    }
+
+    #[test]
+    fn can_opener_afford_feerate_with_htlc_checks() {
+        let feerate_per_kw: u32 = 15_000;
+        let sample_key =
+            pubkey("03b28f7c5a9d1e4f8c6a7b2d3e9f1048576a1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e");
+        let htlc = |id: u64, offerer: Side, amount_msat: u64| Htlc {
+            id,
+            offerer,
+            amount_msat,
+            cltv_expiry: 500,
+            payment_hash: [0; 32],
+        };
+        let state_with = |chan_config: &ChannelConfig, push_msat: u64, htlcs: &[Htlc]| {
+            let mut state = chan_config
+                .new_initial_commitment(push_msat, feerate_per_kw, sample_key, sample_key)
+                .expect("valid commitment");
+            for h in htlcs {
+                state.add_htlc(*h).unwrap();
+            }
+            state
+        };
+        // Legacy fee: 15000 * (724 + 172 per non-dust HTLC) / 1000
+        //   = 10_860 / 13_440 / 16_020 sat for 0 / 1 / 2 HTLCs
+        // Legacy dust thresholds: 546 + 15000 * 663 / 1000 = 10_491 sat (offered);
+        //   546 + 15000 * 703 / 1000 = 11_091 sat (received)
+        // Anchor fee: 15000 * (1124 + 172) / 1000 = 19_440 sat for 1 HTLC; anchor_cost = 660 sat
+
+        // Opener balance exactly covers the one-HTLC fee
+        let chan_config = sample_chan_config(50_000, vec![]);
+        let offered = htlc(0, Side::Opener, 12_000_000);
+        let state = state_with(&chan_config, 24_560_000, &[offered]);
+        assert!(chan_config.can_opener_afford_feerate(&state, Side::Opener));
+        assert!(chan_config.can_opener_afford_feerate(&state, Side::Acceptor));
+
+        // One msat short of the one-HTLC fee
+        let state = state_with(&chan_config, 24_560_001, &[offered]);
+        assert!(!chan_config.can_opener_afford_feerate(&state, Side::Opener));
+        assert!(!chan_config.can_opener_afford_feerate(&state, Side::Acceptor));
+
+        // Dust HTLC is trimmed and adds no fee
+        let state = state_with(
+            &chan_config,
+            24_560_000,
+            &[offered, htlc(1, Side::Acceptor, 1_000_000)],
+        );
+        assert!(chan_config.can_opener_afford_feerate(&state, Side::Opener));
+        assert!(chan_config.can_opener_afford_feerate(&state, Side::Acceptor));
+
+        // Second non-dust HTLC pushes the fee out of reach
+        let state = state_with(
+            &chan_config,
+            24_560_000,
+            &[offered, htlc(1, Side::Acceptor, 12_000_000)],
+        );
+        assert!(!chan_config.can_opener_afford_feerate(&state, Side::Opener));
+        assert!(!chan_config.can_opener_afford_feerate(&state, Side::Acceptor));
+
+        // Exactly at the offered dust threshold: kept on the opener's
+        // commitment, trimmed as received on the acceptor's
+        let state = state_with(
+            &chan_config,
+            27_509_000,
+            &[htlc(0, Side::Opener, 10_491_000)],
+        );
+        assert!(!chan_config.can_opener_afford_feerate(&state, Side::Opener));
+        assert!(chan_config.can_opener_afford_feerate(&state, Side::Acceptor));
+
+        // Dust limit of the evaluated side decides trimming
+        let mut chan_config = sample_chan_config(50_000, vec![]);
+        chan_config.acceptor.dust_limit_satoshis = 20_000;
+        let state = state_with(&chan_config, 26_000_000, &[offered]);
+        assert!(!chan_config.can_opener_afford_feerate(&state, Side::Opener));
+        assert!(chan_config.can_opener_afford_feerate(&state, Side::Acceptor));
+
+        // Anchor dust threshold is the dust limit alone
+        let chan_config = sample_chan_config(50_000, vec![0x40, 0x00, 0x00]);
+        let htlcs = [
+            htlc(0, Side::Opener, 546_000),
+            htlc(1, Side::Opener, 545_000),
+        ];
+        let state = state_with(&chan_config, 28_809_000, &htlcs);
+        assert!(chan_config.can_opener_afford_feerate(&state, Side::Opener));
+        assert!(chan_config.can_opener_afford_feerate(&state, Side::Acceptor));
+
+        // One msat short of the anchor one-HTLC fee plus anchor cost
+        let state = state_with(&chan_config, 28_809_001, &htlcs);
+        assert!(!chan_config.can_opener_afford_feerate(&state, Side::Opener));
+        assert!(!chan_config.can_opener_afford_feerate(&state, Side::Acceptor));
     }
 }

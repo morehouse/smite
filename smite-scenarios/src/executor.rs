@@ -1332,7 +1332,10 @@ fn verify_funding_signed(
 
     // The opener cannot afford the fee, so the acceptor must not send
     // `funding_signed`. Receiving one is a protocol violation.
-    if !state.config.can_opener_afford_feerate(&state.commitment) {
+    if !state
+        .config
+        .can_opener_afford_feerate(&state.commitment, state.holder.side)
+    {
         return Err(Violation::OpenerCannotAffordFee(fs.channel_id));
     }
 
