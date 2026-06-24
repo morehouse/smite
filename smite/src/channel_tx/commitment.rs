@@ -156,9 +156,28 @@ pub struct CommitmentState {
     pub htlcs: Vec<Htlc>,
 }
 
+/// Per-commitment keys used when constructing and signing a commitment
+/// transaction from the local party's perspective.
+struct TxCreationKeys {
+    /// The per-commitment point used to derive the commitment-specific keys.
+    #[allow(dead_code)]
+    per_commitment_point: PublicKey,
+    /// Local delayed payment pubkey.
+    local_delayedpubkey: PublicKey,
+    /// Revocation pubkey for this commitment.
+    revocationpubkey: PublicKey,
+    /// Local per-commitment HTLC pubkey.
+    local_htlcpubkey: PublicKey,
+    /// Remote per-commitment HTLC pubkey.
+    remote_htlcpubkey: PublicKey,
+}
+
 /// A fully built commitment transaction with the metadata needed to construct
 /// and sign its second-stage HTLC transactions.
 struct BuiltCommitmentTx {
+    /// Per-commitment keys for the local side.
+    #[allow(dead_code)]
+    keys: TxCreationKeys,
     /// The assembled commitment transaction.
     tx: Transaction,
 }
@@ -404,7 +423,8 @@ impl ChannelConfig {
                 .expect("commitment_number cannot be more than 48 bits");
 
         // Build the commitment transaction
-        let outputs = self.build_commitment_outputs(state, local_side);
+        let keys = self.derive_commitment_keys(state, local_side);
+        let outputs = self.build_commitment_outputs(state, &keys, local_side);
 
         // Witness is not included in the BIP 143 sighash, so we leave it empty.
         let input = TxIn {
@@ -421,7 +441,7 @@ impl ChannelConfig {
             output: outputs,
         };
 
-        BuiltCommitmentTx { tx }
+        BuiltCommitmentTx { keys, tx }
     }
 
     /// Builds the sighash for the given commitment transaction.
@@ -449,8 +469,14 @@ impl ChannelConfig {
     ///
     /// `local_side` selects whose commitment outputs are built: the
     /// opener's or the acceptor's.
-    fn build_commitment_outputs(&self, state: &CommitmentState, local_side: Side) -> Vec<TxOut> {
+    fn build_commitment_outputs(
+        &self,
+        state: &CommitmentState,
+        keys: &TxCreationKeys,
+        local_side: Side,
+    ) -> Vec<TxOut> {
         let anchor = supports_option_anchors(&self.channel_type);
+        let mut outputs: Vec<TxOut> = Vec::new();
 
         // Fee and balances.
         let fee = commit_tx_fee_sat(state.feerate_per_kw, 0, &self.channel_type);
@@ -468,21 +494,11 @@ impl ChannelConfig {
         };
         let local = self.party(local_side);
         let remote = self.party(local_side.other());
-        let local_per_commitment_point = state.party(local_side).per_commitment_point;
-
-        let mut outputs: Vec<TxOut> = Vec::new();
 
         if to_local_value >= local.dust_limit_satoshis {
-            let local_delayedpubkey = derive_pubkey(
-                &local.delayed_payment_basepoint,
-                &local_per_commitment_point,
-            );
-            let revocationpubkey =
-                derive_revocation_pubkey(&remote.revocation_basepoint, &local_per_commitment_point);
-
             let to_local_spk = build_revocable_scriptpubkey(
-                &local_delayedpubkey,
-                &revocationpubkey,
+                &keys.local_delayedpubkey,
+                &keys.revocationpubkey,
                 remote.to_self_delay,
             );
 
@@ -548,6 +564,27 @@ impl ChannelConfig {
         let sighash = self.build_commitment_sighash(&commitment.tx);
         let counterparty = self.party(holder.counterparty_side());
         verify(&sighash, commit_sig, &counterparty.funding_pubkey)
+    }
+
+    /// Derives the per-commitment keys for the `local_side`.
+    fn derive_commitment_keys(&self, state: &CommitmentState, local_side: Side) -> TxCreationKeys {
+        let local = self.party(local_side);
+        let remote = self.party(local_side.other());
+        let per_commitment_point = state.party(local_side).per_commitment_point;
+
+        TxCreationKeys {
+            per_commitment_point,
+            local_delayedpubkey: derive_pubkey(
+                &local.delayed_payment_basepoint,
+                &per_commitment_point,
+            ),
+            revocationpubkey: derive_revocation_pubkey(
+                &remote.revocation_basepoint,
+                &per_commitment_point,
+            ),
+            local_htlcpubkey: derive_pubkey(&local.htlc_basepoint, &per_commitment_point),
+            remote_htlcpubkey: derive_pubkey(&remote.htlc_basepoint, &per_commitment_point),
+        }
     }
 }
 
@@ -860,25 +897,22 @@ fn build_anchor_scriptpubkey(funding_pubkey: &PublicKey) -> ScriptBuf {
 /// `is_offered` selects between the offered and received HTLC scripts.
 #[allow(dead_code)]
 fn build_htlc_witness_script(
-    payment_hash: &[u8; 32],
-    revocationpubkey: &PublicKey,
-    remote_htlcpubkey: &PublicKey,
-    local_htlcpubkey: &PublicKey,
-    cltv_expiry: u32,
+    htlc: &Htlc,
+    keys: &TxCreationKeys,
     is_offered: bool,
     anchor: bool,
 ) -> ScriptBuf {
-    let payment_hash160 = Ripemd160::hash(payment_hash).to_byte_array();
+    let payment_hash160 = Ripemd160::hash(&htlc.payment_hash[..]).to_byte_array();
 
     let mut bldr = Builder::new()
         .push_opcode(opcodes::OP_DUP)
         .push_opcode(opcodes::OP_HASH160)
-        .push_slice(PubkeyHash::hash(&revocationpubkey.serialize()))
+        .push_slice(PubkeyHash::hash(&keys.revocationpubkey.serialize()))
         .push_opcode(opcodes::OP_EQUAL)
         .push_opcode(opcodes::OP_IF)
         .push_opcode(opcodes::OP_CHECKSIG)
         .push_opcode(opcodes::OP_ELSE)
-        .push_slice(remote_htlcpubkey.serialize())
+        .push_slice(keys.remote_htlcpubkey.serialize())
         .push_opcode(opcodes::OP_SWAP)
         .push_opcode(opcodes::OP_SIZE)
         .push_int(32)
@@ -889,7 +923,7 @@ fn build_htlc_witness_script(
             .push_opcode(opcodes::OP_DROP)
             .push_int(2)
             .push_opcode(opcodes::OP_SWAP)
-            .push_slice(local_htlcpubkey.serialize())
+            .push_slice(keys.local_htlcpubkey.serialize())
             .push_int(2)
             .push_opcode(opcodes::OP_CHECKMULTISIG)
             .push_opcode(opcodes::OP_ELSE)
@@ -905,12 +939,12 @@ fn build_htlc_witness_script(
             .push_opcode(opcodes::OP_EQUALVERIFY)
             .push_int(2)
             .push_opcode(opcodes::OP_SWAP)
-            .push_slice(local_htlcpubkey.serialize())
+            .push_slice(keys.local_htlcpubkey.serialize())
             .push_int(2)
             .push_opcode(opcodes::OP_CHECKMULTISIG)
             .push_opcode(opcodes::OP_ELSE)
             .push_opcode(opcodes::OP_DROP)
-            .push_int(i64::from(cltv_expiry))
+            .push_int(i64::from(htlc.cltv_expiry))
             .push_opcode(opcodes::OP_CLTV)
             .push_opcode(opcodes::OP_DROP)
             .push_opcode(opcodes::OP_CHECKSIG)
