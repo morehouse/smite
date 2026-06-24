@@ -947,7 +947,8 @@ fn build_funding_created(
         funding_privkey: opener_funding_privkey,
         htlc_basepoint_privkey: opener_htlc_basepoint_privkey,
     };
-    let signature = config.sign_counterparty_commitment(&state, &holder);
+    let (signature, htlc_signature) = config.sign_counterparty_commitment(&state, &holder);
+    assert!(htlc_signature.is_empty()); // There are no HTLCs in the initial commitment transaction.
 
     let channel_id = ChannelId::v1_from_funding_outpoint(config.funding_outpoint);
 
@@ -1341,7 +1342,7 @@ fn verify_funding_signed(
 
     state
         .config
-        .verify_counterparty_signature(&state.commitment, &state.holder, &fs.signature)
+        .verify_counterparty_signature(&state.commitment, &state.holder, &fs.signature, &[])
         .then_some(())
         .ok_or(Violation::InvalidCounterpartySignature(fs.channel_id))
 }
@@ -3373,7 +3374,8 @@ mod tests {
         assert!(state.config.verify_counterparty_signature(
             &state.commitment,
             &holder,
-            &fc.signature
+            &fc.signature,
+            &[]
         ));
 
         let pending = executor
