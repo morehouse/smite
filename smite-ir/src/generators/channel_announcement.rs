@@ -7,6 +7,7 @@ use crate::builder::ProgramBuilder;
 use crate::{Operation, VariableType};
 
 /// Generates an unsolicited `channel_announcement` send.
+#[derive(Clone, Copy)]
 pub struct ChannelAnnouncementGenerator;
 
 impl Generator for ChannelAnnouncementGenerator {

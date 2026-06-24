@@ -256,6 +256,12 @@ impl ProgramBuilder {
             } => self.append(operation, &[compound_idx]),
         }
     }
+
+    /// Returns the current number of instructions.
+    #[must_use]
+    pub fn instructions_len(&self) -> usize {
+        self.instructions.len()
+    }
 }
 
 impl Default for ProgramBuilder {

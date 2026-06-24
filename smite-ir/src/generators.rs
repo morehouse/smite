@@ -24,3 +24,34 @@ pub trait Generator {
     /// Emits instructions for this generator's protocol interaction.
     fn generate(&self, builder: &mut ProgramBuilder, rng: &mut impl Rng);
 }
+
+/// A list of all the available generators. Any generators included
+/// here may be used by the custom mutator library.
+#[derive(Clone, Copy)]
+pub enum AnyGenerator {
+    ChannelAnnouncement(ChannelAnnouncementGenerator),
+    ChannelUpdate(ChannelUpdateGenerator),
+    NodeAnnouncement(NodeAnnouncementGenerator),
+    OpenChannel(OpenChannelGenerator),
+}
+
+impl AnyGenerator {
+    /// All variants. Keep in sync with the enum definition.
+    pub const ALL: &[Self] = &[
+        Self::ChannelAnnouncement(ChannelAnnouncementGenerator),
+        Self::ChannelUpdate(ChannelUpdateGenerator),
+        Self::NodeAnnouncement(NodeAnnouncementGenerator),
+        Self::OpenChannel(OpenChannelGenerator),
+    ];
+}
+
+impl Generator for AnyGenerator {
+    fn generate(&self, builder: &mut ProgramBuilder, rng: &mut impl Rng) {
+        match self {
+            Self::ChannelAnnouncement(generator) => generator.generate(builder, rng),
+            Self::ChannelUpdate(generator) => generator.generate(builder, rng),
+            Self::NodeAnnouncement(generator) => generator.generate(builder, rng),
+            Self::OpenChannel(generator) => generator.generate(builder, rng),
+        }
+    }
+}

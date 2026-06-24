@@ -14,6 +14,7 @@ use crate::{Operation, VariableType};
 /// 1. Generate channel parameters
 /// 2. Build and send `open_channel`
 /// 3. Receive and parse `accept_channel`
+#[derive(Clone, Copy)]
 pub struct OpenChannelGenerator;
 
 impl Generator for OpenChannelGenerator {

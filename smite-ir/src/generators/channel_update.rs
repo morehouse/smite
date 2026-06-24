@@ -12,6 +12,7 @@ use crate::{Operation, VariableType};
 /// signing key, chain hash, and short channel id are drawn via
 /// `pick_variable` so they can be shared with other gossip messages (e.g. a
 /// preceding `channel_announcement`) when generators are composed.
+#[derive(Clone, Copy)]
 pub struct ChannelUpdateGenerator;
 
 impl Generator for ChannelUpdateGenerator {

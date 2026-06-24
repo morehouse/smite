@@ -3,11 +3,13 @@
 //! Mutators transform programs to explore new protocol states while preserving
 //! structural validity. Each mutator makes a small, targeted change.
 
+mod generator_insert;
 mod input_swap;
 mod instruction_delete;
 mod instruction_reorder;
 mod operation_param;
 
+pub use generator_insert::GeneratorInsertionMutator;
 pub use input_swap::InputSwapMutator;
 pub use instruction_delete::InstructionDeleteMutator;
 pub use instruction_reorder::InstructionReorderMutator;

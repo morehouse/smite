@@ -7,6 +7,7 @@ use crate::builder::ProgramBuilder;
 use crate::{Operation, VariableType};
 
 /// Generates an unsolicited `node_announcement` send.
+#[derive(Clone, Copy)]
 pub struct NodeAnnouncementGenerator;
 
 impl Generator for NodeAnnouncementGenerator {
