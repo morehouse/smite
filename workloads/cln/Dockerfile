@@ -73,6 +73,33 @@ RUN git clone --depth 1 --branch ${CLN_VERSION} --recurse-submodules \
     https://github.com/ElementsProject/lightning.git /cln
 WORKDIR /cln
 RUN pip3 install --break-system-packages mako
+# Patch connectd to remove a 5s delay that occurs when disconnecting from peers.
+# This delay causes CLN to become unresponsive on the connection for 5s, which
+# kills our fuzzing speed when it occurs.
+#
+# The 5s timeout we need to remove occurs before connectd calls
+# close_subd_timeout, which is the function that force-closes the subdaemon fd
+# after an error message has been queued to the peer. In some cases the
+# subdaemon does not exit on its own (e.g., openingd will not exit if it's in
+# the middle of a funding flow), and we have to wait for the full 5s timeout
+# before close_subd_timeout is called. The only benefit of waiting is to give
+# the subdaemon time to queue any additional messages it wants to send after the
+# error message. But for our fuzzing purposes, we don't care about messages
+# after the error message -- once we receive the error we stop execution anyway.
+#
+# There's a separate 5s timeout that occurs before connectd force-closes the
+# connection socket via close_peer_io_timeout. We do *not* want to remove that
+# timeout since then the connection might get closed before we have a chance to
+# read the messages leading up to the error message. The sed command below is
+# designed to remove all of the relevant 5s timeouts while skipping the
+# close_peer_io_timeout one that we want to retain.
+#
+# If CLN changes this code significantly in the future, we will need to update
+# these commands accordingly.
+RUN sed -i '/peer->to_peer/!s/time_from_sec(5)/time_from_sec(0)/' connectd/multiplex.c && \
+    test "$(grep -c 'time_from_sec(0)' connectd/multiplex.c)" -eq 3 && \
+    test "$(grep -c 'time_from_sec(5)' connectd/multiplex.c)" -eq 1 && \
+    grep -A1 'time_from_sec(5)' connectd/multiplex.c | grep -q close_peer_io_timeout
 # AFL_UBSAN_VERBOSE=1 gives us helpful UBSan reports instead of simply SIGILL.
 ENV AFL_UBSAN_VERBOSE=1
 RUN CC=afl-clang-lto ./configure --prefix=/usr/local --disable-rust \
