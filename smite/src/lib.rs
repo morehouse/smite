@@ -11,6 +11,7 @@
 //! - [`channel_tx`] - BOLT 3 channel transaction construction (funding and commitment).
 //! - [`noise`] - BOLT 8 `Noise_XK` encrypted transport.
 //! - [`oracles`] - Post-scenario invariant checks.
+//! - [`pending_channel`] - BOLT 2 channel negotiation state.
 //! - [`process`] - Managed subprocess utilities.
 //! - [`runners`] - Fuzz input delivery (Nyx and local modes).
 //! - [`scenarios`] - Scenario trait and the [`scenarios::smite_run`] entry point.
@@ -20,6 +21,7 @@ pub mod bolt;
 pub mod channel_tx;
 pub mod noise;
 pub mod oracles;
+pub mod pending_channel;
 pub mod process;
 pub mod runners;
 pub mod scenarios;

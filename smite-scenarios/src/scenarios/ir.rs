@@ -92,9 +92,16 @@ impl<T: Target, S: SnapshotSetup<T>> Scenario for IrScenario<T, S> {
                 log::debug!("[{:?}] invalid commitment: {e}", start.elapsed());
             }
             Err(ExecuteError::UnknownChannel(id)) => {
-                // The target sent a funding_signed for a channel it was never
-                // asked to open. This is a protocol violation by the target.
+                // The target referenced a channel it was never asked to open.
+                // This is a protocol violation by the target.
                 return ScenarioResult::Fail(format!("unknown channel: {id:?}"));
+            }
+            Err(ExecuteError::TempChannelIdReuse(id)) => {
+                // The target sent a second accept_channel for a
+                // temporary_channel_id whose negotiation already has one and has
+                // not yet reached funding_created. This is a protocol violation
+                // by the target.
+                return ScenarioResult::Fail(format!("temporary channel id reuse: {id:?}"));
             }
             Err(ExecuteError::OpenerCannotAffordFee(id)) => {
                 // The opener cannot afford the commitment feerate. This is a
