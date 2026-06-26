@@ -89,8 +89,13 @@ impl MutatorState {
     /// Applies a random number of stacked mutations to `program`. The stack
     /// count is a power of two in `[1, 16]` to give a mix of small tweaks and
     /// larger leaps per execution, similar in spirit to AFL++'s havoc stage.
+    ///
+    /// If `splice` is `Some`, `SpliceInsertionMutator` is added to the pool of
+    /// available mutators, allowing the `splice` program to be randomly inserted
+    /// into the target `program` during stack execution.
+    ///
     /// Records the ordered list of mutator names in `last_sequence`.
-    fn mutate_stacked(&mut self, program: &mut Program) {
+    fn mutate_stacked(&mut self, program: &mut Program, splice: Option<Program>) {
         self.last_sequence.clear();
         // Power-of-two stack count: 1, 2, 4, 8, or 16 mutations.
         let stack = 1u32 << self.rng.random_range(0..=4);
@@ -224,16 +229,16 @@ pub unsafe extern "C" fn afl_custom_deinit(data: *mut c_void) {
 /// - `data` must be a pointer returned by [`afl_custom_init`].
 /// - `buf` must point to `buf_size` readable bytes.
 /// - `out_buf` must be a valid, writable pointer to a `*const u8` slot.
-/// - `_add_buf` is unused; we export `afl_custom_splice_optout` so AFL++ never
-///   populates it.
+/// - `add_buf` must point to `add_buf_size` readable bytes, or is null with
+///   `add_buf_size == 0` (no splice input available).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn afl_custom_fuzz(
     data: *mut c_void,
     buf: *mut u8,
     buf_size: usize,
     out_buf: *mut *const u8,
-    _add_buf: *mut u8,
-    _add_buf_size: usize,
+    add_buf: *mut u8,
+    add_buf_size: usize,
     max_size: usize,
 ) -> usize {
     let state = unsafe { &mut *data.cast::<MutatorState>() };
@@ -245,7 +250,13 @@ pub unsafe extern "C" fn afl_custom_fuzz(
         let input = unsafe { slice::from_raw_parts(buf, buf_size) };
         match postcard::from_bytes::<Program>(input) {
             Ok(mut p) => {
-                state.mutate_stacked(&mut p);
+                let splice = if !add_buf.is_null() && add_buf_size > 0 {
+                    let splice_input = unsafe { slice::from_raw_parts(add_buf, add_buf_size) };
+                    postcard::from_bytes::<Program>(splice_input).ok()
+                } else {
+                    None
+                };
+                state.mutate_stacked(&mut p, splice);
                 p
             }
             Err(_) => state.generate_fresh(),
@@ -369,18 +380,6 @@ pub unsafe extern "C" fn afl_custom_post_trim(_data: *mut c_void, _success: u8) 
     1
 }
 
-/// Marker symbol that tells AFL++ not to populate `add_buf` for
-/// [`afl_custom_fuzz`]. AFL++ never actually calls this function -- it only
-/// checks for the symbol's presence via `dlsym` and, if found, skips picking a
-/// splice input before each fuzz call.
-///
-/// # Safety
-///
-/// Never invoked; the signature exists only so the symbol has the correct
-/// linkage.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn afl_custom_splice_optout(_data: *mut c_void) {}
-
 /// Returns a null-terminated description of the most recently applied mutation.
 /// AFL++ uses this when naming queue entries.
 ///
@@ -441,7 +440,12 @@ mod tests {
     /// Calls `afl_custom_fuzz` and returns `(out, len)`. The returned pointer
     /// is borrowed from the state's internal buffer and is only valid until the
     /// next call into the library.
-    fn fuzz_via_ffi(state: &State, mut input: Vec<u8>, max_size: usize) -> (*const u8, usize) {
+    fn fuzz_via_ffi(
+        state: &State,
+        mut input: Vec<u8>,
+        mut splice: Vec<u8>,
+        max_size: usize,
+    ) -> (*const u8, usize) {
         let mut out: *const u8 = ptr::null();
         let len = unsafe {
             afl_custom_fuzz(
@@ -449,8 +453,8 @@ mod tests {
                 input.as_mut_ptr(),
                 input.len(),
                 &raw mut out,
-                ptr::null_mut(),
-                0,
+                splice.as_mut_ptr(),
+                splice.len(),
                 max_size,
             )
         };
@@ -500,7 +504,7 @@ mod tests {
     #[test]
     fn fuzz_with_empty_input_generates_fresh() {
         let state = State::new(1);
-        let (out, len) = fuzz_via_ffi(&state, Vec::new(), 1 << 16);
+        let (out, len) = fuzz_via_ffi(&state, Vec::new(), Vec::new(), 1 << 16);
         assert!(len > 0);
         decode(out, len);
         verify_fresh_generation(&state);
@@ -511,7 +515,7 @@ mod tests {
         let state = State::new(2);
         let mut current = seed_program_bytes();
         for _ in 0..50 {
-            let (out, len) = fuzz_via_ffi(&state, current, 1 << 16);
+            let (out, len) = fuzz_via_ffi(&state, current, Vec::new(), 1 << 16);
             assert!(len > 0);
             // Copy before the next call, which will overwrite the state's
             // out_buf.
@@ -524,7 +528,7 @@ mod tests {
     #[test]
     fn fuzz_with_garbage_input_generates_fresh() {
         let state = State::new(3);
-        let (out, len) = fuzz_via_ffi(&state, vec![0xFFu8; 16], 1 << 16);
+        let (out, len) = fuzz_via_ffi(&state, vec![0xFFu8; 16], Vec::new(), 1 << 16);
         assert!(len > 0);
         decode(out, len);
         verify_fresh_generation(&state);
@@ -536,7 +540,7 @@ mod tests {
         // path to return 0 and still leave *out_buf pointing at something
         // non-null.
         let state = State::new(4);
-        let (out, len) = fuzz_via_ffi(&state, Vec::new(), 4);
+        let (out, len) = fuzz_via_ffi(&state, Vec::new(), Vec::new(), 4);
         assert_eq!(len, 0);
         assert!(!out.is_null());
     }
@@ -547,7 +551,7 @@ mod tests {
         // Loop until we hit the stacked-mutation branch (5% of calls generate
         // fresh instead).
         for _ in 0..10 {
-            let _ = fuzz_via_ffi(&state, seed_program_bytes(), 1 << 16);
+            let _ = fuzz_via_ffi(&state, seed_program_bytes(), Vec::new(), 1 << 16);
             let ptr = unsafe { afl_custom_describe(state.0, 256) };
             let s = unsafe { CStr::from_ptr(ptr) }
                 .to_str()
@@ -576,7 +580,7 @@ mod tests {
     #[test]
     fn describe_respects_max_description_len() {
         let state = State::new(7);
-        let _ = fuzz_via_ffi(&state, Vec::new(), 1 << 16);
+        let _ = fuzz_via_ffi(&state, Vec::new(), Vec::new(), 1 << 16);
         // Cap the description at 5 bytes.
         let ptr = unsafe { afl_custom_describe(state.0, 5) };
         let bytes = unsafe { CStr::from_ptr(ptr) }.to_bytes();
@@ -587,10 +591,19 @@ mod tests {
     }
 
     #[test]
-    fn splice_optout_symbol_exists() {
-        // AFL++ should never call this function, but invoking it should not
-        // crash either.
-        unsafe { afl_custom_splice_optout(ptr::null_mut()) };
+    fn fuzz_valid_input_with_splice_produces_decodable_output() {
+        let state = State::new(0);
+        let splice_input = seed_program_bytes();
+        let mut current = seed_program_bytes();
+        for _ in 0..50 {
+            let (out, len) = fuzz_via_ffi(&state, current, splice_input.clone(), 1 << 16);
+            assert!(len > 0);
+            // Copy before the next call, which will overwrite the state's
+            // out_buf.
+            let bytes = unsafe { slice::from_raw_parts(out, len) }.to_vec();
+            decode(bytes.as_ptr(), bytes.len());
+            current = bytes;
+        }
     }
 
     // -- Trim tests --
@@ -663,7 +676,7 @@ mod tests {
         ] {
             let state = State::new(0);
             // Run a fuzz call so last_sequence has known contents.
-            let _ = fuzz_via_ffi(&state, Vec::new(), 1 << 16);
+            let _ = fuzz_via_ffi(&state, Vec::new(), Vec::new(), 1 << 16);
             let before = unsafe { CStr::from_ptr(afl_custom_describe(state.0, 256)) }
                 .to_str()
                 .expect("valid utf-8")
