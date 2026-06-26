@@ -43,7 +43,7 @@ use smite_ir::generators::AnyGenerator;
 use smite_ir::minimizers::{CommonSubexpressionEliminator, DeadCodeEliminator, Minimizer};
 use smite_ir::mutators::{
     GeneratorInsertionMutator, InputSwapMutator, InstructionDeleteMutator,
-    InstructionReorderMutator, OperationParamMutator,
+    InstructionReorderMutator, OperationParamMutator, SpliceInsertionMutator,
 };
 use smite_ir::{Generator, Mutator, Program, ProgramBuilder};
 
@@ -99,9 +99,16 @@ impl MutatorState {
         self.last_sequence.clear();
         // Power-of-two stack count: 1, 2, 4, 8, or 16 mutations.
         let stack = 1u32 << self.rng.random_range(0..=4);
+        let splice_insert_mutator = splice.map(SpliceInsertionMutator::new);
+        // Only roll up to 6 if we actually have a splice input.
+        let upper_bound = if splice_insert_mutator.is_some() {
+            6
+        } else {
+            5
+        };
         for _ in 0..stack {
             // Uniform pick between the available mutators.
-            let name = match self.rng.random_range(0..5) {
+            let name = match self.rng.random_range(0..upper_bound) {
                 0 => {
                     OperationParamMutator.mutate(program, &mut self.rng);
                     "op-param"
@@ -126,6 +133,13 @@ impl MutatorState {
                     let mutator = GeneratorInsertionMutator::new(generator);
                     mutator.mutate(program, &mut self.rng);
                     "gen-insert"
+                }
+                5 => {
+                    splice_insert_mutator
+                        .as_ref()
+                        .expect("splice present")
+                        .mutate(program, &mut self.rng);
+                    "splice-insert"
                 }
                 _ => unreachable!("random_range() bound out of sync with match arms"),
             };
@@ -568,7 +582,8 @@ mod tests {
                         || name == "input-swap"
                         || name == "instr-delete"
                         || name == "instr-reorder"
-                        || name == "gen-insert",
+                        || name == "gen-insert"
+                        || name == "splice-insert",
                     "unexpected mutator name in description: {name:?} (full: {s:?})",
                 );
             }
