@@ -40,6 +40,11 @@ pub trait BitcoinRpc {
     /// Signs and broadcasts a transaction
     fn sign_and_broadcast_tx(&mut self, tx: &bitcoin::Transaction);
 
+    /// Locks the given outpoints so subsequent [`get_utxos`](Self::get_utxos)
+    /// calls exclude them, preventing independently built transactions from
+    /// reusing the same coins.
+    fn lock_utxos(&mut self, outpoints: &[OutPoint]);
+
     /// Returns the number of confirmations for the transaction with the given
     /// txid, or `0` if it is unconfirmed or unknown to the node.
     fn get_transaction_confirmations(&mut self, txid: Txid) -> u32;
@@ -60,6 +65,10 @@ impl BitcoinRpc for BitcoinCli {
 
     fn sign_and_broadcast_tx(&mut self, tx: &bitcoin::Transaction) {
         BitcoinCli::sign_and_broadcast_tx(self, tx);
+    }
+
+    fn lock_utxos(&mut self, outpoints: &[OutPoint]) {
+        BitcoinCli::lock_utxos(self, outpoints);
     }
 
     fn get_transaction_confirmations(&mut self, txid: Txid) -> u32 {
@@ -631,7 +640,8 @@ fn consume_sent_funding_created(variables: &mut [Option<Variable>], index: usize
 // -- Operation handlers --
 
 /// Create a funding transaction by querying the bitcoind for UTXOs and a
-/// change address, then calling [`build_funding_transaction`].
+/// change address, then calling [`build_funding_transaction`]. Locks the
+/// selected inputs so a subsequently built transaction cannot reselect them.
 fn create_funding_transaction(
     variables: &[Option<Variable>],
     inputs: &[usize],
@@ -655,6 +665,16 @@ fn create_funding_transaction(
         utxos,
         change_spk,
     )?;
+
+    // Lock the selected inputs so a subsequently built transaction does not
+    // reselect the same UTXOs.
+    let selected: Vec<OutPoint> = funding
+        .tx
+        .input
+        .iter()
+        .map(|txin| txin.previous_output)
+        .collect();
+    cli.lock_utxos(&selected);
 
     Ok(funding)
 }
@@ -1207,6 +1227,10 @@ mod tests {
 
         fn sign_and_broadcast_tx(&mut self, tx: &bitcoin::Transaction) {
             self.broadcast_calls.push(tx.clone());
+        }
+
+        fn lock_utxos(&mut self, outpoints: &[OutPoint]) {
+            self.utxos.retain(|u| !outpoints.contains(&u.outpoint));
         }
 
         fn get_transaction_confirmations(&mut self, _txid: Txid) -> u32 {
