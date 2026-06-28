@@ -214,6 +214,8 @@ impl BitcoinCli {
             .run()
             .arg("sendrawtransaction")
             .arg(&signed_tx.hex)
+            // Disable the high-feerate cap and accept any fee rate for broadcast.
+            .arg("0")
             .output()
             .expect("bitcoin-cli sendrawtransaction should not fail");
         assert!(
