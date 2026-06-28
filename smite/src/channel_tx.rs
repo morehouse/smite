@@ -10,4 +10,4 @@ pub use commitment::{
     ChannelConfig, ChannelPartyConfig, ChannelState, CommitmentError, CommitmentPartyState,
     CommitmentState, HolderIdentity, Side,
 };
-pub use funding::{FundingTransaction, InsufficientFunds, build_funding_transaction};
+pub use funding::{FundingError, FundingTransaction, build_funding_transaction};
