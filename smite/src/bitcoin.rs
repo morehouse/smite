@@ -226,4 +226,42 @@ impl BitcoinCli {
             "sendrawtransaction returned unexpected txid"
         );
     }
+
+    /// Returns the number of confirmations for the transaction with the given
+    /// txid, or `0` if it is unconfirmed (in the mempool) or unknown to the node
+    /// (e.g. not broadcast yet).
+    ///
+    /// # Panics
+    ///
+    /// - If the `bitcoin-cli getrawtransaction` command fails to execute.
+    /// - If the command succeeds but its output is not valid JSON.
+    #[must_use]
+    pub fn get_transaction_confirmations(&self, txid: Txid) -> u32 {
+        #[derive(Deserialize)]
+        struct GetRawTransactionResponse {
+            // Omitted by `getrawtransaction` while the transaction is unconfirmed
+            // (in the mempool), so default to zero confirmations.
+            #[serde(default)]
+            confirmations: u32,
+        }
+
+        let tx_out = self
+            .run()
+            .arg("getrawtransaction")
+            .arg(txid.to_string())
+            .arg("1")
+            .output()
+            .expect("bitcoin-cli getrawtransaction should not fail");
+
+        // A non-zero exit means the transaction is unknown to the node, which is
+        // expected before broadcast, so treat it as zero confirmations.
+        if !tx_out.status.success() {
+            return 0;
+        }
+
+        let tx_info: GetRawTransactionResponse = serde_json::from_slice(&tx_out.stdout)
+            .expect("getrawtransaction should return valid JSON");
+
+        tx_info.confirmations
+    }
 }

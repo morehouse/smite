@@ -234,6 +234,13 @@ pub enum Operation {
     /// Produces the `ChannelId` carried in the message.
     /// TODO: Add `ExtractFundingSigned` when implementing force-close scenarios.
     RecvFundingSigned,
+    /// Receive and parse a `channel_ready` response.
+    ///
+    /// This is a no-op unless some tracked channel is awaiting `channel_ready`
+    /// (still at commitment number 0 with the counterparty's next per-commitment
+    /// point unknown) and its funding transaction has enough confirmations for
+    /// the target to have sent `channel_ready`.
+    RecvChannelReady,
     /// Mines the given number of blocks on the Bitcoin network.
     MineBlocks(u8),
     /// Sign wallet inputs of the transaction and broadcast it via `bitcoin-cli`.
@@ -692,6 +699,7 @@ impl fmt::Display for Operation {
             Self::SendFundingCreated => write!(f, "SendFundingCreated"),
             Self::RecvAcceptChannel => write!(f, "RecvAcceptChannel"),
             Self::RecvFundingSigned => write!(f, "RecvFundingSigned"),
+            Self::RecvChannelReady => write!(f, "RecvChannelReady()"),
             Self::BroadcastTransaction => write!(f, "BroadcastTransaction"),
         }
     }
@@ -726,7 +734,10 @@ impl Operation {
             | Self::BuildNodeAnnouncement { .. }
             | Self::BuildChannelUpdate
             | Self::BuildAnnouncementSignatures => Some(VariableType::Message),
-            Self::SendMessage | Self::MineBlocks(_) | Self::BroadcastTransaction => None,
+            Self::SendMessage
+            | Self::RecvChannelReady
+            | Self::MineBlocks(_)
+            | Self::BroadcastTransaction => None,
             Self::SendOpenChannel => Some(VariableType::SentOpenChannel),
             Self::SendFundingCreated => Some(VariableType::SentFundingCreated),
             Self::RecvAcceptChannel => Some(VariableType::AcceptChannel),
@@ -754,6 +765,7 @@ impl Operation {
             | Self::LoadChannelType(_)
             | Self::LoadTargetPubkeyFromContext
             | Self::LoadChainHashFromContext
+            | Self::RecvChannelReady
             | Self::MineBlocks(_) => vec![],
 
             Self::DerivePoint => vec![VariableType::PrivateKey],
@@ -905,6 +917,7 @@ impl Operation {
             | Self::SendOpenChannel
             | Self::SendFundingCreated
             | Self::RecvFundingSigned
+            | Self::RecvChannelReady
             | Self::MineBlocks(_)
             | Self::BroadcastTransaction => vec![],
 
@@ -925,6 +938,7 @@ impl Operation {
             | Self::SendFundingCreated
             | Self::RecvAcceptChannel
             | Self::RecvFundingSigned
+            | Self::RecvChannelReady
             | Self::MineBlocks(_)
             | Self::CreateFundingTransaction
             | Self::BroadcastTransaction => true,
@@ -994,6 +1008,7 @@ impl Operation {
             | Self::SendFundingCreated
             | Self::RecvAcceptChannel
             | Self::RecvFundingSigned
+            | Self::RecvChannelReady
             | Self::BroadcastTransaction => false,
         }
     }
