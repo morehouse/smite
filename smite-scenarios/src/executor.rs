@@ -40,6 +40,11 @@ pub trait BitcoinRpc {
     /// Signs and broadcasts a transaction
     fn sign_and_broadcast_tx(&mut self, tx: &bitcoin::Transaction);
 
+    /// Locks the given outpoints so subsequent [`get_utxos`](Self::get_utxos)
+    /// calls exclude them, preventing independently built transactions from
+    /// reusing the same coins.
+    fn lock_utxos(&mut self, outpoints: &[OutPoint]);
+
     /// Returns the number of confirmations for the transaction with the given
     /// txid, or `0` if it is unconfirmed or unknown to the node.
     fn get_transaction_confirmations(&mut self, txid: Txid) -> u32;
@@ -60,6 +65,10 @@ impl BitcoinRpc for BitcoinCli {
 
     fn sign_and_broadcast_tx(&mut self, tx: &bitcoin::Transaction) {
         BitcoinCli::sign_and_broadcast_tx(self, tx);
+    }
+
+    fn lock_utxos(&mut self, outpoints: &[OutPoint]) {
+        BitcoinCli::lock_utxos(self, outpoints);
     }
 
     fn get_transaction_confirmations(&mut self, txid: Txid) -> u32 {
@@ -127,9 +136,9 @@ pub enum ExecuteError {
     #[error("unexpected message: expected type {expected}, got {got}")]
     UnexpectedMessage { expected: u16, got: u16 },
 
-    /// Wallet UTXOs could not cover the funding amount and fees.
+    /// Failed to construct a relayable funding transaction.
     #[error("funding: {0}")]
-    InsufficientFunds(#[from] smite::channel_tx::InsufficientFunds),
+    Funding(#[from] smite::channel_tx::FundingError),
 
     /// Failed to construct the initial commitment state.
     #[error("commitment: {0}")]
@@ -189,7 +198,7 @@ impl<C: Connection, B: BitcoinRpc> Executor<C, B> {
     /// - a connection/send/receive operation fails
     /// - a received message fails to decode
     /// - the target sends an unexpected message type
-    /// - wallet funds are insufficient to perform a channel operation
+    /// - a relayable funding transaction cannot be constructed
     /// - the initial commitment transaction cannot be constructed
     /// - no channel state exists for a received `funding_signed`
     /// - the opener cannot afford the commitment feerate
@@ -631,7 +640,8 @@ fn consume_sent_funding_created(variables: &mut [Option<Variable>], index: usize
 // -- Operation handlers --
 
 /// Create a funding transaction by querying the bitcoind for UTXOs and a
-/// change address, then calling [`build_funding_transaction`].
+/// change address, then calling [`build_funding_transaction`]. Locks the
+/// selected inputs so a subsequently built transaction cannot reselect them.
 fn create_funding_transaction(
     variables: &[Option<Variable>],
     inputs: &[usize],
@@ -655,6 +665,16 @@ fn create_funding_transaction(
         utxos,
         change_spk,
     )?;
+
+    // Lock the selected inputs so a subsequently built transaction does not
+    // reselect the same UTXOs.
+    let selected: Vec<OutPoint> = funding
+        .tx
+        .input
+        .iter()
+        .map(|txin| txin.previous_output)
+        .collect();
+    cli.lock_utxos(&selected);
 
     Ok(funding)
 }
@@ -1209,6 +1229,10 @@ mod tests {
             self.broadcast_calls.push(tx.clone());
         }
 
+        fn lock_utxos(&mut self, outpoints: &[OutPoint]) {
+            self.utxos.retain(|u| !outpoints.contains(&u.outpoint));
+        }
+
         fn get_transaction_confirmations(&mut self, _txid: Txid) -> u32 {
             self.confirmations
         }
@@ -1365,7 +1389,10 @@ mod tests {
         ]
     }
 
-    fn create_and_broadcast_tx_instructions() -> Vec<Instruction> {
+    fn create_and_broadcast_tx_instructions(
+        funding_satoshis: u64,
+        feerate_per_kw: u32,
+    ) -> Vec<Instruction> {
         let opener_privkey =
             SecretKey::from_str("30ff4956bbdd3222d44cc5e8a1261dab1e07957bdac5ae88fe3261ef321f3749")
                 .unwrap()
@@ -1393,11 +1420,11 @@ mod tests {
                 inputs: vec![2],
             },
             Instruction {
-                operation: Operation::LoadAmount(10_000_000),
+                operation: Operation::LoadAmount(funding_satoshis),
                 inputs: vec![],
             },
             Instruction {
-                operation: Operation::LoadFeeratePerKw(15_000),
+                operation: Operation::LoadFeeratePerKw(feerate_per_kw),
                 inputs: vec![],
             },
             Instruction {
@@ -2348,7 +2375,7 @@ mod tests {
         executor
             .execute(
                 &Program {
-                    instructions: create_and_broadcast_tx_instructions(),
+                    instructions: create_and_broadcast_tx_instructions(10_000_000, 15_000),
                 },
                 std::time::Instant::now(),
             )
@@ -2377,20 +2404,80 @@ mod tests {
         let err = Executor::new(MockConnection::new(), mock_cli, sample_context())
             .execute(
                 &Program {
-                    instructions: create_and_broadcast_tx_instructions(),
+                    instructions: create_and_broadcast_tx_instructions(10_000_000, 15_000),
                 },
                 std::time::Instant::now(),
             )
             .unwrap_err();
-        let ExecuteError::InsufficientFunds(funds_err) = err else {
+        let ExecuteError::Funding(smite::channel_tx::FundingError::InsufficientFunds {
+            required,
+            available,
+        }) = err
+        else {
             panic!("expected InsufficientFunds, got {err:?}");
         };
-        assert_eq!(funds_err.available, Amount::from_sat(1_000));
-        assert_eq!(funds_err.required, Amount::from_sat(10_007_290));
+        assert_eq!(available, Amount::from_sat(1_000));
+        assert_eq!(required, Amount::from_sat(10_007_290));
+    }
+
+    #[test]
+    fn execute_create_funding_transaction_feerate_too_low() {
+        // Feerate is below the default minimum relay feerate, so the funding
+        // transaction would not be relayable.
+        let mock_cli = MockBitcoinCli {
+            utxos: vec![sample_utxo()],
+            change_spk: sample_change_spk(),
+            ..Default::default()
+        };
+        let err = Executor::new(MockConnection::new(), mock_cli, sample_context())
+            .execute(
+                &Program {
+                    instructions: create_and_broadcast_tx_instructions(10_000_000, 249),
+                },
+                std::time::Instant::now(),
+            )
+            .unwrap_err();
+        let ExecuteError::Funding(smite::channel_tx::FundingError::FeerateTooLow {
+            feerate_per_kw,
+            minimum,
+        }) = err
+        else {
+            panic!("expected FeerateTooLow, got {err:?}");
+        };
+        assert_eq!(feerate_per_kw, 249);
+        assert_eq!(minimum, 250);
+    }
+
+    #[test]
+    fn execute_create_funding_transaction_dust_funding_output() {
+        // Funding output is below its dust threshold, so bitcoind would reject
+        // the funding transaction as dust.
+        let mock_cli = MockBitcoinCli {
+            utxos: vec![sample_utxo()],
+            change_spk: sample_change_spk(),
+            ..Default::default()
+        };
+        let err = Executor::new(MockConnection::new(), mock_cli, sample_context())
+            .execute(
+                &Program {
+                    instructions: create_and_broadcast_tx_instructions(100, 15_000),
+                },
+                std::time::Instant::now(),
+            )
+            .unwrap_err();
+        let ExecuteError::Funding(smite::channel_tx::FundingError::FundingOutputBelowDust {
+            value,
+            dust,
+        }) = err
+        else {
+            panic!("expected FundingOutputBelowDust, got {err:?}");
+        };
+        assert_eq!(value, Amount::from_sat(100));
+        assert_eq!(dust, Amount::from_sat(330));
     }
 
     fn send_funding_created_and_recv_funding_signed_instructions() -> Vec<Instruction> {
-        let mut instrs = create_and_broadcast_tx_instructions();
+        let mut instrs = create_and_broadcast_tx_instructions(10_000_000, 15_000);
         instrs.extend(vec![
             Instruction {
                 operation: Operation::LoadFeatures(vec![]),

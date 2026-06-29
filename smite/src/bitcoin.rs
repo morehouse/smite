@@ -8,7 +8,7 @@ use std::str::FromStr;
 
 use bitcoin::consensus::encode::serialize_hex;
 use bitcoin::{Address, Amount, Network, OutPoint, ScriptBuf, Transaction, Txid};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// A spendable UTXO used as a transaction input.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,7 +165,7 @@ impl BitcoinCli {
             .script_pubkey()
     }
 
-    /// Signs and broadcasts a transaction.
+    /// Signs and broadcasts a transaction, unless it is already confirmed.
     ///
     /// # Panics
     ///
@@ -180,6 +180,13 @@ impl BitcoinCli {
         struct SignRawTransactionResponse {
             hex: String,
             complete: bool,
+        }
+
+        // A confirmed transaction may be broadcast again by the fuzzer. Its
+        // inputs are spent, so the wallet can no longer fully sign it, skip
+        // signing and broadcasting it again.
+        if self.get_transaction_confirmations(tx.compute_txid()) > 0 {
+            return;
         }
 
         let tx_hex = serialize_hex(tx);
@@ -207,6 +214,8 @@ impl BitcoinCli {
             .run()
             .arg("sendrawtransaction")
             .arg(&signed_tx.hex)
+            // Disable the high-feerate cap and accept any fee rate for broadcast.
+            .arg("0")
             .output()
             .expect("bitcoin-cli sendrawtransaction should not fail");
         assert!(
@@ -224,6 +233,54 @@ impl BitcoinCli {
             broadcast_txid.trim(),
             tx.compute_txid().to_string(),
             "sendrawtransaction returned unexpected txid"
+        );
+    }
+
+    /// Locks the given outpoints in the wallet so they are excluded from
+    /// `listunspent` and automatic coin selection.
+    ///
+    /// Prevents independently built transactions from selecting the same UTXO.
+    /// `listunspent` only excludes an output once its spending transaction
+    /// reaches the mempool, so transactions built beforehand can share an input.
+    /// The second transaction then either fails broadcast as a non-fee-bumping
+    /// RBF replacement, or later fails signing because the prevout has left the
+    /// UTXO set.
+    ///
+    /// # Panics
+    ///
+    /// If the `bitcoin-cli lockunspent` command fails to execute or exits
+    /// non-zero.
+    pub fn lock_utxos(&self, outpoints: &[OutPoint]) {
+        #[derive(Serialize)]
+        struct LockOutpoint {
+            txid: String,
+            vout: u32,
+        }
+
+        if outpoints.is_empty() {
+            return;
+        }
+
+        let locks: Vec<LockOutpoint> = outpoints
+            .iter()
+            .map(|o| LockOutpoint {
+                txid: o.txid.to_string(),
+                vout: o.vout,
+            })
+            .collect();
+        let locks_json = serde_json::to_string(&locks).expect("outpoints serialize to valid JSON");
+
+        let lock_out = self
+            .run()
+            .arg("lockunspent")
+            .arg("false")
+            .arg(&locks_json)
+            .output()
+            .expect("bitcoin-cli lockunspent should not fail");
+        assert!(
+            lock_out.status.success(),
+            "bitcoin-cli lockunspent failed: {}",
+            String::from_utf8_lossy(&lock_out.stderr)
         );
     }
 

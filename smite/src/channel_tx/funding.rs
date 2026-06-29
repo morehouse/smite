@@ -5,21 +5,46 @@ use bitcoin::opcodes::all as opcodes;
 use bitcoin::script::Builder;
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::transaction::{InputWeightPrediction, Version, predict_weight};
-use bitcoin::{Amount, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness};
+use bitcoin::{Amount, FeeRate, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness};
 
 use crate::bitcoin::Utxo;
 
-/// Error returned when available UTXOs cannot cover the funding amount plus
-/// estimated miner fee.
+/// Error returned when a standard, relayable funding transaction cannot be
+/// produced.
 #[derive(Debug, thiserror::Error)]
-#[error(
-    "insufficient funds to cover funding amount and fee: required {required}, available {available}"
-)]
-pub struct InsufficientFunds {
-    /// Total amount required, including fees.
-    pub required: Amount,
-    /// Total spendable amount available from the selected UTXOs.
-    pub available: Amount,
+pub enum FundingError {
+    /// Selected UTXOs cannot cover the funding amount plus the estimated fee.
+    #[error(
+        "insufficient funds to cover funding amount and fee: required {required}, available {available}"
+    )]
+    InsufficientFunds {
+        /// Total amount required, including fees.
+        required: Amount,
+        /// Total spendable amount available from the selected UTXOs.
+        available: Amount,
+    },
+
+    /// Feerate is below the default minimum relay feerate, so bitcoind would
+    /// neither relay nor mine the transaction.
+    #[error(
+        "feerate {feerate_per_kw} sat/kwu is below the minimum relay feerate of {minimum} sat/kwu"
+    )]
+    FeerateTooLow {
+        /// The requested feerate, in satoshis per 1000 weight units.
+        feerate_per_kw: u32,
+        /// The minimum relay feerate, in satoshis per 1000 weight units.
+        minimum: u32,
+    },
+
+    /// Funding output is below its dust threshold, so bitcoind would reject the
+    /// transaction as dust.
+    #[error("funding output of {value} is below the dust limit of {dust}")]
+    FundingOutputBelowDust {
+        /// The funding output value.
+        value: Amount,
+        /// The funding output's dust threshold.
+        dust: Amount,
+    },
 }
 
 /// A constructed funding transaction along with the index of the 2-of-2
@@ -39,8 +64,14 @@ pub struct FundingTransaction {
 ///
 /// # Errors
 ///
-/// Returns [`InsufficientFunds`] if the provided inputs do not contain enough
-/// value to cover `funding_satoshis` and the required transaction fees.
+/// Returns [`FundingError`] if the inputs cannot produce a standard, relayable
+/// funding transaction:
+/// - [`FundingError::InsufficientFunds`] if the inputs cannot cover
+///   `funding_satoshis` and the required fees.
+/// - [`FundingError::FeerateTooLow`] if `feerate_per_kw` is below the default
+///   minimum relay feerate.
+/// - [`FundingError::FundingOutputBelowDust`] if `funding_satoshis` is below the
+///   dust threshold for the funding output.
 ///
 /// # Panics
 ///
@@ -53,19 +84,39 @@ pub fn build_funding_transaction(
     feerate_per_kw: u32,
     utxos: Vec<Utxo>,
     change_spk: ScriptBuf,
-) -> Result<FundingTransaction, InsufficientFunds> {
+) -> Result<FundingTransaction, FundingError> {
     // Amounts exceeding Bitcoin's maximum supply can never be funded. The
     // error's `available` field reports Bitcoin's total supply cap.
     let funding_amt = Amount::from_sat(funding_satoshis);
     if funding_amt > Amount::MAX_MONEY {
-        return Err(InsufficientFunds {
+        return Err(FundingError::InsufficientFunds {
             required: funding_amt,
             available: Amount::MAX_MONEY,
         });
     }
 
+    // Reject feerates below the default minimum relay feerate, bitcoind would
+    // neither relay nor mine the transaction.
+    let minimum = FeeRate::BROADCAST_MIN.to_sat_per_kwu();
+    if u64::from(feerate_per_kw) < minimum {
+        return Err(FundingError::FeerateTooLow {
+            feerate_per_kw,
+            minimum: u32::try_from(minimum).expect("BROADCAST_MIN fits in a u32"),
+        });
+    }
+
     let funding_spk =
         build_funding_witness_script(opener_funding_pubkey, acceptor_funding_pubkey).to_p2wsh();
+
+    // Reject a funding output below its dust threshold, bitcoind would reject
+    // the transaction as dust.
+    let funding_dust = funding_spk.minimal_non_dust();
+    if funding_amt < funding_dust {
+        return Err(FundingError::FundingOutputBelowDust {
+            value: funding_amt,
+            dust: funding_dust,
+        });
+    }
 
     let mut inputs = Vec::new();
     let mut input_weights = Vec::new();
@@ -111,7 +162,7 @@ pub fn build_funding_transaction(
 
     // Verify that the selected inputs can cover the funding amount and fees.
     if total < funding_amt + expected_fee_no_change {
-        return Err(InsufficientFunds {
+        return Err(FundingError::InsufficientFunds {
             required: funding_amt + expected_fee_no_change,
             available: total,
         });
@@ -535,9 +586,15 @@ mod tests {
             change_spk,
         )
         .unwrap_err();
-        assert!(matches!(err, InsufficientFunds { .. }));
-        assert_eq!(err.required, Amount::from_sat(10_003_180));
-        assert_eq!(err.available, Amount::from_sat(0));
+        let FundingError::InsufficientFunds {
+            required,
+            available,
+        } = err
+        else {
+            panic!("expected InsufficientFunds, got {err:?}");
+        };
+        assert_eq!(required, Amount::from_sat(10_003_180));
+        assert_eq!(available, Amount::from_sat(0));
     }
 
     /// Not from BOLT 3 test vectors.
@@ -571,9 +628,95 @@ mod tests {
             change_spk,
         )
         .unwrap_err();
-        assert!(matches!(err, InsufficientFunds { .. }));
-        assert_eq!(err.required, Amount::from_sat(10_012_060));
-        assert_eq!(err.available, Amount::from_sat(1_000));
+        let FundingError::InsufficientFunds {
+            required,
+            available,
+        } = err
+        else {
+            panic!("expected InsufficientFunds, got {err:?}");
+        };
+        assert_eq!(required, Amount::from_sat(10_012_060));
+        assert_eq!(available, Amount::from_sat(1_000));
+    }
+
+    /// Not from BOLT 3 test vectors.
+    /// Tests that a feerate below the default minimum relay feerate is rejected,
+    /// since bitcoind would refuse such a transaction under default policy.
+    #[test]
+    fn funding_tx_rejects_feerate_below_relay_floor() {
+        let utxos = vec![Utxo {
+            amount: Amount::from_sat(10_008_942),
+            outpoint: OutPoint {
+                txid: "a1f7b953dc8c3db0222d931d3e2613f9971af75a09a005b31af057f8414cc5d7"
+                    .parse()
+                    .expect("valid txid"),
+                vout: 0,
+            },
+            script_pubkey: ScriptBuf::from(
+                hex::decode("0014a10d9257489e685dda030662390dc177852faf13")
+                    .expect("valid P2WPKH scriptpubkey hex"),
+            ),
+        }];
+        let change_spk = ScriptBuf::from(
+            hex::decode("00142e532c12351a5c81e23c8a76d19345ca7b6de57a")
+                .expect("valid P2WPKH scriptpubkey hex"),
+        );
+        let err = build_funding_transaction(
+            &pubkey("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb"),
+            &pubkey("030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c1"),
+            10_000_000,
+            249,
+            utxos,
+            change_spk,
+        )
+        .unwrap_err();
+        let FundingError::FeerateTooLow {
+            feerate_per_kw,
+            minimum,
+        } = err
+        else {
+            panic!("expected FeerateTooLow, got {err:?}");
+        };
+        assert_eq!(feerate_per_kw, 249);
+        assert_eq!(minimum, 250);
+    }
+
+    /// Not from BOLT 3 test vectors.
+    /// Tests that a funding output below the dust threshold is rejected, since
+    /// bitcoind would reject such a transaction as dust under default policy.
+    #[test]
+    fn funding_tx_rejects_dust_funding_output() {
+        let utxos = vec![Utxo {
+            amount: Amount::from_sat(10_008_942),
+            outpoint: OutPoint {
+                txid: "a1f7b953dc8c3db0222d931d3e2613f9971af75a09a005b31af057f8414cc5d7"
+                    .parse()
+                    .expect("valid txid"),
+                vout: 0,
+            },
+            script_pubkey: ScriptBuf::from(
+                hex::decode("0014a10d9257489e685dda030662390dc177852faf13")
+                    .expect("valid P2WPKH scriptpubkey hex"),
+            ),
+        }];
+        let change_spk = ScriptBuf::from(
+            hex::decode("00142e532c12351a5c81e23c8a76d19345ca7b6de57a")
+                .expect("valid P2WPKH scriptpubkey hex"),
+        );
+        let err = build_funding_transaction(
+            &pubkey("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb"),
+            &pubkey("030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c1"),
+            100,
+            15_000,
+            utxos,
+            change_spk,
+        )
+        .unwrap_err();
+        let FundingError::FundingOutputBelowDust { value, dust } = err else {
+            panic!("expected FundingOutputBelowDust, got {err:?}");
+        };
+        assert_eq!(value, Amount::from_sat(100));
+        assert_eq!(dust, Amount::from_sat(330));
     }
 
     /// Not from BOLT 3 test vectors.
@@ -609,9 +752,15 @@ mod tests {
             change_spk,
         )
         .unwrap_err();
-        assert!(matches!(err, InsufficientFunds { .. }));
-        assert_eq!(err.required, Amount::from_sat(u64::MAX));
-        assert_eq!(err.available, Amount::MAX_MONEY);
+        let FundingError::InsufficientFunds {
+            required,
+            available,
+        } = err
+        else {
+            panic!("expected InsufficientFunds, got {err:?}");
+        };
+        assert_eq!(required, Amount::from_sat(u64::MAX));
+        assert_eq!(available, Amount::MAX_MONEY);
     }
 
     /// Not from BOLT 3 test vectors.
