@@ -7,11 +7,11 @@ use super::wire::WireFormat;
 use bitcoin::secp256k1::ecdsa::Signature;
 
 /// TLV type for closer output only.
-const TLV_CLOSER_OUTPUT_ONLY: u64 = 1;
+pub const TLV_CLOSER_OUTPUT_ONLY: u64 = 1;
 /// TLV type for closee output only.
-const TLV_CLOSEE_OUTPUT_ONLY: u64 = 2;
+pub const TLV_CLOSEE_OUTPUT_ONLY: u64 = 2;
 /// TLV type for closer and closee outputs.
-const TLV_CLOSER_AND_CLOSEE_OUTPUTS: u64 = 3;
+pub const TLV_CLOSER_AND_CLOSEE_OUTPUTS: u64 = 3;
 
 /// BOLT 2 `closing_complete` message (type 40).
 ///
@@ -33,7 +33,7 @@ pub struct ClosingComplete {
     pub tlvs: ClosingTlvs,
 }
 
-/// TLV extensions for the `closing_complete` message.
+/// TLV extensions for the `closing_complete` and `closing_sig` message.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ClosingTlvs {
     /// Signature if closing tx only has local output.
@@ -55,27 +55,7 @@ impl ClosingComplete {
         self.fee_satoshis.write(&mut out);
         self.locktime.write(&mut out);
 
-        // Encode TLVs
-        let mut tlv_stream = TlvStream::new();
-        if let Some(closer_output_only) = &self.tlvs.closer_output_only {
-            tlv_stream.add(
-                TLV_CLOSER_OUTPUT_ONLY,
-                closer_output_only.serialize_compact().to_vec(),
-            );
-        }
-        if let Some(closee_output_only) = &self.tlvs.closee_output_only {
-            tlv_stream.add(
-                TLV_CLOSEE_OUTPUT_ONLY,
-                closee_output_only.serialize_compact().to_vec(),
-            );
-        }
-        if let Some(closer_and_closee_outputs) = &self.tlvs.closer_and_closee_outputs {
-            tlv_stream.add(
-                TLV_CLOSER_AND_CLOSEE_OUTPUTS,
-                closer_and_closee_outputs.serialize_compact().to_vec(),
-            );
-        }
-        out.extend(tlv_stream.encode());
+        out.extend(self.tlvs.to_stream().encode());
 
         out
     }
@@ -113,13 +93,39 @@ impl ClosingComplete {
 }
 
 impl ClosingTlvs {
-    /// Extracts `closing_complete` TLVs from a parsed TLV stream.
+    /// Encodes closing TLVs into a TLV stream.
+    #[must_use]
+    pub fn to_stream(&self) -> TlvStream {
+        let mut tlv_stream = TlvStream::new();
+        if let Some(closer_output_only) = &self.closer_output_only {
+            tlv_stream.add(
+                TLV_CLOSER_OUTPUT_ONLY,
+                closer_output_only.serialize_compact().to_vec(),
+            );
+        }
+        if let Some(closee_output_only) = &self.closee_output_only {
+            tlv_stream.add(
+                TLV_CLOSEE_OUTPUT_ONLY,
+                closee_output_only.serialize_compact().to_vec(),
+            );
+        }
+        if let Some(closer_and_closee_outputs) = &self.closer_and_closee_outputs {
+            tlv_stream.add(
+                TLV_CLOSER_AND_CLOSEE_OUTPUTS,
+                closer_and_closee_outputs.serialize_compact().to_vec(),
+            );
+        }
+        tlv_stream
+    }
+
+    /// Extracts `closing_complete` and `closing_sig` TLVs from a parsed TLV
+    /// stream.
     ///
     /// # Errors
     ///
     /// Returns `Truncated` if a signature TLV has invalid length, or
     /// `InvalidSignature` if the bytes are not a valid compact ECDSA signature.
-    fn from_stream(stream: &TlvStream) -> Result<Self, BoltError> {
+    pub fn from_stream(stream: &TlvStream) -> Result<Self, BoltError> {
         Ok(Self {
             closer_output_only: stream.get_as::<Signature>(TLV_CLOSER_OUTPUT_ONLY)?,
             closee_output_only: stream.get_as::<Signature>(TLV_CLOSEE_OUTPUT_ONLY)?,
