@@ -87,6 +87,26 @@ impl NoiseConnection {
         Ok(())
     }
 
+    /// Sets the read timeout applied to subsequent `recv_message` calls. `None`
+    /// makes reads block indefinitely.
+    ///
+    /// # Errors
+    ///
+    /// Returns an IO error if the underlying socket option cannot be set.
+    pub fn set_read_timeout(&mut self, timeout: Option<Duration>) -> Result<(), ConnectionError> {
+        self.stream.set_read_timeout(timeout)?;
+        Ok(())
+    }
+
+    /// Returns the current read timeout or `None` if reads block indefinitely.
+    ///
+    /// # Errors
+    ///
+    /// Returns an IO error if the underlying socket option cannot be read.
+    pub fn read_timeout(&self) -> Result<Option<Duration>, ConnectionError> {
+        Ok(self.stream.read_timeout()?)
+    }
+
     /// Receives and decrypts a message from the peer.
     ///
     /// # Errors
