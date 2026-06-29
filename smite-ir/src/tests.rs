@@ -1528,6 +1528,75 @@ fn assert_mutator_preserves_well_formedness<M: Mutator>(mutator: &M, original: &
     }
 }
 
+// Assert that a generated or spliced sequence of instructions is found intact
+// and contiguous somewhere within the mutated program.
+fn assert_mutator_preserves_sequence(mutated: &Program, payload: &Program) {
+    let inserted_correctly = mutated
+        .instructions
+        .windows(payload.instructions.len())
+        .any(|window| {
+            window
+                .iter()
+                .zip(payload.instructions.iter())
+                .all(|(a, b)| a.operation == b.operation)
+        });
+
+    assert!(
+        inserted_correctly,
+        "Payload sequence not found intact in mutated program"
+    );
+}
+
+// Assert that the topological ordering of a SSA program remains valid after
+// a block of instructions of `offset` length is inserted into it.
+fn assert_graph_shifted_correctly(original: &Program, mutated: &Program, offset: usize) {
+    assert_eq!(
+        mutated.instructions.len(),
+        original.instructions.len() + offset,
+        "Mutated program length does not match original + offset"
+    );
+    // Find the exact insert_point chosen by the RNG.
+    let mut insert_point = original.instructions.len();
+    for i in 0..original.instructions.len() {
+        if mutated.instructions[i].operation != original.instructions[i].operation {
+            insert_point = i;
+            break;
+        }
+    }
+    // Validate the tail shift.
+    for mut_idx in (insert_point + offset)..mutated.instructions.len() {
+        let orig_idx = mut_idx - offset;
+        let mut_instr = &mutated.instructions[mut_idx];
+        let orig_instr = &original.instructions[orig_idx];
+
+        // Ensure the operations align perfectly.
+        assert_eq!(mut_instr.operation, orig_instr.operation);
+        assert_eq!(mut_instr.inputs.len(), orig_instr.inputs.len());
+
+        for (i, (&mut_in, &orig_in)) in mut_instr
+            .inputs
+            .iter()
+            .zip(orig_instr.inputs.iter())
+            .enumerate()
+        {
+            if orig_in < insert_point {
+                // If it pointed to something BEFORE the cut, the index should not change.
+                assert_eq!(
+                    mut_in, orig_in,
+                    "Instruction {mut_idx} input {i} shifted, but it points BEFORE the insertion point",
+                );
+            } else {
+                // If it pointed to something AT or AFTER the cut, the index must shift by the offset.
+                assert_eq!(
+                    mut_in,
+                    orig_in + offset,
+                    "Instruction {mut_idx} input {i} failed to shift by exactly {offset}",
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn param_mutator_false_is_noop() {
     let original = Program {
@@ -2288,20 +2357,7 @@ fn generator_insertion_preserves_generated() {
     let mutator = GeneratorInsertionMutator::new(DummyGenerator);
     mutator.mutate(&mut program, &mut rng);
 
-    let inserted_correctly = program
-        .instructions
-        .windows(dummy_program.instructions.len())
-        .any(|window| {
-            window
-                .iter()
-                .zip(dummy_program.instructions.iter())
-                .all(|(a, b)| a.operation == b.operation)
-        });
-
-    assert!(
-        inserted_correctly,
-        "Generated sequence not found intact in mutated program"
-    );
+    assert_mutator_preserves_sequence(&program, &dummy_program);
 }
 
 #[test]
@@ -2313,49 +2369,9 @@ fn generator_insertion_shifts_correctly() {
     let mut rng = SmallRng::seed_from_u64(0);
     mutator.mutate(&mut program, &mut rng);
 
-    // Find the exact insert_point chosen by the RNG.
-    let mut insert_point = original.instructions.len();
-    for i in 0..original.instructions.len() {
-        if program.instructions[i].operation != original.instructions[i].operation {
-            insert_point = i;
-            break;
-        }
-    }
-
     // The length of the generated program.
     let offset = program.instructions.len() - original.instructions.len();
-
-    for mut_idx in (insert_point + offset)..program.instructions.len() {
-        let orig_idx = mut_idx - offset;
-        let mut_instr = &program.instructions[mut_idx];
-        let orig_instr = &original.instructions[orig_idx];
-
-        // Ensure the operations align perfectly.
-        assert_eq!(mut_instr.operation, orig_instr.operation);
-        assert_eq!(mut_instr.inputs.len(), orig_instr.inputs.len());
-
-        for (i, (&mut_in, &orig_in)) in mut_instr
-            .inputs
-            .iter()
-            .zip(orig_instr.inputs.iter())
-            .enumerate()
-        {
-            if orig_in < insert_point {
-                // If it pointed to something BEFORE the cut, the index should not change.
-                assert_eq!(
-                    mut_in, orig_in,
-                    "Instruction {mut_idx} input {i} shifted, but it points BEFORE the insertion point",
-                );
-            } else {
-                // If it pointed to something AT or AFTER the cut, the index must shift by the offset.
-                assert_eq!(
-                    mut_in,
-                    orig_in + offset,
-                    "Instruction {mut_idx} input {i} failed to shift by exactly {offset}",
-                );
-            }
-        }
-    }
+    assert_graph_shifted_correctly(&original, &program, offset);
 }
 
 #[test]
