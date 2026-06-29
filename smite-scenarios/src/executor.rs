@@ -20,6 +20,30 @@ use smite::noise::{ConnectionError, NoiseConnection};
 use smite_ir::operation::AcceptChannelField;
 use smite_ir::{Operation, Program, Variable};
 use std::collections::HashMap;
+use std::time::Duration;
+
+/// The timeout used when receiving messages from the target. We will wait this
+/// long to receive an expected message before aborting program execution.
+///
+/// To determine the timeout value, we measured target response times to
+/// `open_channel` (`accept_channel` response) and `funding_created`
+/// (`funding_signed` response) within the Nyx VM while running a fuzzing
+/// campaign that saturated all CPU cores. The *maximum* response times observed
+/// were:
+/// - LDK: 3ms `accept_channel`; 3ms `funding_signed`
+/// - LND: 68ms `accept_channel`; 5ms `funding_signed`
+/// - CLN: 142ms `accept_channel`; 179ms `funding_signed`
+/// - Eclair: 444ms `accept_channel`; 288ms `funding_signed`
+///
+/// Thus a timeout of 1s provides more than a 2x buffer over the slowest
+/// observed response times.
+///
+/// TODO: Once HTLC/commitment operations are supported, measure response times
+/// for commitment operations and increase timeout if needed.
+///
+/// TODO: Investigate optimizations to the Eclair workload and remeasure
+/// response times to see if timeout can be decreased further.
+pub const RECV_IDLE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Default maximum `minimum_depth` that Lightning implementations advertise in
 /// `accept_channel`. Once the funding transaction reaches this many
@@ -97,6 +121,21 @@ pub trait Connection {
     ///
     /// Returns an error if the receive fails.
     fn recv_message(&mut self) -> Result<Vec<u8>, ConnectionError>;
+
+    /// Sets the read timeout applied to subsequent `recv_message` calls. `None`
+    /// makes reads block indefinitely.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the timeout cannot be set.
+    fn set_read_timeout(&mut self, timeout: Option<Duration>) -> Result<(), ConnectionError>;
+
+    /// Returns the current read timeout or `None` if reads block indefinitely.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the timeout cannot be read.
+    fn read_timeout(&self) -> Result<Option<Duration>, ConnectionError>;
 }
 
 impl Connection for NoiseConnection {
@@ -106,6 +145,14 @@ impl Connection for NoiseConnection {
 
     fn recv_message(&mut self) -> Result<Vec<u8>, ConnectionError> {
         NoiseConnection::recv_message(self)
+    }
+
+    fn set_read_timeout(&mut self, timeout: Option<Duration>) -> Result<(), ConnectionError> {
+        NoiseConnection::set_read_timeout(self, timeout)
+    }
+
+    fn read_timeout(&self) -> Result<Option<Duration>, ConnectionError> {
+        NoiseConnection::read_timeout(self)
     }
 }
 
@@ -976,9 +1023,14 @@ fn build_channel_update(variables: &[Option<Variable>], inputs: &[usize]) -> Cha
 
 /// Receives the next message of interest, auto-responding to pings and silently
 /// skipping unknown odd-type messages.
+///
+/// The read is bounded by [`RECV_IDLE_TIMEOUT`].
 #[allow(clippy::similar_names)] // ping and pong are canonical names
 fn recv_non_ping(conn: &mut impl Connection) -> Result<Message, ExecuteError> {
-    loop {
+    let previous = conn.read_timeout()?;
+    conn.set_read_timeout(Some(RECV_IDLE_TIMEOUT))?;
+
+    let result: Result<Message, ExecuteError> = (|| loop {
         let msg_bytes = conn.recv_message()?;
         let msg = Message::decode(&msg_bytes)?;
         match msg {
@@ -991,7 +1043,11 @@ fn recv_non_ping(conn: &mut impl Connection) -> Result<Message, ExecuteError> {
             }
             other => return Ok(other),
         }
-    }
+    })();
+
+    // Ignore a restore failure so the receive's own result is surfaced.
+    let _ = conn.set_read_timeout(previous);
+    result
 }
 
 /// Receives and decodes an `accept_channel` message.
@@ -1177,6 +1233,14 @@ mod tests {
             self.recv_queue
                 .pop_front()
                 .ok_or_else(|| ConnectionError::Io(std::io::ErrorKind::UnexpectedEof.into()))
+        }
+
+        fn set_read_timeout(&mut self, _timeout: Option<Duration>) -> Result<(), ConnectionError> {
+            Ok(())
+        }
+
+        fn read_timeout(&self) -> Result<Option<Duration>, ConnectionError> {
+            Ok(None)
         }
     }
 
