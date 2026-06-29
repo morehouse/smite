@@ -621,6 +621,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn fuzz_with_splice_utilizes_splice_mutator() {
+        let state = State::new(0);
+        let input = seed_program_bytes();
+        let splice_input = seed_program_bytes();
+        let mut splice_used = false;
+        // The mutator sequence is determined by a RNG. Loop until the RNG
+        // rolls `SpliceInsertionMutator` to guarantee the FFI correctly
+        // handed the payload to `mutate_stacked()`.
+        for _ in 0..100 {
+            let _ = fuzz_via_ffi(&state, input.clone(), splice_input.clone(), 1 << 16);
+            let ptr = unsafe { afl_custom_describe(state.0, 256) };
+            let s = unsafe { CStr::from_ptr(ptr) }
+                .to_str()
+                .expect("valid utf-8");
+            if s.contains("splice") {
+                splice_used = true;
+            }
+        }
+        assert!(
+            splice_used,
+            "SpliceInsertionMutator was never chosen despite a valid add_buf"
+        );
+    }
+
     // -- Trim tests --
 
     fn init_trim_via_ffi(state: &State, mut input: Vec<u8>) -> i32 {
