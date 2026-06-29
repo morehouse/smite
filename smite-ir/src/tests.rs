@@ -13,7 +13,7 @@ use generators::{
 use minimizers::{CommonSubexpressionEliminator, DeadCodeEliminator, Minimizer};
 use mutators::{
     GeneratorInsertionMutator, InputSwapMutator, InstructionDeleteMutator,
-    InstructionReorderMutator, OperationParamMutator,
+    InstructionReorderMutator, OperationParamMutator, SpliceMutator,
 };
 use operation::{AcceptChannelField, ChannelTypeVariant, ShutdownScriptVariant};
 
@@ -2379,6 +2379,81 @@ fn generator_insertion_preserves_well_formedness() {
     let original = generate_open_channel_program(0);
     for &generator in AnyGenerator::ALL {
         let mutator = GeneratorInsertionMutator::new(generator);
+        assert_mutator_preserves_well_formedness(&mutator, &original);
+    }
+}
+
+// -- SpliceMutator tests --
+
+#[test]
+fn splice_does_not_drop_instructions() {
+    let mut program = generate_open_channel_program(0);
+    let original_program_len = program.instructions.len();
+    let splice_program = generate_channel_update_program(0);
+    let splice_program_len = splice_program.instructions.len();
+
+    let mutator = SpliceMutator::new(splice_program);
+    let mut rng = SmallRng::seed_from_u64(0);
+
+    mutator.mutate(&mut program, &mut rng);
+    assert_eq!(
+        original_program_len + splice_program_len,
+        program.instructions.len()
+    );
+}
+
+#[test]
+fn splice_returns_spliced_on_empty_program() {
+    let mut program = Program {
+        instructions: vec![],
+    };
+    let splice_program = generate_channel_announcement_program(0);
+    let mutator = SpliceMutator::new(splice_program.clone());
+    let mut rng = SmallRng::seed_from_u64(0);
+
+    mutator.mutate(&mut program, &mut rng);
+    assert_eq!(
+        program, splice_program,
+        "SpliceMutator didn't insert generated program"
+    );
+}
+
+#[test]
+fn splice_preserves_generated() {
+    let mut program = generate_open_channel_program(0);
+    let mut rng = SmallRng::seed_from_u64(0);
+
+    let splice_program = generate_channel_update_program(0);
+    let mutator = SpliceMutator::new(splice_program.clone());
+    mutator.mutate(&mut program, &mut rng);
+
+    assert_mutator_preserves_sequence(&program, &splice_program);
+}
+
+#[test]
+fn splice_shifts_correctly() {
+    let original = generate_open_channel_program(0);
+    let mut program = original.clone();
+    let splice_program = generate_channel_announcement_program(0);
+
+    let mutator = SpliceMutator::new(splice_program.clone());
+    let mut rng = SmallRng::seed_from_u64(0);
+    mutator.mutate(&mut program, &mut rng);
+
+    assert_graph_shifted_correctly(&original, &program, splice_program.instructions.len());
+}
+
+#[test]
+fn splice_preserves_well_formedness() {
+    let original = generate_open_channel_program(0);
+    let mut rng = SmallRng::seed_from_u64(0);
+
+    for &generator in AnyGenerator::ALL {
+        let mut builder = ProgramBuilder::new();
+        generator.generate(&mut builder, &mut rng);
+
+        let splice_program = builder.build();
+        let mutator = SpliceMutator::new(splice_program);
         assert_mutator_preserves_well_formedness(&mutator, &original);
     }
 }
