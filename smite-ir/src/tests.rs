@@ -501,7 +501,7 @@ fn display_build_announcement_signatures_program() {
 }
 
 #[test]
-fn display_build_and_recv_channel_ready_program() {
+fn display_send_and_recv_channel_ready_program() {
     let scid = ShortChannelId::new(936_450, 1_346, 5);
     let instructions = vec![
         Instruction {
@@ -521,14 +521,10 @@ fn display_build_and_recv_channel_ready_program() {
             inputs: vec![],
         },
         Instruction {
-            operation: Operation::BuildChannelReady {
+            operation: Operation::SendChannelReady {
                 include_alias: true,
             },
             inputs: vec![0, 2, 3],
-        },
-        Instruction {
-            operation: Operation::SendMessage,
-            inputs: vec![4],
         },
         Instruction {
             operation: Operation::RecvChannelReady,
@@ -547,8 +543,7 @@ fn display_build_and_recv_channel_ready_program() {
         format!("v1 = LoadPrivateKey(0x{z31}01)"),
         "v2 = DerivePoint(v1)".into(),
         format!("v3 = LoadShortChannelId({scid})"),
-        "v4 = BuildChannelReady{include_alias=true}(v0, v2, v3)".into(),
-        "SendMessage(v4)".into(),
+        "SendChannelReady{include_alias=true}(v0, v2, v3)".into(),
         "RecvChannelReady()".into(),
     ];
     assert_eq!(lines.len(), expected.len(), "line count mismatch");
@@ -620,10 +615,8 @@ fn postcard_roundtrip() {
                 inputs: vec![],
             },
             Instruction {
-                operation: Operation::BuildFundingCreated,
-                inputs: vec![
-                    11, 5, 6, 0, 1, 1, 1, 5, 13, 9, 9, 9, 9, 5, 13, 3, 5, 10, 1, 9,
-                ],
+                operation: Operation::SendFundingCreated,
+                inputs: vec![11, 0, 3],
             },
         ],
     };
@@ -737,7 +730,6 @@ fn displays_create_and_broadcast_tx_program() {
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn displays_send_funding_created_recv_funding_signed_program() {
     let instructions = vec![
         // Funding transaction.
@@ -763,61 +755,18 @@ fn displays_send_funding_created_recv_funding_signed_program() {
         },
         // funding_created parameters.
         Instruction {
-            operation: Operation::LoadFeatures(vec![0x01, 0x02]),
-            inputs: vec![],
-        },
-        Instruction {
-            operation: Operation::LoadPrivateKey(key(2)),
-            inputs: vec![],
-        },
-        Instruction {
-            operation: Operation::DerivePoint,
-            inputs: vec![6],
-        },
-        Instruction {
-            operation: Operation::LoadAmount(546),
-            inputs: vec![],
-        },
-        Instruction {
-            operation: Operation::LoadU16(144),
-            inputs: vec![],
-        },
-        Instruction {
-            operation: Operation::LoadPrivateKey(key(3)),
-            inputs: vec![],
-        },
-        Instruction {
-            operation: Operation::DerivePoint,
-            inputs: vec![10],
-        },
-        Instruction {
             operation: Operation::LoadChannelId([0xbb; 32]),
             inputs: vec![],
         },
-        Instruction {
-            operation: Operation::LoadAmount(0),
-            inputs: vec![],
-        },
-        Instruction {
-            operation: Operation::LoadFeeratePerKw(253),
-            inputs: vec![],
-        },
-        // Build funding_created.
-        Instruction {
-            operation: Operation::BuildFundingCreated,
-            inputs: vec![
-                4, 2, 5, 0, 7, 7, 7, 8, 9, 11, 11, 11, 11, 8, 9, 12, 13, 14, 7, 11,
-            ],
-        },
-        // Send funding_created.
+        // Build and send funding_created.
         Instruction {
             operation: Operation::SendFundingCreated,
-            inputs: vec![15],
+            inputs: vec![4, 0, 5],
         },
         // receive funding_signed.
         Instruction {
             operation: Operation::RecvFundingSigned,
-            inputs: vec![16],
+            inputs: vec![6],
         },
     ];
 
@@ -834,19 +783,9 @@ fn displays_send_funding_created_recv_funding_signed_program() {
         "v2 = LoadAmount(10000000)".into(),
         "v3 = LoadFeeratePerKw(15000)".into(),
         "v4 = CreateFundingTransaction(v1, v1, v2, v3)".into(),
-        "v5 = LoadFeatures(0x0102)".into(),
-        format!("v6 = LoadPrivateKey(0x{z31}02)"),
-        "v7 = DerivePoint(v6)".into(),
-        "v8 = LoadAmount(546)".into(),
-        "v9 = LoadU16(144)".into(),
-        format!("v10 = LoadPrivateKey(0x{z31}03)"),
-        "v11 = DerivePoint(v10)".into(),
-        format!("v12 = LoadChannelId(0x{b32})"),
-        "v13 = LoadAmount(0)".into(),
-        "v14 = LoadFeeratePerKw(253)".into(),
-        "v15 = BuildFundingCreated(v4, v2, v5, v0, v7, v7, v7, v8, v9, v11, v11, v11, v11, v8, v9, v12, v13, v14, v7, v11)".into(),
-        "v16 = SendFundingCreated(v15)".into(),
-        "v17 = RecvFundingSigned(v16)".into(),
+        format!("v5 = LoadChannelId(0x{b32})"),
+        "v6 = SendFundingCreated(v4, v0, v5)".into(),
+        "v7 = RecvFundingSigned(v6)".into(),
     ];
 
     assert_eq!(lines.len(), expected.len(), "line count mismatch");

@@ -4,7 +4,7 @@
 //! The serialized program stores data only in [`Operation`] literals.
 
 use bitcoin::secp256k1::PublicKey;
-use smite::bolt::{AcceptChannel, ChannelId, ShortChannelId};
+use smite::bolt::{AcceptChannel, ChannelId, OpenChannel, ShortChannelId};
 use smite::channel_tx::FundingTransaction;
 
 const CHAIN_HASH_SIZE: usize = 32;
@@ -46,10 +46,8 @@ pub enum Variable {
     Features(Vec<u8>),
     /// Encoded BOLT message with type prefix, ready to send.
     Message(Vec<u8>),
-    /// Encoded BOLT `open_channel` message with type 32 prefix, ready to send.
-    OpenChannelMessage(Vec<u8>),
-    /// Encoded BOLT `funding_created` message with type 34 prefix, ready to send.
-    FundingCreatedMessage(Vec<u8>),
+    /// BOLT `open_channel` message, ready to send.
+    OpenChannelMessage(OpenChannel),
     /// Parsed `accept_channel` response.
     AcceptChannel(AcceptChannel),
     /// Constructed funding transaction with funding output index.
@@ -83,7 +81,6 @@ impl Variable {
             Self::Features(_) => VariableType::Features,
             Self::Message(_) => VariableType::Message,
             Self::OpenChannelMessage(_) => VariableType::OpenChannelMessage,
-            Self::FundingCreatedMessage(_) => VariableType::FundingCreatedMessage,
             Self::AcceptChannel(_) => VariableType::AcceptChannel,
             Self::FundingTransaction(_) => VariableType::FundingTransaction,
             Self::SentOpenChannel => VariableType::SentOpenChannel,
@@ -112,7 +109,6 @@ pub enum VariableType {
     Features,
     Message,
     OpenChannelMessage,
-    FundingCreatedMessage,
     AcceptChannel,
     FundingTransaction,
     SentOpenChannel,
@@ -140,7 +136,6 @@ impl VariableType {
             | Self::Features
             | Self::Message
             | Self::OpenChannelMessage
-            | Self::FundingCreatedMessage
             | Self::AcceptChannel
             | Self::ShortChannelId
             | Self::FundingTransaction => false,

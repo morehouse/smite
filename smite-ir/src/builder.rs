@@ -219,9 +219,6 @@ impl ProgramBuilder {
             VariableType::OpenChannelMessage => {
                 panic!("cannot generate fresh OpenChannelMessage: requires composed inputs")
             }
-            VariableType::FundingCreatedMessage => {
-                panic!("cannot generate fresh FundingCreatedMessage: requires composed inputs")
-            }
             VariableType::AcceptChannel => {
                 panic!("cannot generate fresh AcceptChannel: requires protocol interaction")
             }

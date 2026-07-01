@@ -83,12 +83,6 @@ fn mutate_operation(op: &mut Operation, rng: &mut impl Rng) -> bool {
             true
         }
         Operation::ExtractAcceptChannel(field) => mutate_extract_field(field, rng),
-        Operation::BuildChannelReady { include_alias } => {
-            // Toggle the SCID alias TLV. Flipping always changes the value;
-            // a random bool could repeat it and waste the mutation.
-            *include_alias = !*include_alias;
-            true
-        }
         Operation::BuildNodeAnnouncement { rgb_color, alias } => {
             // Randomly mutate rgb_color or alias bytes in place; never change
             // their lengths (array types prevent it).
@@ -99,6 +93,12 @@ fn mutate_operation(op: &mut Operation, rng: &mut impl Rng) -> bool {
             }
             true
         }
+        Operation::SendChannelReady { include_alias } => {
+            // Toggle the SCID alias TLV. Flipping always changes the value;
+            // a random bool could repeat it and waste the mutation.
+            *include_alias = !*include_alias;
+            true
+        }
 
         // Non-mutable variants. Reaching here means `is_param_mutable` and this
         // match have drifted out of sync.
@@ -107,7 +107,6 @@ fn mutate_operation(op: &mut Operation, rng: &mut impl Rng) -> bool {
         | Operation::LoadTargetPubkeyFromContext
         | Operation::LoadChainHashFromContext
         | Operation::BuildOpenChannel
-        | Operation::BuildFundingCreated
         | Operation::BuildChannelAnnouncement
         | Operation::BuildChannelUpdate
         | Operation::BuildAnnouncementSignatures
