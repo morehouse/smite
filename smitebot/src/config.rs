@@ -38,6 +38,8 @@ pub struct CampaignConfig {
     /// Extra CLI flags appended to the `afl-fuzz` command.
     #[serde(default)]
     pub afl_flags: Vec<String>,
+    /// Custom tmux session name; defaults to the campaign ID when absent.
+    pub tmux_session: Option<String>,
 }
 
 /// Lightning Network implementation to target.
@@ -83,6 +85,8 @@ pub enum ConfigError {
     EmptyScenario,
     #[error("image must not be empty when specified")]
     EmptyImage,
+    #[error("tmux_session must not be empty when specified")]
+    EmptyTmuxSession,
 }
 
 impl CampaignConfig {
@@ -163,6 +167,9 @@ impl CampaignConfig {
         if self.image.as_ref().is_some_and(String::is_empty) {
             return Err(ConfigError::EmptyImage);
         }
+        if self.tmux_session.as_ref().is_some_and(String::is_empty) {
+            return Err(ConfigError::EmptyTmuxSession);
+        }
         Ok(())
     }
 }
@@ -209,6 +216,7 @@ sharedir = "/tmp/smite-nyx"
         assert_eq!(config.output_dir, PathBuf::from("/tmp/smite-out"));
         assert_eq!(config.sharedir, PathBuf::from("/tmp/smite-nyx"));
         assert!(config.image.is_none());
+        assert!(config.tmux_session.is_none());
     }
 
     #[test]
@@ -321,6 +329,26 @@ sharedir = "/tmp/smite-nyx"
 
         let err = CampaignConfig::load(&path).unwrap_err();
         assert!(matches!(err, ConfigError::EmptyImage));
+    }
+
+    #[test]
+    fn load_parses_tmux_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = format!("{VALID_CONFIG}tmux_session = \"my-campaign\"\n");
+        let path = write_config(dir.path(), &content);
+
+        let config = CampaignConfig::load(&path).unwrap();
+        assert_eq!(config.tmux_session.as_deref(), Some("my-campaign"));
+    }
+
+    #[test]
+    fn load_rejects_empty_tmux_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = format!("{VALID_CONFIG}tmux_session = \"\"\n");
+        let path = write_config(dir.path(), &content);
+
+        let err = CampaignConfig::load(&path).unwrap_err();
+        assert!(matches!(err, ConfigError::EmptyTmuxSession));
     }
 
     #[test]

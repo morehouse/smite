@@ -35,6 +35,8 @@ pub struct CampaignState {
     pub smite_git_hash: String,
     /// Unix timestamp (seconds since epoch) when the campaign started.
     pub start_time: u64,
+    /// Name of the tmux session hosting the campaign runners.
+    pub tmux_session: String,
     /// State of each AFL++ runner process.
     pub runners: Vec<RunnerState>,
 }
@@ -56,8 +58,9 @@ pub enum Status {
 pub struct RunnerState {
     /// Runner index (0 = primary, 1..N = secondary).
     pub id: u16,
-    /// Process ID of the afl-fuzz instance.
-    pub pid: u32,
+    /// Process ID of the afl-fuzz instance, read from `fuzzer_stats` after
+    /// startup verification.
+    pub pid: Option<u32>,
 }
 
 impl RunnerState {
@@ -93,6 +96,7 @@ impl CampaignState {
         image: String,
         image_digest: String,
         smite_git_hash: String,
+        tmux_session: String,
     ) -> Self {
         Self {
             id,
@@ -105,6 +109,7 @@ impl CampaignState {
             sharedir: config.sharedir.clone(),
             smite_git_hash,
             start_time: utils::epoch_secs(),
+            tmux_session,
             runners: Vec::new(),
         }
     }
@@ -157,9 +162,16 @@ mod tests {
             sharedir: PathBuf::from("/tmp/smite-nyx"),
             smite_git_hash: "deadbeef".to_string(),
             start_time: 1_749_465_600,
+            tmux_session: "lnd-encrypted_bytes-1_749_465_600".to_string(),
             runners: vec![
-                RunnerState { id: 0, pid: 1234 },
-                RunnerState { id: 1, pid: 1235 },
+                RunnerState {
+                    id: 0,
+                    pid: Some(1234),
+                },
+                RunnerState {
+                    id: 1,
+                    pid: Some(1235),
+                },
             ],
         }
     }
@@ -180,8 +192,9 @@ mod tests {
         assert_eq!(loaded.target, Target::Lnd);
         assert_eq!(loaded.scenario, "encrypted_bytes");
         assert_eq!(loaded.runners.len(), 2);
+        assert_eq!(loaded.tmux_session, state.tmux_session);
         assert_eq!(loaded.runners[0].name(), "0");
-        assert_eq!(loaded.runners[1].pid, 1235);
+        assert_eq!(loaded.runners[1].pid, Some(1235));
     }
 
     #[test]
@@ -231,6 +244,7 @@ sharedir = "/tmp/nyx"
             "smite-lnd-encrypted_bytes".to_string(),
             "sha256:abc123".to_string(),
             "deadbeef".to_string(),
+            "test-session".to_string(),
         );
 
         assert_eq!(state.status, Status::Starting);
@@ -239,6 +253,7 @@ sharedir = "/tmp/nyx"
         assert_eq!(state.image, "smite-lnd-encrypted_bytes");
         assert_eq!(state.image_digest, "sha256:abc123");
         assert_eq!(state.smite_git_hash, "deadbeef");
+        assert_eq!(state.tmux_session, "test-session");
         assert!(state.runners.is_empty());
     }
 
