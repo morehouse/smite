@@ -3,6 +3,7 @@
 mod commands;
 mod config;
 mod state;
+mod tmux;
 mod utils;
 
 use std::process::ExitCode;

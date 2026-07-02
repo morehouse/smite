@@ -206,6 +206,7 @@ mod tests {
             image: None,
             afl_env: HashMap::new(),
             afl_flags: Vec::new(),
+            tmux_session: None,
         }
     }
 

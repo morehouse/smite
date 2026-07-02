@@ -15,8 +15,8 @@ use crate::utils::{find_in_path, is_executable};
 /// AFL++ binaries required for campaign execution and corpus minimization.
 const AFL_TOOLS: &[&str] = &["afl-fuzz", "afl-cmin", "afl-tmin", "afl-whatsup"];
 
-/// Host tools required by Smite helper scripts.
-const HOST_TOOLS: &[&str] = &["bash", "python", "python3"];
+/// Host tools required for campaign operations.
+const HOST_TOOLS: &[&str] = &["bash", "python", "python3", "tmux"];
 
 /// Repository scripts required by doctor and upcoming orchestration commands.
 const REQUIRED_SCRIPTS: &[&str] = &[
@@ -394,6 +394,7 @@ mod tests {
             image: None,
             afl_env: HashMap::new(),
             afl_flags: Vec::new(),
+            tmux_session: None,
         }
     }
 
