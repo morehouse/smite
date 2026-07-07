@@ -39,6 +39,27 @@ impl PartialOrd for Utxo {
     }
 }
 
+/// The confirmed position of a transaction within the block chain, used to
+/// derive a BOLT 7 `short_channel_id`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TxBlockPosition {
+    /// The height of the block containing the transaction.
+    pub block_height: u32,
+    /// The transaction's index within its block.
+    pub tx_index: u32,
+}
+
+/// Parsed response from `getrawtransaction <txid> 1`.
+#[derive(Deserialize)]
+struct RawTransactionInfo {
+    /// Omitted while the transaction is unconfirmed (in the mempool), so
+    /// defaults to zero.
+    #[serde(default)]
+    confirmations: u32,
+    /// Omitted while the transaction is unconfirmed (in the mempool).
+    blockhash: Option<String>,
+}
+
 /// Connection info for invoking `bitcoin-cli` against the regtest `bitcoind`
 /// started by a target.
 #[derive(Debug, Clone)]
@@ -285,6 +306,33 @@ impl BitcoinCli {
         );
     }
 
+    /// Calls `getrawtransaction <txid> 1` and returns the parsed response, or
+    /// `None` if the transaction is unknown to the node (non-zero exit code).
+    ///
+    /// # Panics
+    ///
+    /// - If the command fails to execute.
+    /// - If the command succeeds but its output is not valid JSON.
+    fn get_raw_transaction_info(&self, txid: Txid) -> Option<RawTransactionInfo> {
+        let tx_out = self
+            .run()
+            .arg("getrawtransaction")
+            .arg(txid.to_string())
+            .arg("1")
+            .output()
+            .expect("bitcoin-cli getrawtransaction should not fail");
+
+        // A non-zero exit means the transaction is unknown to the node.
+        if !tx_out.status.success() {
+            return None;
+        }
+
+        let tx_info: RawTransactionInfo = serde_json::from_slice(&tx_out.stdout)
+            .expect("getrawtransaction should return valid JSON");
+
+        Some(tx_info)
+    }
+
     /// Returns the number of confirmations for the transaction with the given
     /// txid, or `0` if it is unconfirmed (in the mempool) or unknown to the node
     /// (e.g. not broadcast yet).
@@ -295,31 +343,65 @@ impl BitcoinCli {
     /// - If the command succeeds but its output is not valid JSON.
     #[must_use]
     pub fn get_transaction_confirmations(&self, txid: Txid) -> u32 {
+        self.get_raw_transaction_info(txid)
+            .map_or(0, |info| info.confirmations)
+    }
+
+    /// Returns the position of the confirmed transaction with the given txid,
+    /// or `None` if it is unconfirmed (in the mempool) or unknown to the node
+    /// (e.g. not broadcast yet).
+    ///
+    /// The returned position is the pair required to derive a BOLT 7
+    /// `short_channel_id` from the funding transaction.
+    ///
+    /// # Panics
+    ///
+    /// - If `bitcoin-cli getrawtransaction` or `getblock` fails to execute.
+    /// - If either command succeeds but its output is not valid JSON.
+    /// - If `getblock` returns a block whose transaction list does not contain
+    ///   the queried txid (would indicate an inconsistent bitcoind state).
+    #[must_use]
+    pub fn get_transaction_block_position(&self, txid: Txid) -> Option<TxBlockPosition> {
         #[derive(Deserialize)]
-        struct GetRawTransactionResponse {
-            // Omitted by `getrawtransaction` while the transaction is unconfirmed
-            // (in the mempool), so default to zero confirmations.
-            #[serde(default)]
-            confirmations: u32,
+        struct GetBlockResponse {
+            height: u32,
+            // Transaction ids in the order they appear in the block. The index
+            // within this list is the `tx_index` used by `short_channel_id`.
+            tx: Vec<String>,
         }
 
-        let tx_out = self
+        // No `blockhash` means the transaction is in the mempool but not yet
+        // confirmed.
+        let blockhash = self.get_raw_transaction_info(txid)?.blockhash?;
+
+        let block_out = self
             .run()
-            .arg("getrawtransaction")
-            .arg(txid.to_string())
+            .arg("getblock")
+            .arg(&blockhash)
             .arg("1")
             .output()
-            .expect("bitcoin-cli getrawtransaction should not fail");
+            .expect("bitcoin-cli getblock should not fail");
+        assert!(
+            block_out.status.success(),
+            "bitcoin-cli getblock {} failed: {}",
+            blockhash,
+            String::from_utf8_lossy(&block_out.stderr)
+        );
 
-        // A non-zero exit means the transaction is unknown to the node, which is
-        // expected before broadcast, so treat it as zero confirmations.
-        if !tx_out.status.success() {
-            return 0;
-        }
+        let block: GetBlockResponse =
+            serde_json::from_slice(&block_out.stdout).expect("getblock should return valid JSON");
 
-        let tx_info: GetRawTransactionResponse = serde_json::from_slice(&tx_out.stdout)
-            .expect("getrawtransaction should return valid JSON");
+        let txid_str = txid.to_string();
+        let tx_index = block
+            .tx
+            .iter()
+            .position(|id| id == &txid_str)
+            .expect("getblock tx list should contain the queried txid");
+        let tx_index = u32::try_from(tx_index).expect("tx_index fits in u32");
 
-        tx_info.confirmations
+        Some(TxBlockPosition {
+            block_height: block.height,
+            tx_index,
+        })
     }
 }
