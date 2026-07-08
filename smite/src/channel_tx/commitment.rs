@@ -3305,6 +3305,322 @@ mod tests {
         ));
     }
 
+    /// Not from BOLT 3 test vectors; the expected signatures were generated
+    /// by `eclair` as the source of truth.
+    /// Tests the case where HTLC `amount_msat % 1000 != 0` to ensure there is no
+    /// off-by-one error in HTLC amount calculation.
+    #[test]
+    fn commitment_tx_with_htlc_amount_msat_not_multiple_of_1000_anchor() {
+        let (chan_config, mut commitment_params, opener_holder, acceptor_holder) =
+            bolt3_commitment_params(
+                647,
+                7_000_000_000,
+                3_000_000_000,
+                546,
+                vec![0x40, 0x00, 0x00],
+            );
+        let htlc = Htlc {
+            id: 0,
+            offerer: Side::Opener,
+            amount_msat: 2_000_999,
+            cltv_expiry: 500,
+            payment_hash: [0; 32],
+        };
+        commitment_params.add_htlc(htlc).unwrap();
+
+        // Opener signs own commitment.
+        let (local_signature, local_htlc_signsignature) =
+            chan_config.sign_holder_commitment(&commitment_params, &opener_holder);
+        assert_eq!(
+            hex::encode(local_signature.serialize_der()),
+            "304402206e7365edbeeab65e2d652070cf6836d5da2a13c17f5366427e2c5d24ea97f0e202207ec990ea4b1e0d4d7902522cc7dc3c37ca771aa7f2da6a83c166f3f906f541b9",
+        );
+        assert_eq!(
+            hex::encode(local_htlc_signsignature[0].serialize_der()),
+            "3045022100cf2585a9a423f20a897fd78612e2c407f786e5194b632221cd6b31056c54624d02206215236fc36cacb2e90dc6df9485c6c662919fa819ba34793267828a9db224fd",
+        );
+
+        // Acceptor signs opener's commitment.
+        let remote_signature = der_sig(
+            "30440220509de9833bddefdbfc68c5618b28344598e600011476d750729227228c7cd03002204e18f7bc12f7e73e4a1a5523a1a77d20b05d7a08deee8b6eb641646e0577b5e2",
+        );
+        let remote_htlc_signature = vec![der_sig(
+            "3045022100cce5b9738f0233766886815c8716dd72997756f2428e1d81a2ab3bc30e3e458a022024d80702719b758a618bab07774ef3f0a2745266473488dfcde8265658c631d1",
+        )];
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &opener_holder,
+            &remote_signature,
+            &remote_htlc_signature,
+        ));
+
+        // Opener signs the acceptor's commitment, then the acceptor verifies it.
+        let (acceptor_commit_sig, acceptor_htlc_sigs) =
+            chan_config.sign_counterparty_commitment(&commitment_params, &opener_holder);
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &acceptor_holder,
+            &acceptor_commit_sig,
+            &acceptor_htlc_sigs,
+        ));
+    }
+
+    /// Not from BOLT 3 test vectors; the expected signatures were generated
+    /// by `eclair` as the source of truth.
+    /// Tests the case where an HTLC output has the same value as the non-htlc
+    /// output, ensuring outputs with equal values are ordered by `script_pubkey`
+    /// and the HTLC output index accounts for outputs inserted before it.
+    #[test]
+    fn commitment_tx_with_htlc_value_equals_non_htlc_value_anchor() {
+        let (chan_config, mut commitment_params, opener_holder, acceptor_holder) =
+            bolt3_commitment_params(
+                15_000,
+                8_000_000_000,
+                2_000_000_000,
+                546,
+                vec![0x40, 0x00, 0x00],
+            );
+        let htlc = Htlc {
+            id: 0,
+            offerer: Side::Opener,
+            amount_msat: 2_000_000_000,
+            cltv_expiry: 500,
+            payment_hash: [0; 32],
+        };
+        commitment_params.add_htlc(htlc).unwrap();
+
+        // Opener signs own commitment.
+        let (local_signature, local_htlc_signsignature) =
+            chan_config.sign_holder_commitment(&commitment_params, &opener_holder);
+        assert_eq!(
+            hex::encode(local_signature.serialize_der()),
+            "304402200dec768812a74dff68dfb5cf4c69ceaabb5cb983784f937f804f6d0f23ae08e902206be6c6a073bfa225beb34fd768e97d1976a0824be7d86600a311284d34e9d11f",
+        );
+        assert_eq!(
+            hex::encode(local_htlc_signsignature[0].serialize_der()),
+            "304402204046207472175337796f45aae19af6a2d4178dc1b716ab2c821ac8c0e8c0163b0220353ddce7c7aad1446d6145fbc92ef2222ddbe3b2ad37a103d73a6506986b6cce",
+        );
+
+        // Acceptor signs opener's commitment.
+        let remote_signature = der_sig(
+            "304402204657f701066d94fc6a46b9581503eb87c81cd7fb2523f8d6e99c5f5fec3b810802204208d3d0e882ca7db6856a46fe3b06be4c68f1f4a3b6e743374aaaf0270fb160",
+        );
+        let remote_htlc_signature = vec![der_sig(
+            "3045022100e8646cb7d334f3fbb46cfb028a6a5bddcd02495631c9debca395272d55a8f491022067f511cfc2b3a7a139b774e4f4767f3552d8f18a8654e054f88341b6c935221e",
+        )];
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &opener_holder,
+            &remote_signature,
+            &remote_htlc_signature,
+        ));
+
+        // Opener signs the acceptor's commitment, then the acceptor verifies it.
+        let (acceptor_commit_sig, acceptor_htlc_sigs) =
+            chan_config.sign_counterparty_commitment(&commitment_params, &opener_holder);
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &acceptor_holder,
+            &acceptor_commit_sig,
+            &acceptor_htlc_sigs,
+        ));
+    }
+
+    /// Not from BOLT 3 test vectors; the expected signatures were generated
+    /// by `eclair` as the source of truth.
+    /// Tests the case where the non-htlc outputs sort between two HTLC outputs,
+    /// so only the HTLC outputs after each insertion point are shifted to later
+    /// output indices.
+    #[test]
+    fn commitment_tx_with_non_htlc_outputs_between_htlc_outputs_anchor() {
+        let (chan_config, mut commitment_params, opener_holder, acceptor_holder) =
+            bolt3_commitment_params(
+                15_000,
+                7_000_000_000,
+                3_000_000_000,
+                546,
+                vec![0x40, 0x00, 0x00],
+            );
+        let htlc1 = Htlc {
+            id: 0,
+            offerer: Side::Opener,
+            amount_msat: 2_000_000_000,
+            cltv_expiry: 500,
+            payment_hash: [0; 32],
+        };
+        let htlc2 = Htlc {
+            id: 1,
+            offerer: Side::Opener,
+            amount_msat: 4_000_000_000,
+            cltv_expiry: 501,
+            payment_hash: [0; 32],
+        };
+        commitment_params.add_htlc(htlc1).unwrap();
+        commitment_params.add_htlc(htlc2).unwrap();
+
+        // Opener signs own commitment.
+        let (local_signature, local_htlc_signsignature) =
+            chan_config.sign_holder_commitment(&commitment_params, &opener_holder);
+        assert_eq!(
+            hex::encode(local_signature.serialize_der()),
+            "304402205089ec3e39ec7ae4d13e2dbf6fe968a1d9b254faf38eb8a2bc66722b8fc05ccb022020f1b80237b8d41b843897774e664147b3ea69ca8c4ada3fdf75e86fe11410ec",
+        );
+        assert_eq!(
+            hex::encode(local_htlc_signsignature[0].serialize_der()),
+            "3044022005fda3445684d34f33cf4ae625acf5039c772919fe6a2c69d120ad202f1d3101022071a9481a2748726093f00c0ed4536478389b6e95541dc65a95c7048cd4a728d6",
+        );
+        assert_eq!(
+            hex::encode(local_htlc_signsignature[1].serialize_der()),
+            "304402206fecae256ecc8d031ba9740b76adaecf5390e7c1e0a6e8ce368a9cca8e62e87002201ec9821c0396c1b34200d54d8a40c4957f25984d4e41a021a126ed38ef154423",
+        );
+
+        // Acceptor signs opener's commitment.
+        let remote_signature = der_sig(
+            "3045022100bbb32f1b07e16ad3e4ae0ed0a59297dbd8502385996d2f0cbf3b2a66d9d2949702200fc0444198a3d7168eb72adb3172bba53219b17e79ec26e346c638ea9a09d073",
+        );
+        let remote_htlc_signature = vec![
+            der_sig(
+                "304402204dbcc299bb4f4d6c639ca75fdafdcf223d919bba06a95b947f321ca0b459a0fb02204d1e468b852fba37c69bb31d76c04b727a2793ea5ed389452fcdf93e93dbfcba",
+            ),
+            der_sig(
+                "304502210098d77f27cdbdf2b9223b4e98a58d9a8dcb8bac0daae9fa9ebab4a03ec74429f80220421c43b913e6ade19085af521f69b209ff2f6a0b70b7fbc583dc96a911571760",
+            ),
+        ];
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &opener_holder,
+            &remote_signature,
+            &remote_htlc_signature,
+        ));
+
+        // Opener signs the acceptor's commitment, then the acceptor verifies it.
+        let (acceptor_commit_sig, acceptor_htlc_sigs) =
+            chan_config.sign_counterparty_commitment(&commitment_params, &opener_holder);
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &acceptor_holder,
+            &acceptor_commit_sig,
+            &acceptor_htlc_sigs,
+        ));
+    }
+
+    /// Not from BOLT 3 test vectors; the expected signatures were generated
+    /// by `eclair` as the source of truth.
+    /// Tests the case where two sides have asymmetric dust limits, so the same
+    /// HTLC is an output on one commitment and trimmed on the other.
+    #[test]
+    fn commitment_tx_with_asymmetric_dust_limits_anchor() {
+        let (mut chan_config, mut commitment_params, opener_holder, acceptor_holder) =
+            bolt3_commitment_params(
+                15_000,
+                7_000_000_000,
+                3_000_000_000,
+                546,
+                vec![0x40, 0x00, 0x00],
+            );
+        chan_config.acceptor.dust_limit_satoshis = 20_000;
+        let htlc = Htlc {
+            id: 0,
+            offerer: Side::Acceptor,
+            amount_msat: 15_000_000,
+            cltv_expiry: 500,
+            payment_hash: [0; 32],
+        };
+        commitment_params.add_htlc(htlc).unwrap();
+
+        // Opener signs own commitment.
+        let (local_signature, local_htlc_signsignature) =
+            chan_config.sign_holder_commitment(&commitment_params, &opener_holder);
+        assert_eq!(local_htlc_signsignature.len(), 1);
+        assert_eq!(
+            hex::encode(local_signature.serialize_der()),
+            "3044022037e9c8d6a877b3ef02fb7f41f2f24746ba0ae11f868b3756ec3b88f1c60cf4f502204e9006f0c1748184bcdbd66c739dbbf4f219d0bb3524bf2bb7a09f29a2116a30",
+        );
+        assert_eq!(
+            hex::encode(local_htlc_signsignature[0].serialize_der()),
+            "304402203f734f41a30faa7a88c56e145d01eafde90302936958d0f6821032685e5d8496022062834eaa224c50d93281aceffca52df0de211c6468fa15066b05d8d598f5baa8",
+        );
+
+        // Acceptor signs opener's commitment.
+        let remote_signature = der_sig(
+            "304402201c8c18214e67c0f9f5ec6a5960c5c4ba758197631ccadc1370f760c67f541eb502204d45a5d2c0e906e0cb6f7c9936b55522d5cebe06366ee4687ae4d548f9e3bdcd",
+        );
+        let remote_htlc_signature = vec![der_sig(
+            "3045022100dcbd66f962a33cd8b9c03df38b1f90d140db5cd1296ec9f5d2416914dda74d090220014774c67e8c7274e59f684b0616c1fa92476ca691fce56d5cce8560a80a01ff",
+        )];
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &opener_holder,
+            &remote_signature,
+            &remote_htlc_signature,
+        ));
+
+        // Opener signs the acceptor's commitment, then the acceptor verifies it.
+        let (acceptor_commit_sig, acceptor_htlc_sigs) =
+            chan_config.sign_counterparty_commitment(&commitment_params, &opener_holder);
+        assert!(acceptor_htlc_sigs.is_empty());
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &acceptor_holder,
+            &acceptor_commit_sig,
+            &acceptor_htlc_sigs,
+        ));
+    }
+
+    /// Not from BOLT 3 test vectors; the expected signatures were generated
+    /// by `eclair` as the source of truth.
+    /// Tests the case where a party's main output is trimmed but the commitment
+    /// still carries a non-dust HTLC, so both anchor outputs must be present.
+    #[test]
+    fn commitment_tx_with_main_output_trimmed_but_htlcs_present_anchor() {
+        let (chan_config, mut commitment_params, opener_holder, acceptor_holder) =
+            bolt3_commitment_params(15_000, 10_000_000_000, 0, 546, vec![0x40, 0x00, 0x00]);
+        let htlc = Htlc {
+            id: 0,
+            offerer: Side::Opener,
+            amount_msat: 5_000_000,
+            cltv_expiry: 500,
+            payment_hash: [0; 32],
+        };
+        commitment_params.add_htlc(htlc).unwrap();
+
+        // Opener signs own commitment.
+        let (local_signature, local_htlc_signsignature) =
+            chan_config.sign_holder_commitment(&commitment_params, &opener_holder);
+        assert_eq!(
+            hex::encode(local_signature.serialize_der()),
+            "3045022100effa83adb5b8878580b470d3a6d3fe922ffc8e05b576de8b2084326cbe7a5b64022062f42e170abb83924b6e7c32229534de60290b3a6b325e7ebb30f3f663d4517b",
+        );
+        assert_eq!(
+            hex::encode(local_htlc_signsignature[0].serialize_der()),
+            "3044022019117ef6efd57c43db551f800cd100488521b462ab0daadceee7f1172eecf11f022064e7c452d3c5ca7e2ff029109394800a7c09b1b10a609fe548182f6daa2c8680",
+        );
+
+        // Acceptor signs opener's commitment.
+        let remote_signature = der_sig(
+            "3045022100f74c249e12c692454317bfeb868fc6cc04249a0cc84bf1cbfdd4177963fc045702202c40d41c1fbac3eb582201dda0c3faf3317a530fffa4016a1afc456405503c21",
+        );
+        let remote_htlc_signature = vec![der_sig(
+            "30440220717a09ec2d7ca248756e87bc3b28d2bf914ac66eabc6f9d91c245118eddd468c0220346cac86050ce10df472b0a7194c2d12376ca882052870cf67489a3956f55a86",
+        )];
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &opener_holder,
+            &remote_signature,
+            &remote_htlc_signature,
+        ));
+
+        // Opener signs the acceptor's commitment, then the acceptor verifies it.
+        let (acceptor_commit_sig, acceptor_htlc_sigs) =
+            chan_config.sign_counterparty_commitment(&commitment_params, &opener_holder);
+        assert!(chan_config.verify_counterparty_signature(
+            &commitment_params,
+            &acceptor_holder,
+            &acceptor_commit_sig,
+            &acceptor_htlc_sigs,
+        ));
+    }
+
     // BOLT 3 Appendix E: Key Derivation Test Vectors
     //    https://github.com/lightning/bolts/blob/master/03-transactions.md#appendix-e-key-derivation-test-vectors
 
