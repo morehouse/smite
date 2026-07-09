@@ -1934,7 +1934,7 @@ fn instr_delete_preserves_affine_producers() {
         let mut program = original.clone();
         // The only deletable instructions in the program are the `RecvAcceptChannel`s.
         if mutator.mutate(&mut program, &mut rng) {
-            assert!(program.instructions.len() == original.instructions.len() - 1);
+            assert_eq!(program.instructions.len(), original.instructions.len() - 1);
             assert!(
                 // The first `RecvAcceptChannel` was deleted.
                 program.instructions[2] == original.instructions[3] ||
