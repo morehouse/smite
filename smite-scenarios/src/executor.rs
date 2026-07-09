@@ -21,6 +21,39 @@ use smite::pending_channel::PendingChannel;
 use smite_ir::operation::AcceptChannelField;
 use smite_ir::{Operation, Program, Variable};
 use std::collections::HashMap;
+use std::time::Duration;
+
+/// The timeout used when receiving messages from the target. We will wait this
+/// long to receive an expected message before aborting program execution.
+///
+/// To determine the timeout value, we measured target response times to
+/// `open_channel` (`accept_channel` response) and `funding_created`
+/// (`funding_signed` response) within the Nyx VM while running a fuzzing
+/// campaign that saturated all CPU cores. The *maximum* response times observed
+/// were:
+/// - LDK: 3ms `accept_channel`; 3ms `funding_signed`
+/// - LND: 68ms `accept_channel`; 5ms `funding_signed`
+/// - CLN: 142ms `accept_channel`; 179ms `funding_signed`
+/// - Eclair: 444ms `accept_channel`; 288ms `funding_signed`
+///
+/// Thus a timeout of 1s provides more than a 2x buffer over the slowest
+/// observed response times.
+///
+/// TODO: Once HTLC/commitment operations are supported, measure response times
+/// for commitment operations and increase timeout if needed.
+///
+/// TODO: Investigate optimizations to the Eclair workload and remeasure
+/// response times to see if timeout can be decreased further.
+pub const RECV_IDLE_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// The timeout used when receiving a `channel_ready` message from the target.
+///
+/// Most targets poll for new blocks every 2s or less, so 5s is enough time to
+/// wait for their `channel_ready` after mining the funding transaction.
+///
+/// FIXME: CLN polls every 30s, so this timeout is not enough for CLN. Look into
+/// reconfiguring or patching CLN to poll more frequently.
+pub const RECV_CHANNEL_READY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Default maximum `minimum_depth` that Lightning implementations advertise in
 /// `accept_channel`. Once the funding transaction reaches this many
@@ -107,6 +140,21 @@ pub trait Connection {
     ///
     /// Returns an error if the receive fails.
     fn recv_message(&mut self) -> Result<Vec<u8>, ConnectionError>;
+
+    /// Sets the read timeout applied to subsequent `recv_message` calls. `None`
+    /// makes reads block indefinitely.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the timeout cannot be set.
+    fn set_read_timeout(&mut self, timeout: Option<Duration>) -> Result<(), ConnectionError>;
+
+    /// Returns the current read timeout or `None` if reads block indefinitely.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the timeout cannot be read.
+    fn read_timeout(&self) -> Result<Option<Duration>, ConnectionError>;
 }
 
 impl Connection for NoiseConnection {
@@ -116,6 +164,14 @@ impl Connection for NoiseConnection {
 
     fn recv_message(&mut self) -> Result<Vec<u8>, ConnectionError> {
         NoiseConnection::recv_message(self)
+    }
+
+    fn set_read_timeout(&mut self, timeout: Option<Duration>) -> Result<(), ConnectionError> {
+        NoiseConnection::set_read_timeout(self, timeout)
+    }
+
+    fn read_timeout(&self) -> Result<Option<Duration>, ConnectionError> {
+        NoiseConnection::read_timeout(self)
     }
 }
 
@@ -1044,9 +1100,14 @@ fn build_channel_update(variables: &[Option<Variable>], inputs: &[usize]) -> Cha
 
 /// Receives the next message of interest, auto-responding to pings and silently
 /// skipping unknown odd-type messages.
+///
+/// The read is bounded by `timeout`.
 #[allow(clippy::similar_names)] // ping and pong are canonical names
-fn recv_non_ping(conn: &mut impl Connection) -> Result<Message, ExecuteError> {
-    loop {
+fn recv_non_ping(conn: &mut impl Connection, timeout: Duration) -> Result<Message, ExecuteError> {
+    let previous = conn.read_timeout()?;
+    conn.set_read_timeout(Some(timeout))?;
+
+    let result: Result<Message, ExecuteError> = (|| loop {
         let msg_bytes = conn.recv_message()?;
         let msg = Message::decode(&msg_bytes)?;
         match msg {
@@ -1059,12 +1120,16 @@ fn recv_non_ping(conn: &mut impl Connection) -> Result<Message, ExecuteError> {
             }
             other => return Ok(other),
         }
-    }
+    })();
+
+    // Ignore a restore failure so the receive's own result is surfaced.
+    let _ = conn.set_read_timeout(previous);
+    result
 }
 
 /// Receives and decodes an `accept_channel` message.
 fn recv_accept_channel(conn: &mut impl Connection) -> Result<AcceptChannel, ExecuteError> {
-    match recv_non_ping(conn)? {
+    match recv_non_ping(conn, RECV_IDLE_TIMEOUT)? {
         Message::AcceptChannel(ac) => Ok(ac),
         other => Err(ExecuteError::UnexpectedMessage {
             expected: msg_type::ACCEPT_CHANNEL,
@@ -1075,7 +1140,7 @@ fn recv_accept_channel(conn: &mut impl Connection) -> Result<AcceptChannel, Exec
 
 /// Receives and decodes a `funding_signed` message.
 fn recv_funding_signed(conn: &mut impl Connection) -> Result<FundingSigned, ExecuteError> {
-    match recv_non_ping(conn)? {
+    match recv_non_ping(conn, RECV_IDLE_TIMEOUT)? {
         Message::FundingSigned(fs) => Ok(fs),
         other => Err(ExecuteError::UnexpectedMessage {
             expected: msg_type::FUNDING_SIGNED,
@@ -1098,7 +1163,7 @@ fn recv_channel_ready(
     conn: &mut impl Connection,
     channel_states: &mut HashMap<ChannelId, ChannelState>,
 ) -> Result<(), ExecuteError> {
-    let cr = match recv_non_ping(conn)? {
+    let cr = match recv_non_ping(conn, RECV_CHANNEL_READY_TIMEOUT)? {
         Message::ChannelReady(cr) => cr,
         other => {
             return Err(ExecuteError::UnexpectedMessage {
@@ -1301,6 +1366,14 @@ mod tests {
             self.recv_queue
                 .pop_front()
                 .ok_or_else(|| ConnectionError::Io(std::io::ErrorKind::UnexpectedEof.into()))
+        }
+
+        fn set_read_timeout(&mut self, _timeout: Option<Duration>) -> Result<(), ConnectionError> {
+            Ok(())
+        }
+
+        fn read_timeout(&self) -> Result<Option<Duration>, ConnectionError> {
+            Ok(None)
         }
     }
 
