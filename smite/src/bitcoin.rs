@@ -86,11 +86,31 @@ impl BitcoinCli {
 
     /// Mines the given number of blocks.
     ///
+    /// Any transactions stored in `private_mempool` are included in the first
+    /// block. Any remaining blocks are then mined normally. If
+    /// `private_mempool` is empty, the current mempool is mined as usual.
+    ///
     /// # Panics
     ///
-    /// If the `bitcoin-cli -generate` command fails to execute or returns
-    /// a non-success exit status.
-    pub fn mine_blocks(&self, num_blocks: u8) {
+    /// If the `bitcoin-cli -generate` or `generateblock` command fails to
+    /// execute or exits non-zero.
+    pub fn mine_blocks(&self, num_blocks: u8, private_mempool: &[String]) {
+        if private_mempool.is_empty() {
+            self.generate(num_blocks);
+            return;
+        }
+
+        // Include the private mempool in the first block, then mine the
+        // remaining blocks normally.
+        self.mine_block_including(private_mempool);
+        if num_blocks > 1 {
+            self.generate(num_blocks - 1);
+        }
+    }
+
+    /// Mines `num_blocks` blocks from the node's mempool via
+    /// `bitcoin-cli -generate`.
+    fn generate(&self, num_blocks: u8) {
         let mine_out = self
             .run()
             .arg("-generate")
@@ -103,6 +123,62 @@ impl BitcoinCli {
             num_blocks,
             String::from_utf8_lossy(&mine_out.stderr)
         );
+    }
+
+    /// Mines a single block containing the current mempool together with the
+    /// transactions stored in `private_mempool`.
+    ///
+    /// Since `generateblock` only includes the transactions it is given, the
+    /// current mempool (fetched via `getrawmempool`) is included as well so
+    /// already-broadcast transactions are not omitted from the block.
+    ///
+    /// # Panics
+    ///
+    /// - If `bitcoin-cli getrawmempool`, `getnewaddress`, or `generateblock`
+    ///   fails to execute or exits non-zero.
+    /// - If `getrawmempool` does not return valid JSON.
+    /// - If `getnewaddress` does not return a valid regtest address.
+    /// - If any transaction in `private_mempool` is consensus-invalid.
+    /// - If the combined transaction list contains a duplicate rawtx/txid or is
+    ///   not topologically ordered.
+    fn mine_block_including(&self, private_mempool: &[String]) {
+        let mut txs = self.get_raw_mempool();
+        txs.extend_from_slice(private_mempool);
+        let txs_json = serde_json::to_string(&txs).expect("tx list serializes to valid JSON");
+
+        let address = self.get_new_address();
+        let gen_out = self
+            .run()
+            .arg("generateblock")
+            .arg(address.to_string())
+            .arg(&txs_json)
+            .output()
+            .expect("bitcoin-cli generateblock should not fail");
+        assert!(
+            gen_out.status.success(),
+            "bitcoin-cli generateblock failed: {}",
+            String::from_utf8_lossy(&gen_out.stderr)
+        );
+    }
+
+    /// Returns the txids currently in the node's mempool.
+    ///
+    /// # Panics
+    ///
+    /// - If `bitcoin-cli getrawmempool` fails to execute or exits non-zero.
+    /// - If the output is not valid JSON.
+    fn get_raw_mempool(&self) -> Vec<String> {
+        let out = self
+            .run()
+            .arg("getrawmempool")
+            .output()
+            .expect("bitcoin-cli getrawmempool should not fail");
+        assert!(
+            out.status.success(),
+            "bitcoin-cli getrawmempool failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice(&out.stdout).expect("getrawmempool should return valid JSON")
     }
 
     /// Returns the wallet's spendable UTXOs, sorted deterministically.
@@ -168,6 +244,16 @@ impl BitcoinCli {
     /// - If the output is not valid UTF-8 or not a valid regtest address.
     #[must_use]
     pub fn get_new_address_script_pubkey(&self) -> ScriptBuf {
+        self.get_new_address().script_pubkey()
+    }
+
+    /// Returns a newly generated wallet address.
+    ///
+    /// # Panics
+    ///
+    /// - If `bitcoin-cli getnewaddress` fails to execute or exits non-zero.
+    /// - If the output is not valid UTF-8 or not a valid regtest address.
+    fn get_new_address(&self) -> Address {
         let addr_out = self
             .run()
             .arg("getnewaddress")
@@ -183,20 +269,32 @@ impl BitcoinCli {
         Address::from_str(addr_str.trim())
             .and_then(|a| a.require_network(Network::Regtest))
             .expect("getnewaddress should return a valid address")
-            .script_pubkey()
     }
 
     /// Signs and broadcasts a transaction, unless it is already confirmed.
     ///
+    /// If the signed transaction is accepted by the mempool, it is broadcast
+    /// normally. If the mempool rejects it (for example, because it is below
+    /// the minimum relay feerate or creates a dust output), it is returned
+    /// instead so the caller can mine it later, bypassing mempool policy.
+    ///
+    /// Returns `None` if the transaction was already confirmed or was broadcast
+    /// successfully, or hex-encoded raw transaction if it was rejected by the
+    /// mempool.
+    ///
     /// # Panics
     ///
-    /// - If `bitcoin-cli signrawtransactionwithwallet` or `sendrawtransaction`
-    ///   fails to execute or exits non-zero.
+    /// - If `bitcoin-cli signrawtransactionwithwallet` fails to execute or
+    ///   exits non-zero.
     /// - If the sign output is not valid JSON.
     /// - If signing returns `complete=false`.
-    /// - If `sendrawtransaction` does not return a valid UTF-8 txid.
+    /// - If `bitcoin-cli sendrawtransaction` fails to execute.
+    /// - If the broadcast is rejected for any reason other than a below-dust
+    ///   output or a below-minimum relay feerate.
+    /// - If a successful broadcast does not return a valid UTF-8 txid.
     /// - If the broadcasted txid does not match the given transaction's txid.
-    pub fn sign_and_broadcast_tx(&self, tx: &Transaction) {
+    #[must_use]
+    pub fn sign_and_broadcast_tx(&self, tx: &Transaction) -> Option<String> {
         #[derive(Deserialize)]
         struct SignRawTransactionResponse {
             hex: String,
@@ -208,7 +306,7 @@ impl BitcoinCli {
         // signing and broadcasting it again.
         let txid = tx.compute_txid();
         if self.get_transaction_confirmations(txid) > 0 {
-            return;
+            return None;
         }
 
         let tx_hex = serialize_hex(tx);
@@ -240,11 +338,17 @@ impl BitcoinCli {
             .arg("0")
             .output()
             .expect("bitcoin-cli sendrawtransaction should not fail");
-        assert!(
-            broadcast_out.status.success(),
-            "bitcoin-cli sendrawtransaction failed: {}",
-            String::from_utf8_lossy(&broadcast_out.stderr)
-        );
+
+        if !broadcast_out.status.success() {
+            let stderr = String::from_utf8_lossy(&broadcast_out.stderr);
+            // If the feerate is below the default minimum relay feerate, or any
+            // output is below its dust threshold, return the transactions so
+            // they can be mined directly, bypassing mempool policy.
+            if stderr.contains("tx with dust output") || stderr.contains("min relay fee not met") {
+                return Some(signed_tx.hex);
+            }
+            panic!("bitcoin-cli sendrawtransaction failed: {stderr}");
+        }
 
         // Safe because bitcoind descriptor wallets currently default to native
         // SegWit, so signing does not alter the txid computed from the unsigned
@@ -256,6 +360,8 @@ impl BitcoinCli {
             txid.to_string(),
             "sendrawtransaction returned unexpected txid"
         );
+
+        None
     }
 
     /// Locks the given outpoints in the wallet so they are excluded from

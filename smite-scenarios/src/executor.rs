@@ -62,17 +62,24 @@ const MAX_MINIMUM_DEPTH: u32 = 8;
 
 /// Abstraction over bitcoin-cli operations, allowing mock implementations in tests.
 pub trait BitcoinRpc {
-    /// Mines the given number of blocks.
-    fn mine_blocks(&mut self, num_blocks: u8);
+    /// Mines the given number of blocks, including any transactions in the
+    /// `private_mempool` in the first block.
+    fn mine_blocks(&mut self, num_blocks: u8, private_mempool: &[String]);
 
     /// Returns the wallet's spendable UTXOs.
+    #[must_use]
     fn get_utxos(&mut self) -> Vec<Utxo>;
 
     /// Returns the scriptPubKey for a newly generated wallet address.
+    #[must_use]
     fn get_new_address_script_pubkey(&mut self) -> ScriptBuf;
 
-    /// Signs and broadcasts a transaction
-    fn sign_and_broadcast_tx(&mut self, tx: &bitcoin::Transaction);
+    /// Signs and broadcasts a transaction. Returns hex-encoded raw transaction
+    /// if it is consensus-valid but rejected by mempool policy, so it can be
+    /// added to the `private_mempool`; returns `None` if it was broadcast or is
+    /// already confirmed.
+    #[must_use]
+    fn sign_and_broadcast_tx(&mut self, tx: &bitcoin::Transaction) -> Option<String>;
 
     /// Locks the given outpoints so subsequent [`get_utxos`](Self::get_utxos)
     /// calls exclude them, preventing independently built transactions from
@@ -81,12 +88,13 @@ pub trait BitcoinRpc {
 
     /// Returns the number of confirmations for the transaction with the given
     /// txid, or `0` if it is unconfirmed or unknown to the node.
+    #[must_use]
     fn get_transaction_confirmations(&mut self, txid: Txid) -> u32;
 }
 
 impl BitcoinRpc for BitcoinCli {
-    fn mine_blocks(&mut self, num_blocks: u8) {
-        BitcoinCli::mine_blocks(self, num_blocks);
+    fn mine_blocks(&mut self, num_blocks: u8, private_mempool: &[String]) {
+        BitcoinCli::mine_blocks(self, num_blocks, private_mempool);
     }
 
     fn get_utxos(&mut self) -> Vec<Utxo> {
@@ -97,8 +105,8 @@ impl BitcoinRpc for BitcoinCli {
         BitcoinCli::get_new_address_script_pubkey(self)
     }
 
-    fn sign_and_broadcast_tx(&mut self, tx: &bitcoin::Transaction) {
-        BitcoinCli::sign_and_broadcast_tx(self, tx);
+    fn sign_and_broadcast_tx(&mut self, tx: &bitcoin::Transaction) -> Option<String> {
+        BitcoinCli::sign_and_broadcast_tx(self, tx)
     }
 
     fn lock_utxos(&mut self, outpoints: &[OutPoint]) {
@@ -244,6 +252,12 @@ pub struct Executor<C, B> {
     /// `temporary_channel_id`, so the funding flow can build commitments from
     /// the parameters actually sent on the wire.
     negotiations: HashMap<ChannelId, PendingChannel>,
+    /// Transactions stored outside Bitcoin Core's mempool, typically because they
+    /// were rejected by mempool policy, to be included in the next `MineBlocks`
+    /// operation. Each is stored as `(txid, raw_hex)`: re-signing the same
+    /// transaction can change its raw hex, but the txid stays the same, so
+    /// deduplication keys on the txid while the raw hex is what gets mined.
+    private_mempool: Vec<(Txid, String)>,
 }
 
 impl<C: Connection, B: BitcoinRpc> Executor<C, B> {
@@ -256,6 +270,7 @@ impl<C: Connection, B: BitcoinRpc> Executor<C, B> {
             context,
             channel_states: HashMap::new(),
             negotiations: HashMap::new(),
+            private_mempool: Vec::new(),
         }
     }
 
@@ -476,19 +491,34 @@ impl<C: Connection, B: BitcoinRpc> Executor<C, B> {
                 }
 
                 Operation::MineBlocks(v) => {
-                    self.bitcoin_cli.mine_blocks(*v);
+                    // Clear the private mempool and mine the requested blocks,
+                    // adding those transactions to the first block.
+                    let private_mempool: Vec<String> = std::mem::take(&mut self.private_mempool)
+                        .into_iter()
+                        .map(|(_, hex)| hex)
+                        .collect();
+                    self.bitcoin_cli.mine_blocks(*v, &private_mempool);
                     log::debug!("[{:?}] MineBlocks: mined {} block(s)", start.elapsed(), v);
                     None
                 }
 
                 Operation::BroadcastTransaction => {
                     let ft = resolve_funding_transaction(&variables, instr.inputs[0]);
+                    let txid = ft.tx.compute_txid();
                     log::debug!(
                         "[{:?}] BroadcastTransaction: txid={}",
                         start.elapsed(),
-                        ft.tx.compute_txid(),
+                        txid
                     );
-                    self.bitcoin_cli.sign_and_broadcast_tx(&ft.tx);
+                    // Queue transactions rejected by the mempool in the private
+                    // mempool so they can be mined later. Dedup on txid so the
+                    // same transaction broadcast again before then is queued
+                    // once, regardless of any change to its signed hex.
+                    if let Some(hex) = self.bitcoin_cli.sign_and_broadcast_tx(&ft.tx)
+                        && !self.private_mempool.iter().any(|(t, _)| *t == txid)
+                    {
+                        self.private_mempool.push((txid, hex));
+                    }
                     None
                 }
             };
@@ -1392,6 +1422,7 @@ mod tests {
     #[derive(Default)]
     struct MockBitcoinCli {
         mine_blocks_calls: Vec<u8>,
+        mined_private_mempool: Vec<String>,
         broadcast_calls: Vec<Transaction>,
         utxos: Vec<Utxo>,
         change_spk: ScriptBuf,
@@ -1399,8 +1430,9 @@ mod tests {
     }
 
     impl BitcoinRpc for MockBitcoinCli {
-        fn mine_blocks(&mut self, num_blocks: u8) {
+        fn mine_blocks(&mut self, num_blocks: u8, private_mempool: &[String]) {
             self.mine_blocks_calls.push(num_blocks);
+            self.mined_private_mempool = private_mempool.to_vec();
             self.confirmations += u32::from(num_blocks);
         }
 
@@ -1412,8 +1444,21 @@ mod tests {
             self.change_spk.clone()
         }
 
-        fn sign_and_broadcast_tx(&mut self, tx: &bitcoin::Transaction) {
+        fn sign_and_broadcast_tx(&mut self, tx: &bitcoin::Transaction) -> Option<String> {
             self.broadcast_calls.push(tx.clone());
+
+            // Simulate a mempool-policy rejection: if any output is below its
+            // dust threshold, return the tx hex so it gets queued in the
+            // private mempool. Otherwise the tx is accepted.
+            let has_dust = tx
+                .output
+                .iter()
+                .any(|o| o.value < o.script_pubkey.minimal_non_dust());
+            if has_dust {
+                Some(bitcoin::consensus::encode::serialize_hex(tx))
+            } else {
+                None
+            }
         }
 
         fn lock_utxos(&mut self, outpoints: &[OutPoint]) {
@@ -2769,6 +2814,7 @@ mod tests {
 
         // Verify that mine_blocks was called with the correct number
         assert_eq!(executor.bitcoin_cli.mine_blocks_calls, vec![6]);
+        assert!(executor.bitcoin_cli.mined_private_mempool.is_empty());
     }
 
     #[test]
@@ -2817,6 +2863,56 @@ mod tests {
         assert_eq!(
             broadcast_tx.compute_txid().to_string(),
             "09b0549b35f14ee862f63bd75811c6c27963c4dea6766ec6836952ec78df1e7e"
+        );
+    }
+
+    #[test]
+    fn execute_broadcast_dedupes_rejected_tx_in_private_mempool() {
+        let mock_cli = MockBitcoinCli {
+            utxos: vec![sample_utxo()],
+            change_spk: sample_change_spk(),
+            ..Default::default()
+        };
+
+        // Fund with a dust amount so the built funding tx carries a below-dust
+        // output.
+        let mut instrs = create_and_broadcast_tx_instructions();
+        instrs[4] = Instruction {
+            operation: Operation::LoadAmount(200),
+            inputs: vec![],
+        };
+        let funding_tx = instrs.len() - 2;
+        instrs.push(Instruction {
+            operation: Operation::BroadcastTransaction,
+            inputs: vec![funding_tx],
+        });
+        instrs.push(Instruction {
+            operation: Operation::MineBlocks(1),
+            inputs: vec![],
+        });
+
+        let mut executor = Executor::new(MockConnection::new(), mock_cli, sample_context());
+        executor
+            .execute(
+                &Program {
+                    instructions: instrs,
+                },
+                std::time::Instant::now(),
+            )
+            .unwrap();
+
+        assert_eq!(executor.bitcoin_cli.broadcast_calls.len(), 2);
+        assert_eq!(
+            executor.bitcoin_cli.broadcast_calls[0].compute_txid(),
+            executor.bitcoin_cli.broadcast_calls[1].compute_txid(),
+        );
+
+        let rejected_hex =
+            bitcoin::consensus::encode::serialize_hex(&executor.bitcoin_cli.broadcast_calls[0]);
+        assert!(executor.private_mempool.is_empty());
+        assert_eq!(
+            executor.bitcoin_cli.mined_private_mempool,
+            vec![rejected_hex]
         );
     }
 
@@ -3423,6 +3519,7 @@ mod tests {
                 std::time::Instant::now(),
             )
             .unwrap();
+        assert!(executor.bitcoin_cli.mined_private_mempool.is_empty());
 
         // The target's next per-commitment point is still unknown and the queued
         // `channel_ready` remains untouched.
@@ -3457,6 +3554,7 @@ mod tests {
                 std::time::Instant::now(),
             )
             .unwrap();
+        assert!(executor.bitcoin_cli.mined_private_mempool.is_empty());
 
         // The `channel_ready` was consumed and the target's next per-commitment
         // point is now recorded.
