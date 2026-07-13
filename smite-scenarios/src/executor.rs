@@ -1118,6 +1118,16 @@ fn recv_non_ping(conn: &mut impl Connection, timeout: Duration) -> Result<Messag
             Message::Unknown { msg_type, .. } => {
                 log::debug!("skipping unknown message type {msg_type}");
             }
+            // TODO: Gossip messages are not currently consumed by any scenario,
+            // so skip them for now. Revisit this once we want to extract their
+            // fields.
+            Message::ChannelAnnouncement(_)
+            | Message::NodeAnnouncement(_)
+            | Message::ChannelUpdate(_)
+            | Message::AnnouncementSignatures(_)
+            | Message::GossipTimestampFilter(_) => {
+                log::debug!("skipping gossip message type {}", msg.msg_type());
+            }
             other => return Ok(other),
         }
     })();
@@ -1333,7 +1343,7 @@ mod tests {
     use super::*;
     use bitcoin::secp256k1::{Secp256k1, SecretKey};
     use bitcoin::{Amount, Transaction};
-    use smite::bolt::{AcceptChannelTlvs, Init, Ping};
+    use smite::bolt::{AcceptChannelTlvs, GossipTimestampFilter, Init, Ping};
     use smite_ir::Instruction;
 
     // -- MockConnection --
@@ -2306,6 +2316,43 @@ mod tests {
             panic!("expected Pong, got {:?}", pong.msg_type());
         };
         assert_eq!(pong.ignored.len(), 4);
+    }
+
+    #[test]
+    fn execute_recv_skips_gossip() {
+        let gossip = GossipTimestampFilter::new([0u8; 32], 0, 86400);
+        let gossip_bytes = Message::GossipTimestampFilter(gossip).encode();
+        let ac_bytes = Message::AcceptChannel(sample_accept_channel()).encode();
+
+        let mut instrs = send_open_channel_instructions();
+        let sent_open_channel = instrs.len() - 1;
+        instrs.push(Instruction {
+            operation: Operation::RecvAcceptChannel,
+            inputs: vec![sent_open_channel],
+        });
+        let mut executor = Executor::new(
+            MockConnection::new(),
+            MockBitcoinCli::default(),
+            sample_context(),
+        );
+        executor.conn.queue_recv(gossip_bytes);
+        executor.conn.queue_recv(ac_bytes);
+        executor
+            .execute(
+                &Program {
+                    instructions: instrs,
+                },
+                std::time::Instant::now(),
+            )
+            .unwrap();
+
+        let accept_channel = executor
+            .negotiations
+            .values()
+            .next()
+            .and_then(|pending| pending.accept_channel.as_ref())
+            .expect("accept_channel recorded");
+        assert_eq!(accept_channel.clone(), sample_accept_channel());
     }
 
     #[test]
