@@ -107,6 +107,17 @@ impl NoiseConnection {
         Ok(self.stream.read_timeout()?)
     }
 
+    /// Sets the write timeout applied to subsequent `send_message` calls. `None`
+    /// makes writes block indefinitely.
+    ///
+    /// # Errors
+    ///
+    /// Returns an IO error if the underlying socket option cannot be set.
+    pub fn set_write_timeout(&mut self, timeout: Option<Duration>) -> Result<(), ConnectionError> {
+        self.stream.set_write_timeout(timeout)?;
+        Ok(())
+    }
+
     /// Receives and decrypts a message from the peer.
     ///
     /// # Errors
@@ -125,6 +136,75 @@ impl NoiseConnection {
         let msg = self.cipher.decrypt_message(&encrypted_msg)?;
 
         Ok(msg)
+    }
+
+    /// Splits the connection into a reader and a writer that can be used in
+    /// separate threads.
+    ///
+    /// Each half owns its own clone of the cipher over a `try_clone`d socket.
+    /// This is sound because BOLT 8 keys and nonces are per-direction:
+    /// [`NoiseReader`] only advances receive state and [`NoiseWriter`] only
+    /// advances send state, so the two clones never diverge on the fields each
+    /// one uses.
+    ///
+    /// # Errors
+    ///
+    /// Returns an IO error if the socket handle cannot be duplicated.
+    pub fn split(self) -> Result<(NoiseReader, NoiseWriter), ConnectionError> {
+        let reader = Self {
+            stream: self.stream.try_clone()?,
+            cipher: self.cipher.clone(),
+        };
+        Ok((NoiseReader(reader), NoiseWriter(self)))
+    }
+}
+
+/// The reader half of a split [`NoiseConnection`].
+pub struct NoiseReader(NoiseConnection);
+
+impl NoiseReader {
+    /// Sets the read timeout for subsequent `recv_message` calls (`None` blocks
+    /// indefinitely).
+    ///
+    /// # Errors
+    ///
+    /// Returns an IO error if the underlying socket option cannot be set.
+    pub fn set_read_timeout(&mut self, timeout: Option<Duration>) -> Result<(), ConnectionError> {
+        self.0.set_read_timeout(timeout)
+    }
+
+    /// Receives and decrypts a message from the peer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an IO error if reading fails, or a Noise error if decryption fails.
+    pub fn recv_message(&mut self) -> Result<Vec<u8>, ConnectionError> {
+        self.0.recv_message()
+    }
+}
+
+/// The writer half of a split [`NoiseConnection`].
+pub struct NoiseWriter(NoiseConnection);
+
+impl NoiseWriter {
+    /// Sends an encrypted message to the peer.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConnectionError::MessageTooLarge` if the message exceeds
+    /// `MAX_MESSAGE_SIZE`, or an IO error if writing fails.
+    pub fn send_message(&mut self, msg: &[u8]) -> Result<(), ConnectionError> {
+        self.0.send_message(msg)
+    }
+
+    /// Sets the write timeout for subsequent `send_message` calls (`None` blocks
+    /// indefinitely).
+    ///
+    /// # Errors
+    ///
+    /// Returns an IO error if the underlying socket option cannot be set.
+    pub fn set_write_timeout(&mut self, timeout: Option<Duration>) -> Result<(), ConnectionError> {
+        self.0.set_write_timeout(timeout)
     }
 }
 
