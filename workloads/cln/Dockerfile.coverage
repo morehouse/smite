@@ -73,6 +73,12 @@ RUN pip3 install --break-system-packages mako
 # Remove the SIGKILL to ensure we get full coverage data.
 RUN grep -q 'kill(sd->pid, SIGKILL)' lightningd/subd.c && \
     sed -i '/kill(sd->pid, SIGKILL)/d' lightningd/subd.c
+# Reduce the block-polling interval from the 30s default to 2s. CLN only
+# notices newly confirmed transactions when this poll runs, so shorten the
+# interval to make block-related events available to scenarios promptly.
+# FIXME: tune this value down after further experiments.
+RUN sed -i 's/topo->poll_seconds = 30;/topo->poll_seconds = 2;/' lightningd/chaintopology.c && \
+    test "$(grep -c 'topo->poll_seconds = 2;' lightningd/chaintopology.c)" -eq 1
 RUN CC=clang-${LLVM_V} \
     ./configure --prefix=/usr/local --disable-rust --enable-coverage
 RUN make -j$(nproc) install

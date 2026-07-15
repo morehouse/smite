@@ -100,6 +100,12 @@ RUN sed -i '/peer->to_peer/!s/time_from_sec(5)/time_from_sec(0)/' connectd/multi
     test "$(grep -c 'time_from_sec(0)' connectd/multiplex.c)" -eq 3 && \
     test "$(grep -c 'time_from_sec(5)' connectd/multiplex.c)" -eq 1 && \
     grep -A1 'time_from_sec(5)' connectd/multiplex.c | grep -q close_peer_io_timeout
+# Reduce the block-polling interval from the 30s default to 2s. CLN only
+# notices newly confirmed transactions when this poll runs, so shorten the
+# interval to make block-related events available to scenarios promptly.
+# FIXME: tune this value down after further experiments.
+RUN sed -i 's/topo->poll_seconds = 30;/topo->poll_seconds = 2;/' lightningd/chaintopology.c && \
+    test "$(grep -c 'topo->poll_seconds = 2;' lightningd/chaintopology.c)" -eq 1
 # AFL_UBSAN_VERBOSE=1 gives us helpful UBSan reports instead of simply SIGILL.
 ENV AFL_UBSAN_VERBOSE=1
 RUN CC=afl-clang-lto ./configure --prefix=/usr/local --disable-rust \
