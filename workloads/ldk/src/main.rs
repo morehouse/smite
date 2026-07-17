@@ -14,8 +14,17 @@ use ldk_node::bitcoin::Network;
 /// Signal handler sets this to true to trigger shutdown.
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
+/// Set by the SIGUSR1 handler. bitcoind's `-blocknotify` sends SIGUSR1 on each
+/// new block so the main loop syncs immediately instead of waiting for the next
+/// 2s chain poll.
+static NEW_BLOCK: AtomicBool = AtomicBool::new(false);
+
 extern "C" fn handle_signal(_: libc::c_int) {
     SHUTDOWN.store(true, Ordering::SeqCst);
+}
+
+extern "C" fn handle_block(_: libc::c_int) {
+    NEW_BLOCK.store(true, Ordering::SeqCst);
 }
 
 fn main() {
@@ -25,6 +34,8 @@ fn main() {
         let sighandler = handle_signal as *const () as libc::sighandler_t;
         libc::signal(libc::SIGTERM, sighandler);
         libc::signal(libc::SIGINT, sighandler);
+        let blockhandler = handle_block as *const () as libc::sighandler_t;
+        libc::signal(libc::SIGUSR1, blockhandler);
     }
 
     let args: Vec<String> = std::env::args().collect();
@@ -74,7 +85,19 @@ fn main() {
 
     // Wait for shutdown signal
     while !SHUTDOWN.load(Ordering::SeqCst) {
-        std::thread::sleep(Duration::from_millis(100));
+        // Sync the wallet whenever bitcoind signals a new block. ldk-node's own
+        // 2s background poll keeps running, so this is technically redundant and
+        // may race it, but that's safe: ldk-node coalesces concurrent syncs, so
+        // whichever loses the race just waits on the in-flight sync's result
+        // rather than applying the block twice. We accept the redundancy to sync
+        // on the block instead of up to 2s later.
+        if NEW_BLOCK.swap(false, Ordering::SeqCst)
+            && let Err(e) = node.sync_wallets()
+        {
+            eprintln!("sync_wallets failed: {e}");
+        }
+
+        std::thread::sleep(Duration::from_millis(50));
     }
 
     node.stop().expect("node stop");

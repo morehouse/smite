@@ -41,6 +41,9 @@ impl LdkConfig {
         bitcoind::BitcoindConfig {
             rpc_port: self.bitcoind_rpc_port,
             p2p_port: self.bitcoind_p2p_port,
+            // signals the wrapper (SIGUSR1) to sync on each new block instead
+            // of waiting for the next poll.
+            extra_args: vec!["-blocknotify=pkill -USR1 -f ^ldk-node-wrapper".to_string()],
             ..bitcoind::BitcoindConfig::default()
         }
     }
@@ -85,6 +88,22 @@ impl LdkTarget {
         // process teardown closes TCP sockets).
         if let Ok(handler) = std::env::var("SMITE_CRASH_HANDLER") {
             cmd.env("LD_PRELOAD", handler);
+        }
+
+        // Ignore SIGUSR1 until main() installs the real handler. Initial-block
+        // generation triggers a burst of asynchronous `-blocknotify`
+        // (`pkill -USR1`), and a stray one landing before the handler is set
+        // would kill the wrapper, since SIGUSR1 is fatal by default. SIG_IGN
+        // survives exec; a caught handler would not.
+        //
+        // SAFETY: runs in the child after fork, before exec; calls only the
+        // async-signal-safe `signal`.
+        unsafe {
+            use std::os::unix::process::CommandExt;
+            cmd.pre_exec(|| {
+                libc::signal(libc::SIGUSR1, libc::SIG_IGN);
+                Ok(())
+            });
         }
 
         let mut ldk = ManagedProcess::spawn(&mut cmd, "ldk-node-wrapper")?;
