@@ -64,6 +64,15 @@ pub fn build_funding_transaction(
         });
     }
 
+    // Return early if no UTXOs are available, since the funding transaction
+    // cannot be funded.
+    if utxos.is_empty() {
+        return Err(InsufficientFunds {
+            required: funding_amt,
+            available: Amount::ZERO,
+        });
+    }
+
     let funding_spk =
         build_funding_witness_script(opener_funding_pubkey, acceptor_funding_pubkey).to_p2wsh();
 
@@ -536,7 +545,30 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, InsufficientFunds { .. }));
-        assert_eq!(err.required, Amount::from_sat(10_003_180));
+        assert_eq!(err.required, Amount::from_sat(10_000_000));
+        assert_eq!(err.available, Amount::from_sat(0));
+    }
+
+    /// Not from BOLT 3 test vectors.
+    /// Tests that building a funding transaction fails when the funding amount,
+    /// feerate, and available UTXOs are all zero.
+    #[test]
+    fn funding_tx_with_zero_funding_amt_feerate_and_utxos() {
+        let change_spk = ScriptBuf::from(
+            hex::decode("00143ca33c2e4446f4a305f23c80df8ad1afdcf652f9")
+                .expect("valid P2WPKH scriptpubkey hex"),
+        );
+        let err = build_funding_transaction(
+            &pubkey("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb"),
+            &pubkey("030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c1"),
+            0,
+            0,
+            vec![],
+            change_spk,
+        )
+        .unwrap_err();
+        assert!(matches!(err, InsufficientFunds { .. }));
+        assert_eq!(err.required, Amount::from_sat(0));
         assert_eq!(err.available, Amount::from_sat(0));
     }
 
