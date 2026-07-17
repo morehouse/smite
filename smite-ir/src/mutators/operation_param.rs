@@ -116,7 +116,8 @@ fn mutate_operation(op: &mut Operation, rng: &mut impl Rng) -> bool {
         | Operation::RecvAcceptChannel
         | Operation::RecvFundingSigned
         | Operation::RecvChannelReady
-        | Operation::BroadcastTransaction => {
+        | Operation::BroadcastTransaction
+        | Operation::LookupShortChannelId => {
             unreachable!("is_param_mutable returned true for {op:?}")
         }
     }
