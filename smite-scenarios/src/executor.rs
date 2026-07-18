@@ -873,11 +873,20 @@ fn build_funding_created(
 
     let channel_id = ChannelId::v1_from_funding_outpoint(config.funding_outpoint);
 
+    // Check whether the funding outpoint is valid and contains the negotiated
+    // amount and funding script. If not, there is a good chance the target will
+    // neither complete the funding flow nor send an error message.
+    let is_funding_outpoint_valid = funding_tx.matches_funding_output(
+        &open_channel.funding_pubkey,
+        &accept_channel.funding_pubkey,
+        open_channel.funding_satoshis,
+    );
+
     // Building the same message again must not clobber a channel whose state
     // has already been established (and possibly advanced).
     channel_states
         .entry(channel_id)
-        .or_insert_with(|| ChannelState::new(config, holder, state));
+        .or_insert_with(|| ChannelState::new(config, holder, state, is_funding_outpoint_valid));
 
     // Mark this negotiation as having built `funding_created`. It is retained
     // so repeated `funding_created` messages can still be built, but a later
@@ -1194,7 +1203,8 @@ fn recv_channel_ready(
 /// Returns `true` if the target owes us a `channel_ready` message.
 ///
 /// A `channel_ready` is expected when a tracked channel is still at commitment
-/// number 0, the counterparty's next per-commitment point is unknown, and the
+/// number 0, the counterparty's next per-commitment point is unknown, the
+/// advertised funding outpoint pays the negotiated funding output, and the
 /// funding transaction has at least [`MAX_MINIMUM_DEPTH`] confirmations.
 fn is_channel_ready_expected(
     channel_states: &HashMap<ChannelId, ChannelState>,
@@ -1203,6 +1213,7 @@ fn is_channel_ready_expected(
     channel_states.values().any(|state| {
         state.commitment.commitment_number == 0
             && state.next_counterparty_per_commitment_point().is_none()
+            && state.is_funding_outpoint_valid
             && bitcoin_cli.get_transaction_confirmations(state.config.funding_outpoint.txid)
                 >= MAX_MINIMUM_DEPTH
     })
@@ -3395,6 +3406,50 @@ mod tests {
             .insert(ChannelId::new([0xbb; 32]), sample_funding_negotiation());
 
         (executor, channel_id, target_pcp)
+    }
+
+    #[test]
+    fn execute_recv_channel_ready_invalid_funding_outpoint_is_noop() {
+        let (mut executor, channel_id, _) = recv_channel_ready_executor();
+
+        // Corrupt the negotiated opener funding pubkey so the broadcast funding
+        // transaction's output no longer pays the negotiated 2-of-2 script,
+        // marking the funding outpoint invalid.
+        executor
+            .negotiations
+            .get_mut(&ChannelId::new([0xbb; 32]))
+            .unwrap()
+            .open_channel
+            .funding_pubkey = sample_pubkey(1);
+
+        let mut instrs = send_funding_created_and_recv_funding_signed_instructions();
+        instrs.extend([
+            Instruction {
+                operation: Operation::MineBlocks(8),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::RecvChannelReady,
+                inputs: vec![],
+            },
+        ]);
+
+        // With invalid funding outpoint the target does not owe us a
+        // `channel_ready`, so `RecvChannelReady` must be a no-op.
+        executor
+            .execute(
+                &Program {
+                    instructions: instrs,
+                },
+                std::time::Instant::now(),
+            )
+            .unwrap();
+
+        // The target's next per-commitment point is still unknown and the queued
+        // `channel_ready` remains untouched.
+        let state = executor.channel_states.get_mut(&channel_id).unwrap();
+        assert!(state.next_counterparty_per_commitment_point().is_none());
+        assert_eq!(executor.conn.recv_queue.len(), 1);
     }
 
     #[test]
