@@ -106,6 +106,13 @@ RUN sed -i '/peer->to_peer/!s/time_from_sec(5)/time_from_sec(0)/' connectd/multi
 # FIXME: tune this value down after further experiments.
 RUN sed -i 's/topo->poll_seconds = 30;/topo->poll_seconds = 2;/' lightningd/chaintopology.c && \
     test "$(grep -c 'topo->poll_seconds = 2;' lightningd/chaintopology.c)" -eq 1
+# Add a `syncblocks` RPC command that forces CLN to poll for new blocks
+# immediately instead of waiting for the polling timer. Scenarios can call it
+# on demand after mining a block. This complements periodic polling: concurrent
+# requests are coalesced, and polling still catches any blocks missed while CLN
+# is processing a previous chain update.
+COPY workloads/cln/patches/syncblocks.patch .
+RUN git apply syncblocks.patch
 # AFL_UBSAN_VERBOSE=1 gives us helpful UBSan reports instead of simply SIGILL.
 ENV AFL_UBSAN_VERBOSE=1
 RUN CC=afl-clang-lto ./configure --prefix=/usr/local --disable-rust \

@@ -43,10 +43,14 @@ impl Default for ClnConfig {
 }
 
 impl ClnConfig {
-    fn bitcoind_config(&self) -> bitcoind::BitcoindConfig {
+    fn bitcoind_config(&self, data_dir: &Path) -> bitcoind::BitcoindConfig {
         bitcoind::BitcoindConfig {
             rpc_port: self.bitcoind_rpc_port,
             p2p_port: self.bitcoind_p2p_port,
+            extra_args: vec![format!(
+                "-blocknotify=lightning-cli --lightning-dir='{}' --network=regtest syncblocks",
+                data_dir.join("cln").display()
+            )],
             ..bitcoind::BitcoindConfig::default()
         }
     }
@@ -207,7 +211,8 @@ impl Target for ClnTarget {
     fn start(config: Self::Config) -> Result<Self, TargetError> {
         let (data_path, temp_dir) = bitcoind::resolve_data_dir()?;
 
-        let (bitcoind, bitcoin_cli) = bitcoind::start(&config.bitcoind_config(), &data_path)?;
+        let bitcoind_config = config.bitcoind_config(&data_path);
+        let (bitcoind, bitcoin_cli) = bitcoind::start(&bitcoind_config, &data_path)?;
         let (cln, pubkey, cln_dir) = Self::start_cln(&config, &data_path)?;
         let addr = SocketAddr::from(([127, 0, 0, 1], config.cln_p2p_port));
 

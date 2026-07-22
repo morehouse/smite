@@ -1,0 +1,35 @@
+diff --git a/lightningd/chaintopology.c b/lightningd/chaintopology.c
+index e59b9c635..f1ae3e440 100644
+--- a/lightningd/chaintopology.c
++++ b/lightningd/chaintopology.c
+@@ -1128,6 +1128,30 @@ static void try_extend_tip(struct chain_topology *topo)
+ 				     get_new_block, topo);
+ }
+ 
++static struct command_result *json_syncblocks(struct command *cmd,
++					      const char *buffer,
++					      const jsmntok_t *obj UNNEEDED,
++					      const jsmntok_t *params)
++{
++	struct chain_topology *topo = cmd->ld->topology;
++
++	if (!param(cmd, buffer, params, NULL))
++		return command_param_failed();
++
++	if (topo->extend_timer) {
++		topo->extend_timer = tal_free(topo->extend_timer);
++		try_extend_tip(topo);
++	}
++
++	return command_success(cmd, json_stream_success(cmd));
++}
++
++static const struct json_command syncblocks_command = {
++	"syncblocks",
++	json_syncblocks,
++};
++AUTODATA(json_command, &syncblocks_command);
++
+ u32 get_block_height(const struct chain_topology *topo)
+ {
+ 	return topo->tip->height;
