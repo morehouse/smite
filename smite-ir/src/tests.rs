@@ -553,6 +553,39 @@ fn display_send_and_recv_channel_ready_program() {
 }
 
 #[test]
+fn display_send_shutdown_program() {
+    let instructions = vec![
+        Instruction {
+            operation: Operation::LoadChannelId([0xcd; 32]),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::LoadBytes(vec![0x00, 0x14, 0xab, 0xcd]),
+            inputs: vec![],
+        },
+        Instruction {
+            operation: Operation::SendShutdown,
+            inputs: vec![0, 1],
+        },
+    ];
+
+    let program = Program { instructions };
+    let text = program.to_string();
+    let lines: Vec<&str> = text.lines().collect();
+
+    let cid_hex = "cd".repeat(32);
+    let expected: Vec<String> = vec![
+        format!("v0 = LoadChannelId(0x{cid_hex})"),
+        "v1 = LoadBytes(0x0014abcd)".into(),
+        "SendShutdown(v0, v1)".into(),
+    ];
+    assert_eq!(lines.len(), expected.len(), "line count mismatch");
+    for (i, (got, want)) in lines.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(got, want, "line {i} mismatch");
+    }
+}
+
+#[test]
 fn postcard_roundtrip() {
     let program = Program {
         instructions: vec![
