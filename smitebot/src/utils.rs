@@ -112,6 +112,41 @@ mod tests {
     use std::ffi::OsString;
 
     #[test]
+    fn pin_to_cpu_rejects_an_out_of_range_cpu() {
+        // Past the mask `CPU_SET` can address; must be caught before the call,
+        // since setting a bit out of bounds would be undefined behavior.
+        assert!(pin_to_cpu(libc::CPU_SETSIZE as usize).is_err());
+        assert!(pin_to_cpu(usize::MAX).is_err());
+    }
+
+    #[test]
+    fn pin_to_cpu_binds_the_calling_thread() {
+        // Affinity is per-thread, and this runs on the test's own thread, so
+        // pinning here leaves the rest of the suite alone. Pin to a CPU the
+        // process is already allowed on so a restricted cpuset does not fail it.
+        let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+        let size = size_of::<libc::cpu_set_t>();
+        assert_eq!(
+            unsafe { libc::sched_getaffinity(0, size, &raw mut set) },
+            0,
+            "sched_getaffinity failed"
+        );
+        let allowed = (0..libc::CPU_SETSIZE as usize)
+            .find(|&cpu| unsafe { libc::CPU_ISSET(cpu, &set) })
+            .expect("process is allowed on at least one CPU");
+
+        pin_to_cpu(allowed).unwrap();
+
+        let mut pinned: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+        assert_eq!(
+            unsafe { libc::sched_getaffinity(0, size, &raw mut pinned) },
+            0
+        );
+        assert!(unsafe { libc::CPU_ISSET(allowed, &pinned) });
+        assert_eq!(unsafe { libc::CPU_COUNT(&pinned) }, 1);
+    }
+
+    #[test]
     fn find_in_path_with_path_finds_existing_executable() {
         use std::os::unix::fs::PermissionsExt;
 

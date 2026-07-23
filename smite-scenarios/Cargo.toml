@@ -22,7 +22,7 @@ thiserror.workspace = true
 bitcoin.workspace = true
 
 hex = "0.4"
-libc = "0.2"
+libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile = "3"

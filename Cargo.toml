@@ -23,6 +23,7 @@ pedantic = { level = "deny", priority = -1 }
 warnings = "deny"
 
 [workspace.dependencies]
+libc = "0.2"
 log = "0.4"
 rand = { version = "0.10", default-features = false }
 simple_logger = { version = "5", default-features = false }
