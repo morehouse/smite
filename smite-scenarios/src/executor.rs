@@ -6,7 +6,7 @@
 use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use bitcoin::{OutPoint, ScriptBuf, Txid};
-use smite::bitcoin::{BitcoinCli, Utxo};
+use smite::bitcoin::{BitcoinCli, TxBlockPosition, Utxo};
 use smite::bolt::{
     AcceptChannel, AnnouncementSignatures, ChannelAnnouncement, ChannelId, ChannelReady,
     ChannelReadyTlvs, ChannelUpdate, FundingCreated, FundingSigned, Message, NodeAnnouncement,
@@ -86,6 +86,10 @@ pub trait BitcoinRpc {
     /// txid, or `0` if it is unconfirmed or unknown to the node.
     #[must_use]
     fn get_transaction_confirmations(&mut self, txid: Txid) -> u32;
+
+    /// Returns the confirmed block position of the transaction with the given
+    /// txid, or `None` if it is unconfirmed or unknown to the node.
+    fn get_transaction_block_position(&mut self, txid: Txid) -> Option<TxBlockPosition>;
 }
 
 impl BitcoinRpc for BitcoinCli {
@@ -111,6 +115,10 @@ impl BitcoinRpc for BitcoinCli {
 
     fn get_transaction_confirmations(&mut self, txid: Txid) -> u32 {
         BitcoinCli::get_transaction_confirmations(self, txid)
+    }
+
+    fn get_transaction_block_position(&mut self, txid: Txid) -> Option<TxBlockPosition> {
+        BitcoinCli::get_transaction_block_position(self, txid)
     }
 }
 
@@ -496,6 +504,34 @@ impl<C: Connection, B: BitcoinRpc> Executor<C, B> {
                         self.private_mempool.push((txid, hex));
                     }
                     None
+                }
+
+                Operation::LookupShortChannelId => {
+                    let ft = resolve_funding_transaction(&variables, instr.inputs[0]);
+                    let txid = ft.tx.compute_txid();
+                    // Fall back to a sentinel SCID when the transaction is
+                    // unknown to the node or still in the mempool (e.g. a
+                    // mutator dropped `MineBlocks`). The resulting gossip
+                    // message will simply fail on-chain validation, which is
+                    // the intended fuzzing behaviour for a valid but
+                    // unconfirmed program.
+                    let scid = match self.bitcoin_cli.get_transaction_block_position(txid) {
+                        // Truncating cast: BOLT 7 `short_channel_id` allocates
+                        // 16 bits to the output index. In practice the
+                        // 2-of-2 funding output is at vout 0 or 1.
+                        #[allow(clippy::cast_possible_truncation)]
+                        Some(pos) => {
+                            ShortChannelId::new(pos.block_height, pos.tx_index, ft.vout as u16)
+                        }
+                        None => ShortChannelId::new(0, 0, 0),
+                    };
+                    log::debug!(
+                        "[{:?}] LookupShortChannelId: txid={} scid={}",
+                        start.elapsed(),
+                        txid,
+                        scid,
+                    );
+                    Some(Variable::ShortChannelId(scid))
                 }
             };
 
@@ -1413,6 +1449,7 @@ mod tests {
         mine_blocks_calls: Vec<u8>,
         mined_private_mempool: Vec<String>,
         broadcast_calls: Vec<Transaction>,
+        block_position_lookups: Vec<Txid>,
         utxos: Vec<Utxo>,
         change_spk: ScriptBuf,
         confirmations: u32,
@@ -1456,6 +1493,16 @@ mod tests {
 
         fn get_transaction_confirmations(&mut self, _txid: Txid) -> u32 {
             self.confirmations
+        }
+
+        fn get_transaction_block_position(&mut self, txid: Txid) -> Option<TxBlockPosition> {
+            self.block_position_lookups.push(txid);
+            // Distinctive coordinates so tests can verify the executor
+            // combined them with the funding transaction's vout.
+            (self.confirmations > 0).then_some(TxBlockPosition {
+                block_height: 800_042,
+                tx_index: 7,
+            })
         }
     }
 
@@ -1654,6 +1701,73 @@ mod tests {
                 inputs: vec![6],
             },
         ]
+    }
+
+    /// Builds instructions that construct and send a `channel_announcement`
+    /// referencing the `ShortChannelId` produced at variable index `scid_var`.
+    ///
+    /// `base` is the variable index the first appended instruction will occupy
+    /// (i.e. the current program length), used to wire up the inputs to
+    /// `BuildChannelAnnouncement`.
+    fn channel_announcement_from_scid_instructions(
+        base: usize,
+        scid_var: usize,
+    ) -> Vec<Instruction> {
+        vec![
+            Instruction {
+                operation: Operation::LoadFeatures(vec![0x01, 0x02]),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadChainHashFromContext,
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadPrivateKey([0x11; 32]),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadPrivateKey([0x22; 32]),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadPrivateKey([0x33; 32]),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadPrivateKey([0x44; 32]),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::BuildChannelAnnouncement,
+                // features, chain_hash, short_channel_id, node_sk_1, node_sk_2,
+                // bitcoin_sk_1, bitcoin_sk_2.
+                inputs: vec![
+                    base,
+                    base + 1,
+                    scid_var,
+                    base + 2,
+                    base + 3,
+                    base + 4,
+                    base + 5,
+                ],
+            },
+            Instruction {
+                operation: Operation::SendMessage,
+                inputs: vec![base + 6],
+            },
+        ]
+    }
+
+    /// Decodes a sent message expected to be a `channel_announcement`.
+    fn decode_sent_channel_announcement(bytes: &[u8]) -> ChannelAnnouncement {
+        match Message::decode(bytes).expect("valid message") {
+            Message::ChannelAnnouncement(ca) => ca,
+            other => panic!(
+                "expected ChannelAnnouncement, got type {}",
+                other.msg_type()
+            ),
+        }
     }
 
     fn decode_open_channel(bytes: &[u8]) -> OpenChannel {
@@ -2855,6 +2969,125 @@ mod tests {
             broadcast_tx.compute_txid().to_string(),
             "09b0549b35f14ee862f63bd75811c6c27963c4dea6766ec6836952ec78df1e7e"
         );
+    }
+
+    // LookupShortChannelId should combine the confirmed block position with
+    // the funding output's vout to produce the correct SCID, which we verify
+    // by feeding it into a channel_announcement and decoding the sent message.
+    #[test]
+    fn execute_lookup_short_channel_id_confirmed() {
+        let mock_cli = MockBitcoinCli {
+            utxos: vec![sample_utxo()],
+            change_spk: sample_change_spk(),
+            ..Default::default()
+        };
+        let mut instrs = create_and_broadcast_tx_instructions();
+        instrs.push(Instruction {
+            operation: Operation::MineBlocks(6),
+            inputs: vec![],
+        });
+        instrs.push(Instruction {
+            // Feed the FundingTransaction produced by
+            // CreateFundingTransaction (instruction 6) into the lookup. The
+            // resulting ShortChannelId is variable 9.
+            operation: Operation::LookupShortChannelId,
+            inputs: vec![6],
+        });
+        // Build and send a channel_announcement carrying the looked-up SCID.
+        instrs.extend(channel_announcement_from_scid_instructions(10, 9));
+
+        let mut executor = Executor::new(MockConnection::new(), mock_cli, sample_context());
+        executor
+            .execute(
+                &Program {
+                    instructions: instrs,
+                },
+                std::time::Instant::now(),
+            )
+            .expect("lookup after confirmation should succeed");
+
+        assert_eq!(executor.bitcoin_cli.mine_blocks_calls, vec![6]);
+        // The executor must have queried the mock with the broadcast
+        // transaction's txid.
+        assert_eq!(executor.bitcoin_cli.block_position_lookups.len(), 1);
+        let broadcast_txid = executor.bitcoin_cli.broadcast_calls[0].compute_txid();
+        assert_eq!(
+            executor.bitcoin_cli.block_position_lookups[0],
+            broadcast_txid,
+        );
+
+        // The mock returns block_height=800_042, tx_index=7 for a confirmed
+        // tx, and the funding output is always at vout 0.
+        let ca = decode_sent_channel_announcement(&executor.conn.sent[0]);
+        assert_eq!(ca.short_channel_id, ShortChannelId::new(800_042, 7, 0));
+    }
+
+    // LookupShortChannelId should produce the sentinel SCID (0/0/0) when the
+    // funding transaction is unknown to the node (e.g. never broadcast or
+    // never confirmed), rather than panicking. We verify the sentinel value
+    // via the SCID carried in a channel_announcement.
+    #[test]
+    fn execute_lookup_short_channel_id_unconfirmed_returns_sentinel() {
+        let mock_cli = MockBitcoinCli {
+            utxos: vec![sample_utxo()],
+            change_spk: sample_change_spk(),
+            ..Default::default()
+        };
+        // No BroadcastTransaction and no MineBlocks: the mock reports zero
+        // confirmations and get_transaction_block_position returns None.
+        let mut instrs = vec![
+            Instruction {
+                operation: Operation::LoadPrivateKey([1u8; 32]),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::DerivePoint,
+                inputs: vec![0],
+            },
+            Instruction {
+                operation: Operation::LoadPrivateKey([2u8; 32]),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::DerivePoint,
+                inputs: vec![2],
+            },
+            Instruction {
+                operation: Operation::LoadAmount(10_000_000),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::LoadFeeratePerKw(15_000),
+                inputs: vec![],
+            },
+            Instruction {
+                operation: Operation::CreateFundingTransaction,
+                inputs: vec![1, 3, 4, 5],
+            },
+            // The looked-up SCID is variable 7.
+            Instruction {
+                operation: Operation::LookupShortChannelId,
+                inputs: vec![6],
+            },
+        ];
+        instrs.extend(channel_announcement_from_scid_instructions(8, 7));
+
+        let mut executor = Executor::new(MockConnection::new(), mock_cli, sample_context());
+        executor
+            .execute(
+                &Program {
+                    instructions: instrs,
+                },
+                std::time::Instant::now(),
+            )
+            .expect("lookup on unconfirmed tx should not fail");
+        // The mock was queried but returned None (zero confirmations), so the
+        // executor took the sentinel path without panicking.
+        assert!(executor.bitcoin_cli.mine_blocks_calls.is_empty());
+        assert_eq!(executor.bitcoin_cli.block_position_lookups.len(), 1);
+
+        let ca = decode_sent_channel_announcement(&executor.conn.sent[0]);
+        assert_eq!(ca.short_channel_id, ShortChannelId::new(0, 0, 0));
     }
 
     #[test]

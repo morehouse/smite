@@ -669,6 +669,18 @@ fn create_and_broadcast_tx_operation() {
     assert!(!op.is_param_mutable());
 }
 
+#[test]
+fn lookup_short_channel_id_operation() {
+    let op = Operation::LookupShortChannelId;
+    assert_eq!(op.input_types(), vec![VariableType::FundingTransaction]);
+    assert_eq!(op.output_type(), Some(VariableType::ShortChannelId));
+    assert!(!op.is_param_mutable());
+    // Non-deterministic (depends on chain state), so must not be dropped by DCE
+    // or deduplicated by CSE.
+    assert!(op.has_side_effects());
+    assert_eq!(op.to_string(), "LookupShortChannelId");
+}
+
 fn create_and_broadcast_tx_instructions() -> Vec<Instruction> {
     vec![
         Instruction {

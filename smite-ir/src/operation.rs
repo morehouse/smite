@@ -226,6 +226,32 @@ pub enum Operation {
     /// Sign wallet inputs of the transaction and broadcast it via `bitcoin-cli`.
     /// Input: `FundingTransaction`.
     BroadcastTransaction,
+    /// Look up the confirmed block position of a broadcast funding transaction
+    /// and produce the corresponding BOLT 7 `short_channel_id`.
+    ///
+    /// This is the bridge between an on-chain funding output and the gossip
+    /// layer: the resulting `ShortChannelId` can be fed into
+    /// `BuildChannelAnnouncement`, `BuildChannelUpdate`, and
+    /// `BuildAnnouncementSignatures` so that gossip messages reference a real
+    /// UTXO and can pass the on-chain validation performed by CLN and LND.
+    ///
+    /// The typical program shape is:
+    ///
+    /// ```text
+    /// ft   = CreateFundingTransaction(...)
+    /// _    = BroadcastTransaction(ft)
+    /// _    = MineBlocks(k)          // k >= 1 for the tx to be confirmed
+    /// scid = LookupShortChannelId(ft)
+    /// ```
+    ///
+    /// If the funding transaction is unknown to the node or still in the
+    /// mempool (e.g. `MineBlocks` was dropped by a mutator), the sentinel
+    /// `ShortChannelId::new(0, 0, 0)` is produced. This keeps downstream
+    /// consumers well-typed without introducing a target- or program-side
+    /// error: any resulting gossip message simply fails on-chain validation.
+    ///
+    /// Input: `FundingTransaction`.
+    LookupShortChannelId,
 }
 
 /// A BOLT 2 compliant `upfront_shutdown_script` template.
@@ -680,6 +706,7 @@ impl fmt::Display for Operation {
             Self::RecvFundingSigned => write!(f, "RecvFundingSigned"),
             Self::RecvChannelReady => write!(f, "RecvChannelReady()"),
             Self::BroadcastTransaction => write!(f, "BroadcastTransaction"),
+            Self::LookupShortChannelId => write!(f, "LookupShortChannelId"),
         }
     }
 }
@@ -691,7 +718,9 @@ impl Operation {
     pub fn output_type(&self) -> Option<VariableType> {
         match self {
             Self::LoadAmount(_) => Some(VariableType::Amount),
-            Self::LoadShortChannelId(_) => Some(VariableType::ShortChannelId),
+            Self::LoadShortChannelId(_) | Self::LookupShortChannelId => {
+                Some(VariableType::ShortChannelId)
+            }
             Self::LoadFeeratePerKw(_) => Some(VariableType::FeeratePerKw),
             Self::LoadBlockHeight(_) => Some(VariableType::BlockHeight),
             Self::LoadTimestamp(_) => Some(VariableType::Timestamp),
@@ -768,7 +797,9 @@ impl Operation {
             ],
             Self::RecvAcceptChannel => vec![VariableType::SentOpenChannel],
             Self::RecvFundingSigned => vec![VariableType::SentFundingCreated],
-            Self::BroadcastTransaction => vec![VariableType::FundingTransaction],
+            Self::BroadcastTransaction | Self::LookupShortChannelId => {
+                vec![VariableType::FundingTransaction]
+            }
 
             Self::BuildOpenChannel => vec![
                 VariableType::ChainHash,    // chain_hash
@@ -876,7 +907,8 @@ impl Operation {
             | Self::RecvFundingSigned
             | Self::RecvChannelReady
             | Self::MineBlocks(_)
-            | Self::BroadcastTransaction => vec![],
+            | Self::BroadcastTransaction
+            | Self::LookupShortChannelId => vec![],
 
             Self::RecvAcceptChannel => AcceptChannelField::ALL
                 .iter()
@@ -899,7 +931,8 @@ impl Operation {
             | Self::RecvChannelReady
             | Self::MineBlocks(_)
             | Self::CreateFundingTransaction
-            | Self::BroadcastTransaction => true,
+            | Self::BroadcastTransaction
+            | Self::LookupShortChannelId => true,
             Self::LoadAmount(_)
             | Self::LoadShortChannelId(_)
             | Self::BuildChannelAnnouncement
@@ -964,7 +997,8 @@ impl Operation {
             | Self::RecvAcceptChannel
             | Self::RecvFundingSigned
             | Self::RecvChannelReady
-            | Self::BroadcastTransaction => false,
+            | Self::BroadcastTransaction
+            | Self::LookupShortChannelId => false,
         }
     }
 }
