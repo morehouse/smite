@@ -10,7 +10,7 @@ use smite::bitcoin::{BitcoinCli, Utxo};
 use smite::bolt::{
     AcceptChannel, AnnouncementSignatures, ChannelAnnouncement, ChannelId, ChannelReady,
     ChannelReadyTlvs, ChannelUpdate, FundingCreated, FundingSigned, Message, NodeAnnouncement,
-    OpenChannel, OpenChannelTlvs, Pong, ShortChannelId, msg_type,
+    OpenChannel, OpenChannelTlvs, Pong, ShortChannelId, Shutdown, msg_type,
 };
 use smite::channel_tx::{
     ChannelConfig, ChannelPartyConfig, ChannelState, FundingTransaction, HolderIdentity, Side,
@@ -468,6 +468,13 @@ impl<C: Connection, B: BitcoinRpc> Executor<C, B> {
                         recv_channel_ready(&mut self.conn, &mut self.channel_states)?;
                         log::debug!("[{:?}] RecvChannelReady: received", start.elapsed());
                     }
+                    None
+                }
+
+                Operation::RecvShutdown => {
+                    log::debug!("[{:?}] RecvShutdown: waiting", start.elapsed());
+                    recv_shutdown(&mut self.conn)?;
+                    log::debug!("[{:?}] RecvShutdown: received", start.elapsed());
                     None
                 }
 
@@ -1165,6 +1172,17 @@ fn recv_funding_signed(conn: &mut impl Connection) -> Result<FundingSigned, Exec
         Message::FundingSigned(fs) => Ok(fs),
         other => Err(ExecuteError::UnexpectedMessage {
             expected: msg_type::FUNDING_SIGNED,
+            got: other.msg_type(),
+        }),
+    }
+}
+
+/// Receives and decodes a `shutdown` message.
+fn recv_shutdown(conn: &mut impl Connection) -> Result<Shutdown, ExecuteError> {
+    match recv_non_ping(conn, RECV_IDLE_TIMEOUT)? {
+        Message::Shutdown(sd) => Ok(sd),
+        other => Err(ExecuteError::UnexpectedMessage {
+            expected: msg_type::SHUTDOWN,
             got: other.msg_type(),
         }),
     }
@@ -3432,6 +3450,36 @@ mod tests {
             *state.next_holder_per_commitment_point(),
             Some(expected_pcp1)
         );
+    }
+
+    #[test]
+    fn execute_recv_shutdown() {
+        let channel_id = ChannelId::new([0x7a; 32]);
+
+        let mut scriptpubkey = vec![0x00, 0x14];
+        scriptpubkey.extend_from_slice(&[0xab; 20]);
+
+        let shutdown_bytes =
+            Message::Shutdown(Shutdown::for_channel(channel_id, scriptpubkey)).encode();
+
+        let mut executor = Executor::new(
+            MockConnection::new(),
+            MockBitcoinCli::default(),
+            sample_context(),
+        );
+        executor.conn.queue_recv(shutdown_bytes);
+
+        let program = Program {
+            instructions: vec![Instruction {
+                operation: Operation::RecvShutdown,
+                inputs: vec![],
+            }],
+        };
+        executor
+            .execute(&program, std::time::Instant::now())
+            .unwrap();
+
+        assert!(executor.conn.recv_queue.is_empty());
     }
 
     fn recv_channel_ready_executor() -> (

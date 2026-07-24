@@ -553,6 +553,21 @@ fn display_send_and_recv_channel_ready_program() {
 }
 
 #[test]
+fn display_recv_shutdown_program() {
+    let instructions = vec![Instruction {
+        operation: Operation::RecvShutdown,
+        inputs: vec![],
+    }];
+
+    let program = Program { instructions };
+    let text = program.to_string();
+    let lines: Vec<&str> = text.lines().collect();
+
+    let expected = vec!["RecvShutdown()"];
+    assert_eq!(lines, expected);
+}
+
+#[test]
 fn postcard_roundtrip() {
     let program = Program {
         instructions: vec![
