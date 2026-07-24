@@ -130,6 +130,9 @@ pub struct ChannelState {
     /// revealed by `channel_ready` and then each `revoke_and_ack`. `None` until
     /// known.
     pub acceptor_next_per_commitment_point: Option<PublicKey>,
+    /// Whether the on-chain output at the advertised funding outpoint matches
+    /// the negotiated funding script and amount.
+    pub is_funding_outpoint_valid: bool,
 }
 
 impl Side {
@@ -153,13 +156,19 @@ impl HolderIdentity {
 impl ChannelState {
     /// Constructs a channel state with both next per-commitment points unknown.
     #[must_use]
-    pub fn new(config: ChannelConfig, holder: HolderIdentity, commitment: CommitmentState) -> Self {
+    pub fn new(
+        config: ChannelConfig,
+        holder: HolderIdentity,
+        commitment: CommitmentState,
+        is_funding_outpoint_valid: bool,
+    ) -> Self {
         Self {
             config,
             holder,
             commitment,
             opener_next_per_commitment_point: None,
             acceptor_next_per_commitment_point: None,
+            is_funding_outpoint_valid,
         }
     }
 

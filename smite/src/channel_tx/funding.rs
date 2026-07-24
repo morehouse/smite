@@ -168,6 +168,24 @@ fn predict_tx_fee(
     Amount::from_sat((u64::from(feerate_per_kw) * weight.to_wu()) / 1000)
 }
 
+impl FundingTransaction {
+    /// Returns whether the referenced funding output matches the negotiated
+    /// output script and amount.
+    #[must_use]
+    pub fn matches_funding_output(
+        &self,
+        opener_funding_pubkey: &PublicKey,
+        acceptor_funding_pubkey: &PublicKey,
+        funding_satoshis: u64,
+    ) -> bool {
+        let expected_spk =
+            build_funding_witness_script(opener_funding_pubkey, acceptor_funding_pubkey).to_p2wsh();
+        self.tx.output.get(self.vout as usize).is_some_and(|out| {
+            out.script_pubkey == expected_spk && out.value.to_sat() == funding_satoshis
+        })
+    }
+}
+
 /// Builds the funding output witness script per BOLT 3.
 pub fn build_funding_witness_script(pubkey1: &PublicKey, pubkey2: &PublicKey) -> ScriptBuf {
     let key1_bytes = pubkey1.serialize();
@@ -701,5 +719,66 @@ mod tests {
             hex::encode(funding_witness_script_1.as_bytes()),
             "5221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae"
         );
+    }
+
+    #[test]
+    fn funding_output_matches_detects_matching_and_mismatched_outputs() {
+        let opener_funding_pubkey =
+            pubkey("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb");
+        let acceptor_funding_pubkey =
+            pubkey("030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c1");
+        let funding_satoshis = 10_000_000;
+
+        let utxos = vec![Utxo {
+            amount: Amount::from_sat(5_000_000_000),
+            outpoint: OutPoint {
+                txid: "fd2105607605d2302994ffea703b09f66b6351816ee737a93e42a841ea20bbad"
+                    .parse()
+                    .expect("valid txid"),
+                vout: 0,
+            },
+            script_pubkey: ScriptBuf::from(
+                hex::decode("0014a10d9257489e685dda030662390dc177852faf13")
+                    .expect("valid P2WPKH scriptpubkey hex"),
+            ),
+        }];
+        let change_spk = ScriptBuf::from(
+            hex::decode("00143ca33c2e4446f4a305f23c80df8ad1afdcf652f9")
+                .expect("valid P2WPKH scriptpubkey hex"),
+        );
+        let funding = build_funding_transaction(
+            &opener_funding_pubkey,
+            &acceptor_funding_pubkey,
+            funding_satoshis,
+            15_000,
+            utxos,
+            change_spk,
+        )
+        .expect("inputs should cover funding amount and fees");
+
+        // The referenced funding output matches the negotiated output script
+        // and amount.
+        assert!(funding.matches_funding_output(
+            &opener_funding_pubkey,
+            &acceptor_funding_pubkey,
+            funding_satoshis,
+        ));
+
+        // A different funding pubkey yields a different script and does not match.
+        let other_pubkey =
+            pubkey("034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa");
+        assert!(!funding.matches_funding_output(
+            &opener_funding_pubkey,
+            &other_pubkey,
+            funding_satoshis,
+        ));
+
+        // A mismatched funding amount does not match.
+        let other_amount = 10_000;
+        assert!(!funding.matches_funding_output(
+            &opener_funding_pubkey,
+            &acceptor_funding_pubkey,
+            other_amount
+        ));
     }
 }
