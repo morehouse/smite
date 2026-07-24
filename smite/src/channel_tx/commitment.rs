@@ -82,6 +82,9 @@ pub struct ChannelConfig {
     pub opener: ChannelPartyConfig,
     /// Acceptor's static keys and parameters.
     pub acceptor: ChannelPartyConfig,
+    /// Minimum funding confirmations required before `channel_ready` messages
+    /// are exchanged and the channel becomes active.
+    pub minimum_depth: u32,
 }
 
 /// Per-party parameters used in a commitment transaction.
@@ -734,6 +737,7 @@ mod tests {
                 dust_limit_satoshis,
                 to_self_delay: 144,
             },
+            minimum_depth: 8,
         };
 
         let state = CommitmentState {
@@ -1331,6 +1335,7 @@ mod tests {
             channel_type,
             opener: sample_party(),
             acceptor: sample_party(),
+            minimum_depth: 8,
         }
     }
 

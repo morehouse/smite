@@ -56,11 +56,6 @@ pub const RECV_IDLE_TIMEOUT: Duration = Duration::from_secs(1);
 /// reconfiguring or patching CLN to poll more frequently.
 pub const RECV_CHANNEL_READY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Default maximum `minimum_depth` that Lightning implementations advertise in
-/// `accept_channel`. Once the funding transaction reaches this many
-/// confirmations the target is guaranteed to have sent its `channel_ready`.
-const MAX_MINIMUM_DEPTH: u32 = 8;
-
 /// Abstraction over bitcoin-cli operations, allowing mock implementations in tests.
 pub trait BitcoinRpc {
     /// Mines the given number of blocks, including any transactions in the
@@ -868,6 +863,7 @@ fn build_funding_created(
         channel_type: open_channel.tlvs.channel_type.clone().unwrap_or_default(),
         opener,
         acceptor,
+        minimum_depth: accept_channel.minimum_depth,
     };
 
     let state = config.new_initial_commitment(
@@ -1216,7 +1212,8 @@ fn recv_channel_ready(
 /// A `channel_ready` is expected when a tracked channel is still at commitment
 /// number 0, the counterparty's next per-commitment point is unknown, the
 /// advertised funding outpoint pays the negotiated funding output, and the
-/// funding transaction has at least [`MAX_MINIMUM_DEPTH`] confirmations.
+/// funding transaction has at least `minimum_depth` confirmations (as
+/// specified in the received `accept_channel`).
 fn is_channel_ready_expected(
     channel_states: &HashMap<ChannelId, ChannelState>,
     bitcoin_cli: &mut impl BitcoinRpc,
@@ -1226,7 +1223,7 @@ fn is_channel_ready_expected(
             && state.next_counterparty_per_commitment_point().is_none()
             && state.is_funding_outpoint_valid
             && bitcoin_cli.get_transaction_confirmations(state.config.funding_outpoint.txid)
-                >= MAX_MINIMUM_DEPTH
+                >= state.config.minimum_depth
     })
 }
 
@@ -3535,13 +3532,15 @@ mod tests {
     }
 
     #[test]
-    fn execute_recv_channel_ready_below_eight_confirmations_is_noop() {
+    fn execute_recv_channel_ready_below_minimum_depth_is_noop() {
         let (mut executor, channel_id, _) = recv_channel_ready_executor();
 
         let mut instrs = send_funding_created_and_recv_funding_signed_instructions();
         instrs.extend([
             Instruction {
-                operation: Operation::MineBlocks(6),
+                // Mine one block fewer than the `minimum_depth` negotiated in
+                // `accept_channel` by `sample_funding_negotiation()`.
+                operation: Operation::MineBlocks(5),
                 inputs: vec![],
             },
             Instruction {
@@ -3550,8 +3549,9 @@ mod tests {
             },
         ]);
 
-        // With fewer than 8 confirmations the target does not yet owe us a
-        // `channel_ready`, so `RecvChannelReady` must be a no-op.
+        // With fewer than the negotiated `minimum_depth` confirmations the target
+        // does not yet owe us a `channel_ready`, so `RecvChannelReady` must be a
+        // no-op.
         executor
             .execute(
                 &Program {
@@ -3570,13 +3570,15 @@ mod tests {
     }
 
     #[test]
-    fn execute_recv_channel_ready_at_eight_confirmations_records_point() {
+    fn execute_recv_channel_ready_at_minimum_depth_records_point() {
         let (mut executor, channel_id, target_pcp) = recv_channel_ready_executor();
 
         let mut instrs = send_funding_created_and_recv_funding_signed_instructions();
         instrs.extend([
             Instruction {
-                operation: Operation::MineBlocks(8),
+                // Mine exactly the `minimum_depth` negotiated in
+                // `accept_channel` by `sample_funding_negotiation()`.
+                operation: Operation::MineBlocks(6),
                 inputs: vec![],
             },
             Instruction {
@@ -3585,8 +3587,8 @@ mod tests {
             },
         ]);
 
-        // At 8 confirmations the target owes us a `channel_ready`, which
-        // `RecvChannelReady` receives and records.
+        // At the negotiated `minimum_depth` confirmations the target owes us a
+        // `channel_ready`, which `RecvChannelReady` receives and records.
         executor
             .execute(
                 &Program {
