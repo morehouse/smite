@@ -16,6 +16,7 @@ use crate::commands::build::{BuildInputs, run_build};
 use crate::config::CampaignConfig;
 use crate::state::{CampaignState, RunnerState, Status};
 use crate::tmux;
+use crate::utils::setup_nyx;
 use crate::utils::shell_quote;
 
 /// Safety ceiling for startup verification.
@@ -164,36 +165,6 @@ impl StartCommand {
 
         true
     }
-}
-
-/// Runs `scripts/setup-nyx.sh` to prepare the Nyx sharedir.
-fn setup_nyx(config: &CampaignConfig, image: &str) -> bool {
-    let script = config.smite_dir.join("scripts").join("setup-nyx.sh");
-    if !script.exists() {
-        log::error!("setup-nyx.sh not found: {}", script.display());
-        return false;
-    }
-
-    let status = match Command::new(&script)
-        .arg(&config.sharedir)
-        .arg(image)
-        .arg(&config.aflpp_path)
-        .status()
-    {
-        Ok(status) => status,
-        Err(e) => {
-            log::error!("failed to run setup-nyx.sh: {e}");
-            return false;
-        }
-    };
-
-    if !status.success() {
-        log::error!("setup-nyx.sh failed with {status}");
-        return false;
-    }
-
-    log::info!("Nyx sharedir ready at {}", config.sharedir.display());
-    true
 }
 
 /// Spawns all runners inside a tmux session, verifies they produce

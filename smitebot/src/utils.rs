@@ -3,7 +3,10 @@
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::config::CampaignConfig;
 
 /// Returns the current Unix timestamp in seconds.
 pub fn epoch_secs() -> u64 {
@@ -39,6 +42,36 @@ fn find_in_path_with_path(tool: &str, path_var: &OsStr) -> Option<PathBuf> {
     std::env::split_paths(path_var)
         .map(|dir| dir.join(tool))
         .find(|candidate| candidate.is_file() && is_executable(candidate))
+}
+
+/// Runs `scripts/setup-nyx.sh` to prepare the Nyx sharedir.
+pub fn setup_nyx(config: &CampaignConfig, image: &str) -> bool {
+    let script = config.smite_dir.join("scripts").join("setup-nyx.sh");
+    if !script.exists() {
+        log::error!("setup-nyx.sh not found: {}", script.display());
+        return false;
+    }
+
+    let status = match Command::new(&script)
+        .arg(&config.sharedir)
+        .arg(image)
+        .arg(&config.aflpp_path)
+        .status()
+    {
+        Ok(status) => status,
+        Err(e) => {
+            log::error!("failed to run setup-nyx.sh: {e}");
+            return false;
+        }
+    };
+
+    if !status.success() {
+        log::error!("setup-nyx.sh failed with {status}");
+        return false;
+    }
+
+    log::info!("Nyx sharedir ready at {}", config.sharedir.display());
+    true
 }
 
 #[cfg(test)]

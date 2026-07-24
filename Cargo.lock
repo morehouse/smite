@@ -682,6 +682,7 @@ name = "smitebot"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "libc",
  "log",
  "serde",
  "serde_json",

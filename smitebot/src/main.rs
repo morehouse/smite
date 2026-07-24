@@ -2,6 +2,8 @@
 
 mod commands;
 mod config;
+mod latency_stats;
+mod libnyx;
 mod state;
 mod tmux;
 mod utils;
@@ -11,8 +13,9 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 use commands::{
-    BuildArgs, BuildCommand, ConfigArgs, ConfigCommand, DoctorArgs, DoctorCommand, StartArgs,
-    StartCommand, StatusArgs, StatusCommand, StopArgs, StopCommand,
+    BenchExecArgs, BenchExecCommand, BuildArgs, BuildCommand, ConfigArgs, ConfigCommand,
+    DoctorArgs, DoctorCommand, StartArgs, StartCommand, StatusArgs, StatusCommand, StopArgs,
+    StopCommand,
 };
 
 #[derive(Debug, Parser)]
@@ -24,6 +27,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    /// Benchmark Nyx execution speed by running one input many times.
+    BenchExec(BenchExecArgs),
     /// Build Smite workload Docker images.
     Build(BuildArgs),
     /// Validate a campaign configuration file.
@@ -43,6 +48,7 @@ fn main() -> ExitCode {
 
     let cli = Cli::parse();
     let success = match cli.command {
+        Commands::BenchExec(args) => BenchExecCommand::execute(&args),
         Commands::Build(args) => BuildCommand::execute(&args),
         Commands::Config(args) => ConfigCommand::execute(&args),
         Commands::Doctor(args) => DoctorCommand::execute(&args),

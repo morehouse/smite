@@ -53,6 +53,59 @@ After spawning, startup is verified by polling for `fuzzer_stats` files. Because
 
 Campaign state is saved to `~/.smitebot/runs/<campaign-id>/state.json` for use by future `stop` and `status` commands.
 
+### smitebot bench-exec
+
+Benchmarks Nyx execution speed by running a single input through the target's VM many times. Each execution is a snapshot restore plus one target run, so the results isolate VM/snapshot and target speed from AFL++'s mutation and scheduling overhead.
+
+```bash
+smitebot bench-exec campaign.toml
+smitebot bench-exec campaign.toml --input testcase.bin --iterations 5000
+```
+
+- `--input`: Input file to execute repeatedly. Defaults to a single `0x00` byte. The default is handy for quickly measuring performance gains that come from the target itself rather than a specific test case: every exec still does the live-target ping-pong the executor uses to confirm the VM is up, so it exercises that path. It's a fast way to check improvements like JVM warmup/optimization.
+- `-n`, `--iterations`: Number of timed executions per run (default `1000`).
+- `-r`, `--repeat`: Number of full boot+measure runs to average over (default `1`). Each run boots a fresh VM, so repeats capture boot- and snapshot-level variance a single run cannot.
+- `--worker-id`: Nyx worker id, which also selects the pinned CPU (default `0`).
+- `--max-input-size`: Input buffer size in bytes for the VM. Defaults to the input size rounded up to a 4 KiB page, so the snapshot resets only as much memory as the fixed input needs; pass `1048576` to match AFL++'s 1 MiB buffer.
+- `-t`, `--timeout`: Per-execution timeout in seconds; an exec that runs longer is counted as timed out (default `2`).
+- `--no-build`: Skip building the image and setting up the sharedir; reuse an existing one.
+
+Like `start`, `bench-exec` builds the Docker image and sets up the Nyx sharedir before running, so it works from a clean checkout. Pass `--no-build` to skip that and reuse an already-prepared sharedir (`sharedir/config.ron`) from a prior `start`, `bench-exec`, or `scripts/setup-nyx.sh`. Either way it needs `libnyx.so` under `aflpp_path`, which it loads at runtime the same way `afl-fuzz` does.
+
+The first execution of each run creates the snapshot (VM boot, target init, snapshot capture) and is timed separately. The remaining executions are timed as a group and reported as steady-state throughput:
+
+```
+Smite Nyx benchmark
+  target:      lnd/encrypted_bytes
+  sharedir:    /tmp/smite-nyx
+  input size:  1 bytes
+  input buffer:4096 bytes
+  iterations:  1000
+  repeats:     1
+
+  snapshot creation (first exec): 512.30 ms
+
+  steady-state (snapshot restore + target run):
+    execs/sec: 1234.5
+    wall time: 810.20 ms
+    latency:   min 0.7 µs  mean 0.8 µs  median 0.8 µs  p99 1.2 µs  max 3.4 ms
+    input execution: mean 0.5 µs  median 0.5 µs   (guest runtime)
+    nyx overhead:    mean 0.3 µs  median 0.3 µs   (restore + reset + ipc; 42 dirty pages/exec)
+    failed iterations: 0 / 1000
+    coverage determinism: 98.4% stable (12 / 750 edges fluctuated)
+```
+
+Each per-exec latency is split into two parts read from libnyx's auxiliary buffer:
+
+- **input execution** is the guest runtime the target actually spent processing the input, measured inside the VM. This is the "true" cost of the input; use it to tell whether a change made the target's own work faster.
+- **nyx overhead** is the wall time minus that guest runtime: snapshot restore/reset plus hypercall round-trips. `dirty pages/exec` is the number of pages restored each execution, the main driver of that overhead, so a change that dirties more memory (e.g. spawning a process per block) shows up as both higher overhead and more dirty pages.
+
+`coverage determinism` reports how reproducible the target's edge coverage is across the identical executions. Each execution's AFL coverage bitmap is captured and its per-edge hit counts are bucketed with AFL's count classes; an edge whose bucketed count is not identical across all executions is counted as fluctuated, and the denominator is the edges hit at least once. High determinism (close to 100%) means the same input reliably reaches the same code; fluctuation points to nondeterminism (uninitialized memory, timing-dependent branches, ASLR, background threads) that adds noise to the fuzzer's coverage signal. Bucketing means benign loop-trip jitter is not counted. Capturing the bitmap is timed separately and excluded from `execs/sec`, so the throughput numbers are unaffected.
+
+With `--repeat` greater than 1 each run is reported separately, followed by an aggregate (mean, stddev, and range of execs/sec across runs; coverage determinism is pooled over all runs).
+
+`failed iterations` counts executions that ended in a crash, timeout, or error rather than a clean run; a non-zero count means the input is not a clean steady-state case and the numbers are skewed.
+
 ### smitebot stop
 
 Stops a running campaign: reaps every runner's process group — afl-fuzz and its Nyx QEMU child, which shares the group — tears down the tmux session, and records the stop time in `state.json`.
