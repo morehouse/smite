@@ -211,9 +211,7 @@ pub unsafe extern "C" fn afl_custom_deinit(data: *mut c_void) {
 ///
 /// If `buf_size == 0` or postcard decoding fails, falls back to generating a
 /// fresh program. Otherwise applies a stack of mutations (see
-/// [`MutatorState::mutate_stacked`]) to the decoded program; with 5%
-/// probability of regenerating from scratch anyway to avoid getting stuck on a
-/// single seed.
+/// [`MutatorState::mutate_stacked`]) to the decoded program.
 ///
 /// `*out_buf` is always set to a valid, non-null pointer before returning (even
 /// on failure, where we return 0 and point at our empty buffer). The buffer at
@@ -238,18 +236,13 @@ pub unsafe extern "C" fn afl_custom_fuzz(
 ) -> usize {
     let state = unsafe { &mut *data.cast::<MutatorState>() };
 
-    let generate_fresh = buf_size == 0 || state.rng.random_range(0..20) == 0;
-    let program = if generate_fresh {
-        state.generate_fresh()
-    } else {
-        let input = unsafe { slice::from_raw_parts(buf, buf_size) };
-        match postcard::from_bytes::<Program>(input) {
-            Ok(mut p) => {
-                state.mutate_stacked(&mut p);
-                p
-            }
-            Err(_) => state.generate_fresh(),
+    let input = unsafe { slice::from_raw_parts(buf, buf_size) };
+    let program = match postcard::from_bytes::<Program>(input) {
+        Ok(mut p) => {
+            state.mutate_stacked(&mut p);
+            p
         }
+        Err(_) => state.generate_fresh(),
     };
 
     let len = if state.serialize(&program, max_size) {
@@ -544,8 +537,6 @@ mod tests {
     #[test]
     fn describe_lists_stacked_mutator_sequence() {
         let state = State::new(6);
-        // Loop until we hit the stacked-mutation branch (5% of calls generate
-        // fresh instead).
         for _ in 0..10 {
             let _ = fuzz_via_ffi(&state, seed_program_bytes(), 1 << 16);
             let ptr = unsafe { afl_custom_describe(state.0, 256) };
