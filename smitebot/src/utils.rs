@@ -20,6 +20,14 @@ pub fn is_executable(path: &Path) -> bool {
     fs::metadata(path).is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
 }
 
+/// Wraps a string in single quotes for safe interpolation into a shell command.
+///
+/// Embedded single quotes are escaped with the standard `'\''` idiom. Used for
+/// every value that enters a tmux shell command string.
+pub fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 /// Finds an executable named `tool` on the process `PATH`.
 pub fn find_in_path(tool: &str) -> Option<PathBuf> {
     let path_var = std::env::var_os("PATH")?;
@@ -64,6 +72,16 @@ mod tests {
         let path_value = OsString::from(tempdir.path());
         let found = find_in_path_with_path("afl-fuzz", &path_value);
         assert!(found.is_none());
+    }
+
+    #[test]
+    fn shell_quote_wraps_in_single_quotes() {
+        assert_eq!(shell_quote("hello"), "'hello'");
+    }
+
+    #[test]
+    fn shell_quote_escapes_embedded_quotes() {
+        assert_eq!(shell_quote("it's"), "'it'\\''s'");
     }
 
     #[test]

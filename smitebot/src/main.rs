@@ -12,7 +12,7 @@ use clap::{Parser, Subcommand};
 
 use commands::{
     BuildArgs, BuildCommand, ConfigArgs, ConfigCommand, DoctorArgs, DoctorCommand, StartArgs,
-    StartCommand, StopArgs, StopCommand,
+    StartCommand, StatusArgs, StatusCommand, StopArgs, StopCommand,
 };
 
 #[derive(Debug, Parser)]
@@ -32,6 +32,8 @@ enum Commands {
     Doctor(DoctorArgs),
     /// Launch a fuzzing campaign.
     Start(StartArgs),
+    /// Report the status of a campaign.
+    Status(StatusArgs),
     /// Stop a running campaign and reap its processes.
     Stop(StopArgs),
 }
@@ -45,6 +47,7 @@ fn main() -> ExitCode {
         Commands::Config(args) => ConfigCommand::execute(&args),
         Commands::Doctor(args) => DoctorCommand::execute(&args),
         Commands::Start(args) => StartCommand::execute(&args),
+        Commands::Status(args) => StatusCommand::execute(&args),
         Commands::Stop(args) => StopCommand::execute(&args),
     };
 

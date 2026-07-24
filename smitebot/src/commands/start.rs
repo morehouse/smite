@@ -16,6 +16,7 @@ use crate::commands::build::{BuildInputs, run_build};
 use crate::config::CampaignConfig;
 use crate::state::{CampaignState, RunnerState, Status};
 use crate::tmux;
+use crate::utils::shell_quote;
 
 /// Safety ceiling for startup verification.
 ///
@@ -214,7 +215,7 @@ fn launch_runners(
 
     for id in 0..config.runners {
         let cmd = build_runner_shell_cmd(config, id, seed_dir, testcache_mb);
-        let window_name = runner_window_name(id);
+        let window_name = tmux::runner_window_name(id);
 
         let result = if id == 0 {
             tmux::create_session(session, &window_name, &cmd)
@@ -289,11 +290,6 @@ fn ensure_seed_dir(config: &CampaignConfig) -> std::io::Result<PathBuf> {
     Ok(seed_dir)
 }
 
-/// tmux window name for a runner, matching the name used when launched.
-fn runner_window_name(id: u16) -> String {
-    format!("runner-{id}")
-}
-
 /// Returns the path of the first runner `fuzzer_stats` already present under
 /// `output_dir`, indicating a prior campaign's output.
 ///
@@ -351,12 +347,12 @@ fn verify_startup(
             Ok(dead) => {
                 let mut failed = false;
                 for runner in runners.iter().filter(|r| r.pid.is_none()) {
-                    if dead.contains(&runner_window_name(runner.id)) {
+                    if dead.contains(&tmux::runner_window_name(runner.id)) {
                         log::error!(
                             "runner {} exited before producing fuzzer_stats; \
                              inspect window '{}' in tmux session '{session}'",
                             runner.id,
-                            runner_window_name(runner.id),
+                            tmux::runner_window_name(runner.id),
                         );
                         failed = true;
                     }
@@ -464,11 +460,6 @@ fn testcache_size_mb() -> Option<u64> {
     } else {
         50
     })
-}
-
-/// Wraps a string in single quotes for safe shell interpolation.
-fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// Builds the full shell command string for a single runner to be run by tmux.
@@ -595,16 +586,6 @@ mod tests {
     use std::fs;
 
     use super::*;
-
-    #[test]
-    fn shell_quote_wraps_in_single_quotes() {
-        assert_eq!(shell_quote("hello"), "'hello'");
-    }
-
-    #[test]
-    fn shell_quote_escapes_embedded_quotes() {
-        assert_eq!(shell_quote("it's"), "'it'\\''s'");
-    }
 
     #[test]
     fn read_fuzzer_pid_parses_pid() {
