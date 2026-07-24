@@ -10,7 +10,7 @@ use smite::bitcoin::{BitcoinCli, Utxo};
 use smite::bolt::{
     AcceptChannel, AnnouncementSignatures, ChannelAnnouncement, ChannelId, ChannelReady,
     ChannelReadyTlvs, ChannelUpdate, FundingCreated, FundingSigned, Message, NodeAnnouncement,
-    OpenChannel, OpenChannelTlvs, Pong, ShortChannelId, msg_type,
+    OpenChannel, OpenChannelTlvs, Pong, ShortChannelId, Shutdown, msg_type,
 };
 use smite::channel_tx::{
     ChannelConfig, ChannelPartyConfig, ChannelState, FundingTransaction, HolderIdentity, Side,
@@ -468,6 +468,18 @@ impl<C: Connection, B: BitcoinRpc> Executor<C, B> {
                         recv_channel_ready(&mut self.conn, &mut self.channel_states)?;
                         log::debug!("[{:?}] RecvChannelReady: received", start.elapsed());
                     }
+                    None
+                }
+
+                Operation::SendShutdown => {
+                    let sd = build_shutdown(&variables, &instr.inputs);
+                    let encoded = Message::Shutdown(sd).encode();
+                    log::debug!(
+                        "[{:?}] SendShutdown: {} bytes",
+                        start.elapsed(),
+                        encoded.len()
+                    );
+                    self.conn.send_message(&encoded)?;
                     None
                 }
 
@@ -937,6 +949,13 @@ fn build_channel_ready(
         second_per_commitment_point,
         tlvs: ChannelReadyTlvs { short_channel_id },
     }
+}
+
+/// Builds a `Shutdown` from 2 input variables (wire order).
+fn build_shutdown(variables: &[Option<Variable>], inputs: &[usize]) -> Shutdown {
+    let channel_id = resolve_channel_id(variables, inputs[0]);
+    let scriptpubkey = resolve_bytes(variables, inputs[1]).to_vec();
+    Shutdown::for_channel(channel_id, scriptpubkey)
 }
 
 /// Builds a signed `ChannelAnnouncement` from 7 input variables.
@@ -3432,6 +3451,90 @@ mod tests {
             *state.next_holder_per_commitment_point(),
             Some(expected_pcp1)
         );
+    }
+
+    #[test]
+    fn execute_send_shutdown() {
+        let channel_id = ChannelId::new([0x7a; 32]);
+
+        // random p2wpkh
+        let mut scriptpubkey = vec![0x00, 0x14];
+        scriptpubkey.extend_from_slice(&[0xab; 20]);
+
+        let program = Program {
+            instructions: vec![
+                Instruction {
+                    operation: Operation::LoadChannelId([0x7a; 32]),
+                    inputs: vec![],
+                },
+                Instruction {
+                    operation: Operation::LoadBytes(scriptpubkey.clone()),
+                    inputs: vec![],
+                },
+                Instruction {
+                    operation: Operation::SendShutdown,
+                    inputs: vec![0, 1],
+                },
+            ],
+        };
+
+        let mut executor = Executor::new(
+            MockConnection::new(),
+            MockBitcoinCli::default(),
+            sample_context(),
+        );
+        executor
+            .execute(&program, std::time::Instant::now())
+            .unwrap();
+
+        assert_eq!(executor.conn.sent.len(), 1);
+        let sd = match Message::decode(&executor.conn.sent[0]).expect("valid message") {
+            Message::Shutdown(sd) => sd,
+            other => panic!("expected Shutdown, got type {}", other.msg_type()),
+        };
+        assert_eq!(sd.channel_id, channel_id);
+        assert_eq!(sd.scriptpubkey, scriptpubkey);
+    }
+
+    #[test]
+    fn execute_send_shutdown_empty_scriptpubkey() {
+        let channel_id = ChannelId::new([0x7a; 32]);
+
+        let program = Program {
+            instructions: vec![
+                Instruction {
+                    operation: Operation::LoadChannelId([0x7a; 32]),
+                    inputs: vec![],
+                },
+                Instruction {
+                    // the fuzzer should allow empty scriptpubkey in the shutdown message to test
+                    // target's behavior even though it's protocol-invalid
+                    operation: Operation::LoadBytes(vec![]),
+                    inputs: vec![],
+                },
+                Instruction {
+                    operation: Operation::SendShutdown,
+                    inputs: vec![0, 1],
+                },
+            ],
+        };
+
+        let mut executor = Executor::new(
+            MockConnection::new(),
+            MockBitcoinCli::default(),
+            sample_context(),
+        );
+        executor
+            .execute(&program, std::time::Instant::now())
+            .unwrap();
+
+        assert_eq!(executor.conn.sent.len(), 1);
+        let sd = match Message::decode(&executor.conn.sent[0]).expect("valid message") {
+            Message::Shutdown(sd) => sd,
+            other => panic!("expected Shutdown, got type {}", other.msg_type()),
+        };
+        assert_eq!(sd.channel_id, channel_id);
+        assert!(sd.scriptpubkey.is_empty());
     }
 
     fn recv_channel_ready_executor() -> (

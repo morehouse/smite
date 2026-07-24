@@ -221,6 +221,8 @@ pub enum Operation {
     /// point unknown) and its funding transaction has enough confirmations for
     /// the target to have sent `channel_ready`.
     RecvChannelReady,
+    /// Build and send a `shutdown` message (BOLT 2, type 38).
+    SendShutdown,
     /// Mines the given number of blocks on the Bitcoin network.
     MineBlocks(u8),
     /// Sign wallet inputs of the transaction and broadcast it via `bitcoin-cli`.
@@ -679,6 +681,7 @@ impl fmt::Display for Operation {
             Self::RecvAcceptChannel => write!(f, "RecvAcceptChannel"),
             Self::RecvFundingSigned => write!(f, "RecvFundingSigned"),
             Self::RecvChannelReady => write!(f, "RecvChannelReady()"),
+            Self::SendShutdown => write!(f, "SendShutdown"),
             Self::BroadcastTransaction => write!(f, "BroadcastTransaction"),
         }
     }
@@ -714,6 +717,7 @@ impl Operation {
             Self::SendMessage
             | Self::SendChannelReady { .. }
             | Self::RecvChannelReady
+            | Self::SendShutdown
             | Self::MineBlocks(_)
             | Self::BroadcastTransaction => None,
             Self::SendOpenChannel => Some(VariableType::SentOpenChannel),
@@ -766,6 +770,7 @@ impl Operation {
                 VariableType::Point,          // second_per_commitment_point
                 VariableType::ShortChannelId, // short_channel_id (alias)
             ],
+            Self::SendShutdown => vec![VariableType::ChannelId, VariableType::Bytes],
             Self::RecvAcceptChannel => vec![VariableType::SentOpenChannel],
             Self::RecvFundingSigned => vec![VariableType::SentFundingCreated],
             Self::BroadcastTransaction => vec![VariableType::FundingTransaction],
@@ -875,6 +880,7 @@ impl Operation {
             | Self::SendChannelReady { .. }
             | Self::RecvFundingSigned
             | Self::RecvChannelReady
+            | Self::SendShutdown
             | Self::MineBlocks(_)
             | Self::BroadcastTransaction => vec![],
 
@@ -897,6 +903,7 @@ impl Operation {
             | Self::RecvAcceptChannel
             | Self::RecvFundingSigned
             | Self::RecvChannelReady
+            | Self::SendShutdown
             | Self::MineBlocks(_)
             | Self::CreateFundingTransaction
             | Self::BroadcastTransaction => true,
@@ -964,6 +971,7 @@ impl Operation {
             | Self::RecvAcceptChannel
             | Self::RecvFundingSigned
             | Self::RecvChannelReady
+            | Self::SendShutdown
             | Self::BroadcastTransaction => false,
         }
     }
