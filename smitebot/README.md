@@ -63,6 +63,18 @@ smitebot stop <campaign-id>
 
 `<campaign-id>` is the directory name under `~/.smitebot/runs` (printed by `smitebot start`). 
 
+### smitebot status
+
+Reports the status of a campaign. Detects whether the campaign is still running (its tmux session is alive) and adapts:
+
+```bash
+smitebot status <campaign-id>
+smitebot status <campaign-id> --summary
+```
+
+- `--summary`: Print a one-shot text summary to the terminal instead of attaching to the live dashboard.
+- `<campaign-id>` is the directory name under `~/.smitebot/runs` (printed by `smitebot start`).
+
 ### smitebot config
 
 Validates a campaign configuration file, reports the resolved settings, and checks that referenced paths exist on disk.
