@@ -145,3 +145,16 @@ JSON output example:
   "overall": false
 }
 ```
+
+### smitebot print-ir
+
+Decodes a serialized IR program and prints it to standard output. IR programs are opaque postcard-encoded `Program`s, the same form the fuzzing loop serializes them in; point it at one to see what it actually does.
+
+```bash
+smitebot print-ir input.bin
+smitebot print-ir output/default/crashes/id:000000,sig:06,...
+```
+
+- `path`: Path to a postcard-encoded IR program.
+
+The program is printed using the IR's `Display` format, the same textual form the `smite-ir` mutator emits in its trim logs. An empty program prints `(empty program)`.

@@ -10,9 +10,11 @@ workspace = true
 [dependencies]
 clap = { version = "4.6", features = ["derive"] }
 log.workspace = true
+postcard.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 simple_logger.workspace = true
+smite-ir = { path = "../smite-ir" }
 thiserror.workspace = true
 toml = "0.8"
 
