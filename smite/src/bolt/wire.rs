@@ -57,6 +57,64 @@ impl<const N: usize> WireFormat for [u8; N] {
     }
 }
 
+macro_rules! impl_truncated_int {
+    ($name:ident, $inner:ty, $doc:literal) => {
+        #[doc = $doc]
+        ///
+        /// Its width is only recoverable from the enclosing TLV record, so
+        /// `read` consumes every remaining byte. Decode one only from a slice
+        /// already narrowed to the TLV value it ends, never from a cursor
+        /// running over a message body.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Hash)]
+        pub struct $name(pub $inner);
+
+        impl WireFormat for $name {
+            /// Reads a minimally-encoded truncated integer from all remaining
+            /// bytes.
+            ///
+            /// # Errors
+            ///
+            /// Returns `TruncatedIntTooLong` if more bytes remain than the
+            /// integer's width, or `TruncatedIntNotMinimal` if the first byte
+            /// is zero.
+            fn read(data: &mut &[u8]) -> Result<Self, BoltError> {
+                const WIDTH: usize = std::mem::size_of::<$inner>();
+
+                let bytes = *data;
+                *data = &[];
+
+                if bytes.len() > WIDTH {
+                    return Err(BoltError::TruncatedIntTooLong {
+                        max: WIDTH,
+                        actual: bytes.len(),
+                    });
+                }
+                if bytes.first() == Some(&0) {
+                    return Err(BoltError::TruncatedIntNotMinimal);
+                }
+
+                let mut value: $inner = 0;
+                for byte in bytes {
+                    value = (value << 8) | <$inner>::from(*byte);
+                }
+                Ok(Self(value))
+            }
+
+            /// Writes the integer big-endian with leading zero bytes stripped.
+            ///
+            /// Zero encodes to zero bytes.
+            fn write(&self, out: &mut Vec<u8>) {
+                let bytes = self.0.to_be_bytes();
+                let start = bytes.iter().position(|b| *b != 0).unwrap_or(bytes.len());
+                out.extend_from_slice(&bytes[start..]);
+            }
+        }
+    };
+}
+
+impl_truncated_int!(Tu32, u32, "A BOLT 1 truncated 32-bit integer (`tu32`).");
+impl_truncated_int!(Tu64, u64, "A BOLT 1 truncated 64-bit integer (`tu64`).");
+
 macro_rules! impl_wire_format_int {
     ($type:ty) => {
         impl WireFormat for $type {
@@ -1006,5 +1064,60 @@ mod tests {
             sha256::Hash::from_byte_array([0x55; SHA256_HASH_SIZE])
         );
         assert_eq!(data.len(), 5); // 5 bytes remaining
+    }
+
+    #[test]
+    fn truncated_int_write_strips_leading_zeros() {
+        let cases: &[(u64, &[u8])] = &[
+            (0, &[]),
+            (1, &[0x01]),
+            (0xff, &[0xff]),
+            (0x0100, &[0x01, 0x00]),
+            (u64::MAX, &[0xff; 8]),
+        ];
+
+        for (value, expected) in cases {
+            let mut buf = Vec::new();
+            Tu64(*value).write(&mut buf);
+            assert_eq!(buf, *expected, "value {value}");
+        }
+    }
+
+    #[test]
+    fn truncated_int_read_consumes_all_remaining_bytes() {
+        let mut data: &[u8] = &[0x01, 0x00];
+        assert_eq!(Tu64::read(&mut data).unwrap(), Tu64(256));
+        assert!(data.is_empty());
+
+        let mut empty: &[u8] = &[];
+        assert_eq!(Tu32::read(&mut empty).unwrap(), Tu32(0));
+    }
+
+    #[test]
+    fn truncated_int_roundtrips() {
+        for value in [0u32, 1, 0xff, 0x1_0000, u32::MAX] {
+            let mut buf = Vec::new();
+            Tu32(value).write(&mut buf);
+            let mut cursor: &[u8] = &buf;
+            assert_eq!(Tu32::read(&mut cursor).unwrap(), Tu32(value));
+        }
+    }
+
+    #[test]
+    fn truncated_int_rejects_leading_zero() {
+        let mut data: &[u8] = &[0x00, 0x01];
+        assert_eq!(
+            Tu64::read(&mut data),
+            Err(BoltError::TruncatedIntNotMinimal)
+        );
+    }
+
+    #[test]
+    fn truncated_int_rejects_oversized_encoding() {
+        let mut data: &[u8] = &[0x01; 5];
+        assert_eq!(
+            Tu32::read(&mut data),
+            Err(BoltError::TruncatedIntTooLong { max: 4, actual: 5 })
+        );
     }
 }
