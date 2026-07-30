@@ -77,7 +77,7 @@ pub use update_fail_htlc::{UpdateFailHtlc, UpdateFailHtlcTlvs};
 pub use update_fail_malformed_htlc::UpdateFailMalformedHtlc;
 pub use update_fulfill_htlc::{UpdateFulfillHtlc, UpdateFulfillHtlcTlvs};
 pub use warning::Warning;
-pub use wire::{EmptyTlv, WireFormat};
+pub use wire::{EmptyTlv, Tu32, Tu64, WireFormat};
 
 /// Errors that can occur during BOLT message encoding/decoding.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -103,6 +103,14 @@ pub enum BoltError {
     /// `BigSize` truncated (unexpected EOF)
     #[error("BIGSIZE_TRUNCATED")]
     BigSizeTruncated,
+
+    // Truncated integer errors
+    /// Truncated integer (`tu32`/`tu64`) wider than its maximum encoding
+    #[error("TRUNCATED_INT_TOO_LONG max {max} got {actual}")]
+    TruncatedIntTooLong { max: usize, actual: usize },
+    /// Truncated integer (`tu32`/`tu64`) has a leading zero byte
+    #[error("TRUNCATED_INT_NOT_MINIMAL")]
+    TruncatedIntNotMinimal,
 
     // TLV errors
     /// TLV type not in strictly increasing order
