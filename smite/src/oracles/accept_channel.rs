@@ -8,6 +8,11 @@ use crate::violation::Violation;
 
 use bitcoin::Amount;
 
+// Constants from the BOLT 2 `open_channel` requirements:
+// https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#requirements-8
+const MAX_ACCEPTED_HTLCS_LIMIT: u16 = 483;
+const MIN_DUST_LIMIT_SATOSHIS: u64 = 354;
+
 /// Context for `AcceptChannelOracle`
 pub struct AcceptChannelContext<'a> {
     /// The `accept_channel` received from the peer.
@@ -81,20 +86,92 @@ fn verify_accepted_open_channel(open_channel: &OpenChannel) -> Result<(), String
         ));
     }
 
+    // Check the channel reserve covers the dust limit.
+    if open_channel.dust_limit_satoshis > open_channel.channel_reserve_satoshis {
+        return Err(format!(
+            "dust_limit_satoshis {} exceeds channel_reserve_satoshis {}",
+            open_channel.dust_limit_satoshis, open_channel.channel_reserve_satoshis,
+        ));
+    }
+
     // Check that the channel type was included.
+    // TODO: Check option_channel_type in negotiated features since it is
+    // assumed to be supported.
     let Some(channel_type) = open_channel.tlvs.channel_type.as_deref() else {
         return Err("open_channel does not include a channel_type".to_string());
     };
 
-    // Check that the opener can afford the proposed feerate.
-    let opener_balance_sat = (funding_msat - open_channel.push_msat) / 1000;
-    let commitment_cost = CommitmentCost::new(open_channel.feerate_per_kw, channel_type);
-    if opener_balance_sat
-        .checked_sub(commitment_cost.total_sat())
-        .is_none()
-    {
+    // Check the HTLC limit is within the maximum.
+    // FIXME: Does not apply to channels whose `channel_type` includes
+    // `zero_fee_commitments`. These channel types have a lower upper limit on
+    // `max_accepted_htlcs`, so we are currently safe.
+    if open_channel.max_accepted_htlcs > MAX_ACCEPTED_HTLCS_LIMIT {
         return Err(format!(
-            "opener balance {opener_balance_sat} sat cannot cover the commitment fee and anchor cost",
+            "max_accepted_htlcs {} exceeds the limit of {MAX_ACCEPTED_HTLCS_LIMIT}",
+            open_channel.max_accepted_htlcs,
+        ));
+    }
+
+    // Check the dust limit is not below the minimum.
+    if open_channel.dust_limit_satoshis < MIN_DUST_LIMIT_SATOSHIS {
+        return Err(format!(
+            "dust_limit_satoshis {} is below the minimum of {MIN_DUST_LIMIT_SATOSHIS} sat",
+            open_channel.dust_limit_satoshis,
+        ));
+    }
+
+    // Check the initial commitment satisfies the channel reserve.
+    verify_initial_commitment(
+        open_channel,
+        channel_type,
+        open_channel.channel_reserve_satoshis,
+    )
+}
+
+/// Verifies that the initial commitment can cover its fee and satisfies the
+/// channel reserve requirement, returning an error if it breaches either, or
+/// `Ok(())` if both are met.
+///
+/// NOTE: This check is safe from false positives for `zero_fee_commitments`
+/// and `option_simple_taproot`, although the reported error may be misleading:
+///
+/// - `zero_fee_commitments` requires `feerate_per_kw == 0`, which we currently
+///   do not enforce. A non-zero feerate may cause the error to be reported here
+///   even though it is invalid for this channel type.
+/// - `option_simple_taproot` has a different commitment fee (968-byte weight),
+///   but we calculate it using the lower 724-byte weight. This may allow some
+///   invalid cases through, but cannot cause a false positive.
+/// - Anchor costs are only included when `option_anchors` is negotiated, so
+///   they are not unnecessarily subtracted for these channel types.
+fn verify_initial_commitment(
+    open_channel: &OpenChannel,
+    channel_type: &[u8],
+    channel_reserve_satoshis: u64,
+) -> Result<(), String> {
+    // Check that the opener can afford the proposed feerate.
+    let opener_balance_sat = (open_channel.funding_satoshis * 1000 - open_channel.push_msat) / 1000;
+    let commitment_cost = CommitmentCost::new(open_channel.feerate_per_kw, channel_type);
+    let Some(balance_after_fee) = opener_balance_sat.checked_sub(commitment_cost.fee_sat) else {
+        return Err(format!(
+            "opener balance {opener_balance_sat} sat cannot cover the commitment fee of {} sat",
+            commitment_cost.fee_sat
+        ));
+    };
+
+    // For `option_anchors` channel types, check that the opener's remaining
+    // balance can cover the anchor cost.
+    let Some(to_local_sat) = balance_after_fee.checked_sub(commitment_cost.anchor_cost_sat) else {
+        return Err(format!(
+            "opener balance {opener_balance_sat} sat cannot cover anchor cost of {} sat (after fee deduction)",
+            commitment_cost.anchor_cost_sat
+        ));
+    };
+
+    // Check the initial commitment keeps at least one side above its reserve.
+    let to_remote_sat = open_channel.push_msat / 1000;
+    if to_local_sat <= channel_reserve_satoshis && to_remote_sat <= channel_reserve_satoshis {
+        return Err(format!(
+            "neither side exceeds channel reserve: to_local {to_local_sat} sat, to_remote {to_remote_sat} sat, reserve {channel_reserve_satoshis} sat",
         ));
     }
 
@@ -248,6 +325,18 @@ mod tests {
     }
 
     #[test]
+    fn open_channel_dust_limit_above_its_channel_reserve() {
+        let mut oc = open_channel();
+        oc.dust_limit_satoshis = oc.channel_reserve_satoshis + 1;
+
+        assert_fail(
+            &accept_channel(),
+            Some(&pending_negotiation(oc)),
+            "invalid open_channel: dust_limit_satoshis 10001 exceeds channel_reserve_satoshis",
+        );
+    }
+
+    #[test]
     fn open_channel_without_a_channel_type() {
         let mut oc = open_channel();
         oc.tlvs.channel_type = None;
@@ -256,6 +345,30 @@ mod tests {
             &accept_channel(),
             Some(&pending_negotiation(oc)),
             "invalid open_channel: open_channel does not include a channel_type",
+        );
+    }
+
+    #[test]
+    fn open_channel_max_accepted_htlcs_above_the_limit() {
+        let mut oc = open_channel();
+        oc.max_accepted_htlcs = MAX_ACCEPTED_HTLCS_LIMIT + 1;
+
+        assert_fail(
+            &accept_channel(),
+            Some(&pending_negotiation(oc)),
+            "invalid open_channel: max_accepted_htlcs 484 exceeds the limit of 483",
+        );
+    }
+
+    #[test]
+    fn open_channel_dust_limit_below_the_minimum() {
+        let mut oc = open_channel();
+        oc.dust_limit_satoshis = MIN_DUST_LIMIT_SATOSHIS - 1;
+
+        assert_fail(
+            &accept_channel(),
+            Some(&pending_negotiation(oc)),
+            "invalid open_channel: dust_limit_satoshis 353 is below the minimum of 354 sat",
         );
     }
 
@@ -280,7 +393,19 @@ mod tests {
         assert_fail(
             &accept_channel(),
             Some(&pending_negotiation(oc)),
-            "invalid open_channel: opener balance 17000 sat cannot cover the commitment fee and anchor cost",
+            "invalid open_channel: opener balance 17000 sat cannot cover anchor cost of 660 sat (after fee deduction)",
+        );
+    }
+
+    #[test]
+    fn open_channel_initial_commitment_below_reserves() {
+        let mut oc = open_channel();
+        oc.channel_reserve_satoshis = 7_000_000;
+
+        assert_fail(
+            &accept_channel(),
+            Some(&pending_negotiation(oc)),
+            "invalid open_channel: neither side exceeds channel reserve",
         );
     }
 
