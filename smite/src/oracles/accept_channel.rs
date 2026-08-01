@@ -8,7 +8,7 @@ use crate::violation::Violation;
 
 use bitcoin::Amount;
 
-// Constants from the BOLT 2 `open_channel` requirements:
+// Constants from the BOLT 2 `open_channel` and `accept_channel` requirements:
 // https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#requirements-8
 const MAX_ACCEPTED_HTLCS_LIMIT: u16 = 483;
 const MIN_DUST_LIMIT_SATOSHIS: u64 = 354;
@@ -23,8 +23,9 @@ pub struct AcceptChannelContext<'a> {
 }
 
 /// Checks whether the `open_channel` answered by an `accept_channel` satisfied
-/// the BOLT 2 v1 channel establishment requirements for acceptance, and that
-/// the negotiated `temporary_channel_id` was not reused.
+/// the BOLT 2 v1 channel establishment requirements for acceptance, whether the
+/// `accept_channel` itself satisfies them, and that the negotiated
+/// `temporary_channel_id` was not reused.
 pub struct AcceptChannelOracle;
 
 impl Oracle<AcceptChannelContext<'_>> for AcceptChannelOracle {
@@ -48,6 +49,14 @@ impl Oracle<AcceptChannelContext<'_>> for AcceptChannelOracle {
             return Err(Violation::InvalidAcceptChannel(
                 context.accept_channel.temporary_channel_id,
                 format!("accepted invalid open_channel: {reason}"),
+            ));
+        }
+
+        // Check that the `accept_channel` itself is valid.
+        if let Err(reason) = verify_accept_channel(context.accept_channel, open_channel) {
+            return Err(Violation::InvalidAcceptChannel(
+                context.accept_channel.temporary_channel_id,
+                format!("invalid accept_channel: {reason}"),
             ));
         }
 
@@ -128,6 +137,73 @@ fn verify_accepted_open_channel(open_channel: &OpenChannel) -> Result<(), String
     )
 }
 
+/// Verifies the `accept_channel` against the BOLT 2 requirements it must meet,
+/// returning an error if it breaches one, or `Ok(())` if it meets them all.
+fn verify_accept_channel(
+    accept_channel: &AcceptChannel,
+    open_channel: &OpenChannel,
+) -> Result<(), String> {
+    // Check that the channel type was included.
+    let Some(channel_type) = accept_channel.tlvs.channel_type.as_deref() else {
+        return Err("accept_channel does not include a channel_type".to_string());
+    };
+
+    // Check that the channel type matches the one in open_channel.
+    if open_channel.tlvs.channel_type != accept_channel.tlvs.channel_type {
+        return Err("accept_channel channel_type does not match open_channel".to_string());
+    }
+
+    // Check the acceptor's channel reserve covers the opener's dust limit.
+    if accept_channel.channel_reserve_satoshis < open_channel.dust_limit_satoshis {
+        return Err(format!(
+            "channel_reserve_satoshis {} is below the open_channel dust_limit_satoshis {}",
+            accept_channel.channel_reserve_satoshis, open_channel.dust_limit_satoshis,
+        ));
+    }
+
+    // Check the opener's channel reserve covers the acceptor's dust limit.
+    if open_channel.channel_reserve_satoshis < accept_channel.dust_limit_satoshis {
+        return Err(format!(
+            "dust_limit_satoshis {} exceeds the open_channel channel_reserve_satoshis {}",
+            accept_channel.dust_limit_satoshis, open_channel.channel_reserve_satoshis,
+        ));
+    }
+
+    // Check the channel reserve covers the dust limit.
+    if accept_channel.dust_limit_satoshis > accept_channel.channel_reserve_satoshis {
+        return Err(format!(
+            "dust_limit_satoshis {} exceeds channel_reserve_satoshis {}",
+            accept_channel.dust_limit_satoshis, accept_channel.channel_reserve_satoshis,
+        ));
+    }
+
+    // Check the HTLC limit is within the maximum.
+    // FIXME: Does not apply to channels whose `channel_type` includes
+    // `zero_fee_commitments`. These channel types have a lower upper limit on
+    // `max_accepted_htlcs`, so we are currently safe.
+    if accept_channel.max_accepted_htlcs > MAX_ACCEPTED_HTLCS_LIMIT {
+        return Err(format!(
+            "max_accepted_htlcs {} exceeds the limit of {MAX_ACCEPTED_HTLCS_LIMIT}",
+            accept_channel.max_accepted_htlcs,
+        ));
+    }
+
+    // Check the dust limit is not below the minimum.
+    if accept_channel.dust_limit_satoshis < MIN_DUST_LIMIT_SATOSHIS {
+        return Err(format!(
+            "dust_limit_satoshis {} is below the minimum of {MIN_DUST_LIMIT_SATOSHIS} sat",
+            accept_channel.dust_limit_satoshis,
+        ));
+    }
+
+    // Check the initial commitment satisfies the channel reserve.
+    verify_initial_commitment(
+        open_channel,
+        channel_type,
+        accept_channel.channel_reserve_satoshis,
+    )
+}
+
 /// Verifies that the initial commitment can cover its fee and satisfies the
 /// channel reserve requirement, returning an error if it breaches either, or
 /// `Ok(())` if both are met.
@@ -181,7 +257,7 @@ fn verify_initial_commitment(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bolt::{AcceptChannel, AcceptChannelTlvs, ChannelId, OpenChannelTlvs};
+    use crate::bolt::{AcceptChannelTlvs, ChannelId, OpenChannelTlvs};
     use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 
     fn pubkey(seed: u8) -> PublicKey {
@@ -406,6 +482,105 @@ mod tests {
             &accept_channel(),
             Some(&pending_negotiation(oc)),
             "invalid open_channel: neither side exceeds channel reserve",
+        );
+    }
+
+    #[test]
+    fn accept_channel_without_a_channel_type() {
+        let mut ac = accept_channel();
+        ac.tlvs.channel_type = None;
+
+        assert_fail(
+            &ac,
+            Some(&pending_negotiation(open_channel())),
+            "invalid accept_channel: accept_channel does not include a channel_type",
+        );
+    }
+
+    #[test]
+    fn accept_channel_channel_type_mismatch_with_open_channel() {
+        let mut ac = accept_channel();
+        ac.tlvs.channel_type = Some(vec![0x40, 0x10, 0x00]);
+
+        assert_fail(
+            &ac,
+            Some(&pending_negotiation(open_channel())),
+            "invalid accept_channel: accept_channel channel_type does not match open_channel",
+        );
+    }
+
+    #[test]
+    fn accept_channel_reserve_below_the_open_channel_dust_limit() {
+        let oc = open_channel();
+        let mut ac = accept_channel();
+        ac.channel_reserve_satoshis = oc.dust_limit_satoshis - 1;
+
+        assert_fail(
+            &ac,
+            Some(&pending_negotiation(oc)),
+            "invalid accept_channel: channel_reserve_satoshis 545 is below the open_channel dust_limit_satoshis 546",
+        );
+    }
+
+    #[test]
+    fn accept_channel_dust_limit_above_the_open_channel_reserve() {
+        let oc = open_channel();
+        let mut ac = accept_channel();
+        ac.dust_limit_satoshis = oc.channel_reserve_satoshis + 1;
+
+        assert_fail(
+            &ac,
+            Some(&pending_negotiation(oc)),
+            "invalid accept_channel: dust_limit_satoshis 10001 exceeds the open_channel channel_reserve_satoshis 10000",
+        );
+    }
+
+    #[test]
+    fn accept_channel_dust_limit_above_its_channel_reserve() {
+        let mut ac = accept_channel();
+        ac.dust_limit_satoshis = 5_000;
+        ac.channel_reserve_satoshis = 4_000;
+
+        assert_fail(
+            &ac,
+            Some(&pending_negotiation(open_channel())),
+            "invalid accept_channel: dust_limit_satoshis 5000 exceeds channel_reserve_satoshis 4000",
+        );
+    }
+
+    #[test]
+    fn accept_channel_max_accepted_htlcs_above_the_limit() {
+        let mut ac = accept_channel();
+        ac.max_accepted_htlcs = MAX_ACCEPTED_HTLCS_LIMIT + 1;
+
+        assert_fail(
+            &ac,
+            Some(&pending_negotiation(open_channel())),
+            "invalid accept_channel: max_accepted_htlcs 484 exceeds the limit of 483",
+        );
+    }
+
+    #[test]
+    fn accept_channel_dust_limit_below_the_minimum() {
+        let mut ac = accept_channel();
+        ac.dust_limit_satoshis = MIN_DUST_LIMIT_SATOSHIS - 1;
+
+        assert_fail(
+            &ac,
+            Some(&pending_negotiation(open_channel())),
+            "invalid accept_channel: dust_limit_satoshis 353 is below the minimum of 354 sat",
+        );
+    }
+
+    #[test]
+    fn accept_channel_initial_commitment_below_reserves() {
+        let mut ac = accept_channel();
+        ac.channel_reserve_satoshis = 7_000_000;
+
+        assert_fail(
+            &ac,
+            Some(&pending_negotiation(open_channel())),
+            "invalid accept_channel: neither side exceeds channel reserve",
         );
     }
 

@@ -30,7 +30,8 @@ pub enum Violation {
     /// [`crate::oracles::AcceptChannelOracle`]. The reason names the breached
     /// requirement, one of:
     /// - it names a `temporary_channel_id` we sent no `open_channel` for,
-    /// - it accepts an `open_channel` BOLT 2 required it to reject, or
+    /// - it accepts an `open_channel` BOLT 2 required it to reject,
+    /// - its own fields breach the `accept_channel` requirements, or
     /// - it reuses a `temporary_channel_id` still awaiting `funding_created`.
     #[error("invalid accept_channel for temporary_channel_id {0:?}: {1}")]
     InvalidAcceptChannel(ChannelId, String),
