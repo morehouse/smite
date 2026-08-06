@@ -1,3 +1,4 @@
+pub mod bench_exec;
 pub mod build;
 pub mod config;
 pub mod corpus;
@@ -7,6 +8,7 @@ pub mod start;
 pub mod status;
 pub mod stop;
 
+pub use bench_exec::{BenchExecArgs, BenchExecCommand};
 pub use build::{BuildArgs, BuildCommand};
 pub use config::{ConfigArgs, ConfigCommand};
 pub use corpus::{CorpusArgs, CorpusCommand};
