@@ -188,6 +188,6 @@ smitebot corpus minimize <campaign-id> [-i <input>] [-o <output-dir>] [--aflpp-p
 ```
 
 - `<campaign-id>`: directory name under `~/.smitebot/runs`
-- `-i, --input <input>`: input directory or glob pattern passed to `afl-cmin -i`; defaults to `<output_dir>/*/queue/` (all runner queues)
+- `-i, --input <input>`: input directory passed to `afl-cmin -i`; by default the campaign's runner queues are staged into a short-named temp corpus first (afl-cmin's `<hash>_<name>` staging overflows `NAME_MAX` on long smite-ir queue filenames), so no `--input` is needed. A supplied `--input` is passed through unchanged
 - `-o, --output <output-dir>`: output directory; defaults to `~/.smitebot/runs/<id>/corpus-min/`
 - `--aflpp-path <path>`: AFL++ source tree, overriding the `aflpp_path` stored in `state.json` (useful when the checkout has moved)

@@ -48,8 +48,8 @@ pub struct MergeArgs {
 pub struct MinimizeArgs {
     /// Campaign ID whose sharedir and `aflpp_path` to use.
     campaign_id: String,
-    /// Input directory or glob pattern passed to `afl-cmin -i`
-    /// (default: `<output_dir>/*/queue/`).
+    /// Input directory passed to `afl-cmin -i` (default: the campaign's runner
+    /// queues, staged into a short-named temp corpus first).
     #[arg(short = 'i', long)]
     input: Option<String>,
     /// Output directory (default: `~/.smitebot/runs/<id>/corpus-min/`).
@@ -224,14 +224,6 @@ fn execute_minimize(args: &MinimizeArgs) -> bool {
         return false;
     };
 
-    // Default: pass the output_dir glob so afl-cmin collects all runner queues
-    // in one pass, matching morehouse's manual workflow:
-    // afl-cmin -i "output_dir/*/queue/" -o minimized/ -X sharedir
-    let input = args
-        .input
-        .clone()
-        .unwrap_or_else(|| format!("{}/*/queue/", state.output_dir.display()));
-
     let output = args
         .output
         .clone()
@@ -242,6 +234,16 @@ fn execute_minimize(args: &MinimizeArgs) -> bool {
     if output_dir_occupied(&output) {
         return false;
     }
+
+    // Default = the raw runner queues; stage to short names first (see stage_queues).
+    let stage_dir = runs_dir.join(&args.campaign_id).join(".corpus-stage");
+    let input = match &args.input {
+        Some(i) => i.clone(),
+        None => match stage_queues(&state, &stage_dir) {
+            Some(dir) => dir,
+            None => return false,
+        },
+    };
 
     log::info!("running afl-cmin on {input}");
     log::info!("output: {}", output.display());
@@ -254,14 +256,26 @@ fn execute_minimize(args: &MinimizeArgs) -> bool {
         .arg("-X")
         .arg(&state.sharedir);
 
-    let status = match cmd.status() {
+    let status = cmd.status();
+
+    // Remove the staging corpus we created (whether or not afl-cmin succeeded);
+    // the minimized output in `output` is what the user keeps.
+    if args.input.is_none()
+        && let Err(e) = fs::remove_dir_all(&stage_dir)
+    {
+        log::warn!(
+            "failed to remove staging directory {}: {e}",
+            stage_dir.display()
+        );
+    }
+
+    let status = match status {
         Ok(s) => s,
         Err(e) => {
             log::error!("failed to run {}: {e}", afl_cmin.display());
             return false;
         }
     };
-
     if !status.success() {
         log::error!("afl-cmin failed with {status}");
         return false;
@@ -269,6 +283,38 @@ fn execute_minimize(args: &MinimizeArgs) -> bool {
 
     log::info!("minimized corpus written to {}", output.display());
     true
+}
+
+/// Stages a campaign's runner queues into `stage_dir` with short, sequential
+/// filenames, returning the directory to hand to `afl-cmin -i`.
+///
+/// afl-cmin -X hardlinks each input to `<8hex>_<basename>` (batch mode); smite-ir
+/// queue filenames already approach `NAME_MAX`, so the added prefix overflows
+/// (`ENAMETOOLONG`). Reusing `merge`'s content dedup gives short names (and drops
+/// duplicates, which afl-cmin would discard anyway). Returns `None` on failure,
+/// logged at the site.
+fn stage_queues(state: &CampaignState, stage_dir: &Path) -> Option<String> {
+    // Start from a clean staging dir; a prior interrupted run may have left one.
+    if stage_dir.exists()
+        && let Err(e) = fs::remove_dir_all(stage_dir)
+    {
+        log::error!(
+            "failed to clear staging directory {}: {e}",
+            stage_dir.display()
+        );
+        return None;
+    }
+    if let Err(e) = fs::create_dir_all(stage_dir) {
+        log::error!(
+            "failed to create staging directory {}: {e}",
+            stage_dir.display()
+        );
+        return None;
+    }
+
+    let (total_in, total_out) = merge_states(std::slice::from_ref(state), stage_dir)?;
+    log::info!("staged {total_out} unique inputs (deduped from {total_in}) for minimization");
+    Some(stage_dir.display().to_string())
 }
 
 /// Reports (with an error log) whether `output` already contains files.
@@ -417,6 +463,53 @@ mod tests {
         assert_eq!(total_in, 3);
         assert_eq!(total_out, 2);
         assert_eq!(dir_contents_sorted(&out), ["shared", "unique"]);
+    }
+
+    #[test]
+    fn stage_queues_shortens_long_input_names() {
+        let dir = tempdir().unwrap();
+        let output_dir = dir.path().join("out");
+        // A smite-ir queue filename near NAME_MAX (255). afl-cmin -X would prefix
+        // it with "<8hex>_" and overflow (ENAMETOOLONG); staging must rename it.
+        let long_name = format!("id:000121,{}", "instr-reorder,".repeat(17));
+        assert!(long_name.len() > 240 && long_name.len() < 255);
+        write_queue(&output_dir, 0, &[(long_name.as_str(), "payload")]);
+
+        let stage = dir.path().join("stage");
+        let staged = stage_queues(&sample_state(output_dir, 1), &stage).unwrap();
+
+        let names: Vec<String> = fs::read_dir(&staged)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names.len(), 1);
+        // Short enough that afl-cmin's 9-byte "<8hex>_" prefix stays under NAME_MAX.
+        assert!(
+            names[0].len() + 9 < 255,
+            "staged name still too long: {}",
+            names[0]
+        );
+        assert_eq!(
+            fs::read_to_string(stage.join(&names[0])).unwrap(),
+            "payload"
+        );
+    }
+
+    #[test]
+    fn stage_queues_replaces_stale_staging_dir() {
+        let dir = tempdir().unwrap();
+        let output_dir = dir.path().join("out");
+        write_queue(&output_dir, 0, &[("id:0", "fresh")]);
+
+        // A leftover file from a prior interrupted run must not survive staging.
+        let stage = dir.path().join("stage");
+        fs::create_dir_all(&stage).unwrap();
+        fs::write(stage.join("stale"), "old").unwrap();
+
+        stage_queues(&sample_state(output_dir, 1), &stage).unwrap();
+
+        assert!(!stage.join("stale").exists());
+        assert_eq!(dir_contents_sorted(&stage), ["fresh"]);
     }
 
     #[test]
