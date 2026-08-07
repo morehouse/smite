@@ -80,6 +80,7 @@ pub fn start(
         .arg("-txindex=1")
         .arg("-server=1")
         .arg("-rest=1")
+        .arg("-unsafesqlitesync=1")
         .arg("-printtoconsole=0")
         .stdout(Stdio::null())
         .stderr(Stdio::null());
