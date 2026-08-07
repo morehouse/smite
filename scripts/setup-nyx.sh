@@ -88,6 +88,11 @@ cat > "$SHAREDIR/fuzz_no_pt.sh" << 'EOF'
 chmod +x hget
 cp hget /tmp
 cd /tmp
+# /tmp is a tmpfs holding the tarball, the tree extracted from it, and the
+# target's runtime writes. Its default cap is half the VM's RAM, too low to
+# unpack a 600 MB image below 3 GB. The guest has no swap, so leave 10% for
+# anonymous memory.
+mount -o remount,size=90% /tmp
 echo 0 > /proc/sys/kernel/randomize_va_space
 echo 0 > /proc/sys/kernel/printk
 ./hget hcat_no_pt hcat
@@ -100,7 +105,9 @@ ip addr add 127.0.0.1/8 dev lo
 ip addr add ::1/128 dev lo
 ip link set lo up
 ip a | ./hcat
-mkdir rootfs/ && tar -xf container.tar -C /tmp/rootfs
+# Drop the tarball once unpacked; keeping it would pin a second copy of the
+# image in tmpfs for the life of the VM.
+mkdir rootfs/ && tar -xf container.tar -C /tmp/rootfs && rm -f container.tar
 mount -t proc /proc rootfs/proc/
 mount --rbind /sys rootfs/sys/
 mount --rbind /dev rootfs/dev/
