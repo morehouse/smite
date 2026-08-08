@@ -188,6 +188,6 @@ smitebot corpus minimize <campaign-id> [-i <input>] [-o <output-dir>] [--aflpp-p
 ```
 
 - `<campaign-id>`: directory name under `~/.smitebot/runs`
-- `-i, --input <input>`: input directory or glob pattern passed to `afl-cmin -i`; defaults to `<output_dir>/*/queue/` (all runner queues)
+- `-i, --input <input>`: input directories to minimize (repeatable); these — or, by default, the campaign's runner queues — are implicitly merged into a single directory before minimizing
 - `-o, --output <output-dir>`: output directory; defaults to `~/.smitebot/runs/<id>/corpus-min/`
 - `--aflpp-path <path>`: AFL++ source tree, overriding the `aflpp_path` stored in `state.json` (useful when the checkout has moved)
