@@ -10,7 +10,7 @@
 //! - [`bolt`] - BOLT message encoding and decoding.
 //! - [`channel_tx`] - BOLT 3 channel transaction construction (funding and commitment).
 //! - [`noise`] - BOLT 8 `Noise_XK` encrypted transport.
-//! - [`oracles`] - Post-scenario invariant checks.
+//! - [`oracles`] - Protocol invariant checks.
 //! - [`pending_channel`] - BOLT 2 channel negotiation state.
 //! - [`process`] - Managed subprocess utilities.
 //! - [`runners`] - Fuzz input delivery (Nyx and local modes).
