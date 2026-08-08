@@ -33,16 +33,16 @@ pub enum Violation {
     /// - it accepts an `open_channel` BOLT 2 required it to reject,
     /// - its own fields breach the `accept_channel` requirements, or
     /// - it reuses a `temporary_channel_id` still awaiting `funding_created`.
-    #[error("invalid accept_channel for temporary_channel_id {0:?}: {1}")]
+    #[error("invalid accept_channel for temporary_channel_id {0}: {1}")]
     InvalidAcceptChannel(ChannelId, String),
 
     /// The target sent a `funding_signed` or `channel_ready` for a `channel_id`
     /// we never opened, i.e. one for which no state was ever established.
-    #[error("unknown channel: no tracked state for channel_id {0:?}")]
+    #[error("unknown channel: no tracked state for channel_id {0}")]
     UnknownChannel(ChannelId),
 
     /// The target's `funding_signed` signature failed to verify against the
     /// holder's initial commitment transaction.
-    #[error("invalid counterparty signature for channel_id {0:?}")]
+    #[error("invalid counterparty signature for channel_id {0}")]
     InvalidCounterpartySignature(ChannelId),
 }
