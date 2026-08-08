@@ -48,10 +48,10 @@ pub struct MergeArgs {
 pub struct MinimizeArgs {
     /// Campaign ID whose sharedir and `aflpp_path` to use.
     campaign_id: String,
-    /// Input directory passed to `afl-cmin -i` (default: the campaign's runner
-    /// queues, staged into a short-named temp corpus first).
+    /// Input directories to minimize (repeatable). Default: the campaign's
+    /// runner queues.
     #[arg(short = 'i', long)]
-    input: Option<String>,
+    input: Vec<PathBuf>,
     /// Output directory (default: `~/.smitebot/runs/<id>/corpus-min/`).
     #[arg(short = 'o', long)]
     output: Option<PathBuf>,
@@ -132,7 +132,20 @@ fn execute_merge(args: &MergeArgs) -> bool {
     true
 }
 
-/// Copies unique queue files from every runner of every state into `output`.
+/// Merges every runner queue of every state into `output`. See [`merge_dirs`].
+fn merge_states(states: &[CampaignState], output: &Path) -> Option<(usize, usize)> {
+    let mut dirs = Vec::new();
+    for state in states {
+        for runner in &state.runners {
+            dirs.push(state.output_dir.join(runner.name()).join("queue"));
+        }
+    }
+    merge_dirs(&dirs, output)
+}
+
+/// Copies unique files (by content hash) from each directory in `sources` into
+/// `output` under short, sequential names. Missing directories are skipped with
+/// a warning.
 ///
 /// Deduplicates by a hash of the file contents rather than the contents
 /// themselves, so a large corpus only costs 8 bytes per unique entry in memory.
@@ -140,56 +153,53 @@ fn execute_merge(args: &MergeArgs) -> bool {
 /// ~n²/2⁶⁵, negligible for realistic corpus sizes. Returns `(files_read,
 /// files_written)`, or `None` if any read/write failed (logged at the failure
 /// site).
-fn merge_states(states: &[CampaignState], output: &Path) -> Option<(usize, usize)> {
+fn merge_dirs(sources: &[PathBuf], output: &Path) -> Option<(usize, usize)> {
     let mut seen: HashSet<u64> = HashSet::new();
     let mut total_in = 0usize;
     let mut total_out = 0usize;
 
-    for state in states {
-        for runner in &state.runners {
-            let queue_dir = state.output_dir.join(runner.name()).join("queue");
-            if !queue_dir.exists() {
-                log::warn!("queue directory missing, skipping: {}", queue_dir.display());
-                continue;
-            }
+    for dir in sources {
+        if !dir.exists() {
+            log::warn!("input directory missing, skipping: {}", dir.display());
+            continue;
+        }
 
-            let entries = match fs::read_dir(&queue_dir) {
-                Ok(e) => e,
+        let entries = match fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(e) => {
+                log::error!("failed to read {}: {e}", dir.display());
+                return None;
+            }
+        };
+
+        for entry in entries {
+            let path = match entry {
+                Ok(e) => e.path(),
                 Err(e) => {
-                    log::error!("failed to read {}: {e}", queue_dir.display());
+                    log::error!("failed to read an entry in {}: {e}", dir.display());
                     return None;
                 }
             };
-
-            for entry in entries {
-                let path = match entry {
-                    Ok(e) => e.path(),
-                    Err(e) => {
-                        log::error!("failed to read an entry in {}: {e}", queue_dir.display());
-                        return None;
-                    }
-                };
-                if !path.is_file() {
-                    continue;
+            if !path.is_file() {
+                continue;
+            }
+            let contents = match fs::read(&path) {
+                Ok(c) => c,
+                Err(e) => {
+                    log::error!("failed to read {}: {e}", path.display());
+                    return None;
                 }
-                let contents = match fs::read(&path) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        log::error!("failed to read {}: {e}", path.display());
-                        return None;
-                    }
-                };
-                total_in += 1;
-                if seen.insert(content_hash(&contents)) {
-                    let dest = output.join(format!("{total_out:06}"));
-                    // `contents` is already in hand from the dedup read, so write
-                    // it out directly rather than re-reading via fs::copy.
-                    if let Err(e) = fs::write(&dest, &contents) {
-                        log::error!("failed to write {}: {e}", dest.display());
-                        return None;
-                    }
-                    total_out += 1;
+            };
+            total_in += 1;
+            if seen.insert(content_hash(&contents)) {
+                let dest = output.join(format!("{total_out:06}"));
+                // `contents` is already in hand from the dedup read, so write it
+                // out directly rather than re-reading via fs::copy.
+                if let Err(e) = fs::write(&dest, &contents) {
+                    log::error!("failed to write {}: {e}", dest.display());
+                    return None;
                 }
+                total_out += 1;
             }
         }
     }
@@ -235,47 +245,56 @@ fn execute_minimize(args: &MinimizeArgs) -> bool {
         return false;
     }
 
-    // Default = the raw runner queues; stage to short names first (see stage_queues).
-    let stage_dir = runs_dir.join(&args.campaign_id).join(".corpus-stage");
-    let input = match &args.input {
-        Some(i) => i.clone(),
-        None => match stage_queues(&state, &stage_dir) {
-            Some(dir) => dir,
-            None => return false,
-        },
+    // Minimize the given --input directories, or the campaign's runner queues.
+    let sources: Vec<PathBuf> = if args.input.is_empty() {
+        state
+            .runners
+            .iter()
+            .map(|r| state.output_dir.join(r.name()).join("queue"))
+            .collect()
+    } else {
+        args.input.clone()
     };
 
-    log::info!("running afl-cmin on {input}");
-    log::info!("output: {}", output.display());
+    let stage_dir = runs_dir.join(&args.campaign_id).join(".corpus-stage");
+    let Some(input) = stage_inputs(&sources, &stage_dir) else {
+        return false;
+    };
 
-    let mut cmd = Command::new(&afl_cmin);
-    cmd.arg("-i")
-        .arg(&input)
-        .arg("-o")
-        .arg(&output)
-        .arg("-X")
-        .arg(&state.sharedir);
+    let result = run_afl_cmin(&afl_cmin, &input, &output, &state.sharedir);
 
-    let status = cmd.status();
-
-    // Remove the staging corpus we created (whether or not afl-cmin succeeded);
-    // the minimized output in `output` is what the user keeps.
-    if args.input.is_none()
-        && let Err(e) = fs::remove_dir_all(&stage_dir)
-    {
+    // Remove the staging corpus; the minimized output in `output` is what the
+    // user keeps.
+    if let Err(e) = fs::remove_dir_all(&stage_dir) {
         log::warn!(
             "failed to remove staging directory {}: {e}",
             stage_dir.display()
         );
     }
+    result
+}
 
-    let status = match status {
+/// Runs `afl-cmin -X` over `input`, writing the minimized corpus to `output`.
+fn run_afl_cmin(afl_cmin: &Path, input: &Path, output: &Path, sharedir: &Path) -> bool {
+    log::info!("running afl-cmin on {}", input.display());
+    log::info!("output: {}", output.display());
+
+    let status = match Command::new(afl_cmin)
+        .arg("-i")
+        .arg(input)
+        .arg("-o")
+        .arg(output)
+        .arg("-X")
+        .arg(sharedir)
+        .status()
+    {
         Ok(s) => s,
         Err(e) => {
             log::error!("failed to run {}: {e}", afl_cmin.display());
             return false;
         }
     };
+
     if !status.success() {
         log::error!("afl-cmin failed with {status}");
         return false;
@@ -285,15 +304,14 @@ fn execute_minimize(args: &MinimizeArgs) -> bool {
     true
 }
 
-/// Stages a campaign's runner queues into `stage_dir` with short, sequential
-/// filenames, returning the directory to hand to `afl-cmin -i`.
+/// Merges `sources` into `stage_dir` under short, sequential filenames and
+/// returns it for `afl-cmin -i`.
 ///
-/// afl-cmin -X hardlinks each input to `<8hex>_<basename>` (batch mode); smite-ir
-/// queue filenames already approach `NAME_MAX`, so the added prefix overflows
-/// (`ENAMETOOLONG`). Reusing `merge`'s content dedup gives short names (and drops
-/// duplicates, which afl-cmin would discard anyway). Returns `None` on failure,
-/// logged at the site.
-fn stage_queues(state: &CampaignState, stage_dir: &Path) -> Option<String> {
+/// AFL++ tends to produce long input names near `NAME_MAX`, and afl-cmin can
+/// then exceed the max length during minimization. Do an implicit merge step
+/// first so inputs get a short name and afl-cmin is less likely to exceed the
+/// max path length.
+fn stage_inputs(sources: &[PathBuf], stage_dir: &Path) -> Option<PathBuf> {
     // Start from a clean staging dir; a prior interrupted run may have left one.
     if stage_dir.exists()
         && let Err(e) = fs::remove_dir_all(stage_dir)
@@ -312,9 +330,9 @@ fn stage_queues(state: &CampaignState, stage_dir: &Path) -> Option<String> {
         return None;
     }
 
-    let (total_in, total_out) = merge_states(std::slice::from_ref(state), stage_dir)?;
-    log::info!("staged {total_out} unique inputs (deduped from {total_in}) for minimization");
-    Some(stage_dir.display().to_string())
+    let (total_in, total_out) = merge_dirs(sources, stage_dir)?;
+    log::info!("staged {total_out} unique inputs (from {total_in}) for minimization");
+    Some(stage_dir.to_path_buf())
 }
 
 /// Reports (with an error log) whether `output` already contains files.
@@ -466,17 +484,18 @@ mod tests {
     }
 
     #[test]
-    fn stage_queues_shortens_long_input_names() {
+    fn stage_inputs_shortens_long_input_names() {
         let dir = tempdir().unwrap();
-        let output_dir = dir.path().join("out");
+        let src = dir.path().join("queue");
+        fs::create_dir_all(&src).unwrap();
         // A smite-ir queue filename near NAME_MAX (255). afl-cmin -X would prefix
         // it with "<8hex>_" and overflow (ENAMETOOLONG); staging must rename it.
         let long_name = format!("id:000121,{}", "instr-reorder,".repeat(17));
         assert!(long_name.len() > 240 && long_name.len() < 255);
-        write_queue(&output_dir, 0, &[(long_name.as_str(), "payload")]);
+        fs::write(src.join(&long_name), "payload").unwrap();
 
         let stage = dir.path().join("stage");
-        let staged = stage_queues(&sample_state(output_dir, 1), &stage).unwrap();
+        let staged = stage_inputs(&[src], &stage).unwrap();
 
         let names: Vec<String> = fs::read_dir(&staged)
             .unwrap()
@@ -490,23 +509,24 @@ mod tests {
             names[0]
         );
         assert_eq!(
-            fs::read_to_string(stage.join(&names[0])).unwrap(),
+            fs::read_to_string(staged.join(&names[0])).unwrap(),
             "payload"
         );
     }
 
     #[test]
-    fn stage_queues_replaces_stale_staging_dir() {
+    fn stage_inputs_replaces_stale_staging_dir() {
         let dir = tempdir().unwrap();
-        let output_dir = dir.path().join("out");
-        write_queue(&output_dir, 0, &[("id:0", "fresh")]);
+        let src = dir.path().join("queue");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("id:0"), "fresh").unwrap();
 
         // A leftover file from a prior interrupted run must not survive staging.
         let stage = dir.path().join("stage");
         fs::create_dir_all(&stage).unwrap();
         fs::write(stage.join("stale"), "old").unwrap();
 
-        stage_queues(&sample_state(output_dir, 1), &stage).unwrap();
+        stage_inputs(&[src], &stage).unwrap();
 
         assert!(!stage.join("stale").exists());
         assert_eq!(dir_contents_sorted(&stage), ["fresh"]);
