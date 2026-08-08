@@ -2,6 +2,7 @@
 
 use bitcoin::OutPoint;
 use bitcoin::hashes::Hash;
+use bitcoin::hex::DisplayHex;
 use std::fmt;
 
 /// Maximum Lightning message size (2-byte length prefix limit).
@@ -62,6 +63,13 @@ impl ChannelId {
         res[30] ^= ((outpoint.vout >> 8) & 0xff) as u8;
         res[31] ^= (outpoint.vout & 0xff) as u8;
         Self(res)
+    }
+}
+
+impl fmt::Display for ChannelId {
+    /// Formats channel ID into hex string.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0.as_hex())
     }
 }
 
@@ -201,7 +209,6 @@ impl BigSize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bitcoin::hex::DisplayHex;
     use bitcoin::{OutPoint, Txid};
 
     #[test]
@@ -245,7 +252,7 @@ mod tests {
         let expected = "0202020202020202020202020202020202020202020202020202020202020203";
         let channel_id = ChannelId::v1_from_funding_outpoint(funding_outpoint);
 
-        assert_eq!(channel_id.0.as_hex().to_string(), expected);
+        assert_eq!(channel_id.to_string(), expected);
     }
 
     #[test]

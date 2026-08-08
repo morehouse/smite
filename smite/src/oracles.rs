@@ -1,19 +1,18 @@
-//! Oracle trait for post-scenario invariant checks.
+//! Oracle trait for protocol invariant checks.
 //!
 //! Oracles evaluate conditions beyond simple crashes.
 
-/// Result of an oracle evaluation
-pub enum OracleResult {
-    /// The check passed
-    Pass,
-    /// The check failed with a reason
-    Fail(String),
-}
+mod accept_channel;
+
+use super::violation::Violation;
+pub use accept_channel::{AcceptChannelContext, AcceptChannelOracle};
 
 /// `Oracle` evaluates a condition against some context
 pub trait Oracle<C> {
     /// Evaluate the oracle against the given context
-    fn evaluate(&self, context: &C) -> OracleResult;
-    /// Return the name of this oracle for logging
-    fn name(&self) -> &str;
+    ///
+    /// # Errors
+    ///
+    /// Returns `Violation` if an oracle invariant is violated.
+    fn evaluate(&self, context: &C) -> Result<(), Violation>;
 }

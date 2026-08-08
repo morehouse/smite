@@ -113,6 +113,15 @@ pub struct CommitmentState {
     // to correctly compute balances and construct HTLC outputs in the commitment transaction.
 }
 
+/// Costs associated with a commitment transaction, including transaction fee
+/// and anchor outputs.
+pub struct CommitmentCost {
+    /// Commitment transaction fee in satoshis.
+    pub fee_sat: u64,
+    /// Total cost of anchor outputs in satoshis.
+    pub anchor_cost_sat: u64,
+}
+
 /// State of a single channel, including its static configuration, holder
 /// identity, and current commitment state.
 pub struct ChannelState {
@@ -266,19 +275,6 @@ impl ChannelConfig {
         })
     }
 
-    /// Checks whether the opener can afford the commitment fee at the given
-    /// feerate, after accounting for the anchor outputs.
-    #[must_use]
-    pub fn can_opener_afford_feerate(&self, state: &CommitmentState) -> bool {
-        let fee = commit_tx_fee_sat(state.feerate_per_kw, &self.channel_type);
-        let anchor_cost = total_anchors_sat(&self.channel_type);
-
-        (state.opener.balance_msat / 1000)
-            .checked_sub(fee)
-            .and_then(|balance| balance.checked_sub(anchor_cost))
-            .is_some()
-    }
-
     /// Builds the signature for the counterparty's commitment transaction.
     #[must_use]
     pub fn sign_counterparty_commitment(
@@ -390,13 +386,10 @@ impl ChannelConfig {
         let anchor = supports_option_anchors(&self.channel_type);
 
         // Fee and balances.
-        let fee = commit_tx_fee_sat(state.feerate_per_kw, &self.channel_type);
-        let anchor_cost = total_anchors_sat(&self.channel_type);
-
+        let commitment_cost = CommitmentCost::new(state.feerate_per_kw, &self.channel_type);
+        let opener_balance =
+            (state.opener.balance_msat / 1000).saturating_sub(commitment_cost.total_sat());
         let acceptor_balance = state.acceptor.balance_msat / 1000;
-        let opener_balance = (state.opener.balance_msat / 1000)
-            .saturating_sub(fee)
-            .saturating_sub(anchor_cost);
 
         // Map opener/acceptor to local/remote for this commitment side.
         let (to_local_value, to_remote_value) = match local_side {
@@ -473,6 +466,23 @@ impl CommitmentState {
 
     // TODO: When adding HTLC support, add `get_next_commitment_state` to build the next
     // commitment state based on the previous state and the HTLCs claimed by both sides.
+}
+
+impl CommitmentCost {
+    /// Calculates the total cost of a commitment transaction.
+    #[must_use]
+    pub fn new(feerate_per_kw: u32, channel_type: &[u8]) -> CommitmentCost {
+        CommitmentCost {
+            fee_sat: commit_tx_fee_sat(feerate_per_kw, channel_type),
+            anchor_cost_sat: total_anchors_sat(channel_type),
+        }
+    }
+
+    /// Returns the total cost (fee + anchor outputs) in satoshis.
+    #[must_use]
+    pub fn total_sat(&self) -> u64 {
+        self.fee_sat + self.anchor_cost_sat
+    }
 }
 
 /// Get the fee cost of a commitment tx in satoshis.
@@ -1365,39 +1375,39 @@ mod tests {
     }
 
     #[test]
-    fn can_opener_afford_feerate_checks() {
+    fn opener_balance_after_commitment_cost_total_sat_checks() {
         let feerate_per_kw: u32 = 15_000;
-        let sample_key =
-            pubkey("03b28f7c5a9d1e4f8c6a7b2d3e9f1048576a1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e");
+        let anchor_channel_type = [0x40, 0x00, 0x00];
         // Legacy fee: 15000 * 724 / 1000 = 10_860 sat
         // Anchor fee: 15000 * 1124 / 1000 = 16_860 sat; anchor_cost = 660 sat
 
         // Comfortably affordable
-        let chan_config = sample_chan_config(20_000, vec![]);
-        let state = chan_config
-            .new_initial_commitment(0, feerate_per_kw, sample_key, sample_key)
-            .expect("valid commitment");
-        assert!(chan_config.can_opener_afford_feerate(&state));
+        let opener_balance_sat: u64 = 20_000;
+        assert_eq!(
+            opener_balance_sat.checked_sub(CommitmentCost::new(feerate_per_kw, &[]).total_sat()),
+            Some(9_140),
+        );
 
         // Exact zero opener balance
-        let chan_config = sample_chan_config(11_860, vec![]);
-        let state = chan_config
-            .new_initial_commitment(1_000_000, feerate_per_kw, sample_key, sample_key)
-            .expect("valid commitment");
-        assert!(chan_config.can_opener_afford_feerate(&state));
+        let opener_balance_sat: u64 = 10_860;
+        assert_eq!(
+            opener_balance_sat.checked_sub(CommitmentCost::new(feerate_per_kw, &[]).total_sat()),
+            Some(0),
+        );
 
-        // Push fits but fee does not
-        let chan_config = sample_chan_config(10_000, vec![]);
-        let state = chan_config
-            .new_initial_commitment(0, feerate_per_kw, sample_key, sample_key)
-            .expect("valid commitment");
-        assert!(!chan_config.can_opener_afford_feerate(&state));
+        // Balance does not cover the fee
+        let opener_balance_sat: u64 = 10_000;
+        assert_eq!(
+            opener_balance_sat.checked_sub(CommitmentCost::new(feerate_per_kw, &[]).total_sat()),
+            None
+        );
 
-        // Push + fee fit but anchor cost does not
-        let chan_config = sample_chan_config(17_500, vec![0x40, 0x00, 0x00]);
-        let state = chan_config
-            .new_initial_commitment(0, feerate_per_kw, sample_key, sample_key)
-            .expect("valid commitment");
-        assert!(!chan_config.can_opener_afford_feerate(&state));
+        // Balance covers the fee but not the anchor outputs
+        let opener_balance_sat: u64 = 17_500;
+        assert_eq!(
+            opener_balance_sat
+                .checked_sub(CommitmentCost::new(feerate_per_kw, &anchor_channel_type).total_sat()),
+            None,
+        );
     }
 }

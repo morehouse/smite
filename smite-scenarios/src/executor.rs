@@ -17,6 +17,7 @@ use smite::channel_tx::{
     build_funding_transaction,
 };
 use smite::noise::{ConnectionError, NoiseConnection};
+use smite::oracles::{AcceptChannelContext, AcceptChannelOracle, Oracle};
 use smite::pending_channel::PendingChannel;
 use smite::violation::Violation;
 use smite_ir::operation::AcceptChannelField;
@@ -477,7 +478,11 @@ impl<C: Connection, B: BitcoinRpc> Executor<C, B> {
                     log::debug!("[{:?}] RecvAcceptChannel: waiting", start.elapsed());
                     let ac = recv_accept_channel(&mut self.conn)?;
                     log::debug!("[{:?}] RecvAcceptChannel: received", start.elapsed());
-                    record_recv_accept_channel(&mut self.negotiations, &ac)?;
+                    AcceptChannelOracle.evaluate(&AcceptChannelContext {
+                        accept_channel: &ac,
+                        negotiation: self.negotiations.get(&ac.temporary_channel_id),
+                    })?;
+                    record_recv_accept_channel(&mut self.negotiations, &ac);
                     Some(Variable::AcceptChannel(ac))
                 }
 
@@ -1317,9 +1322,8 @@ fn is_channel_ready_expected(
 /// # Errors
 ///
 /// Returns [`Violation::UnknownChannel`] if no channel state exists for the
-/// given `channel_id`, [`Violation::OpenerCannotAffordFee`] if the opener
-/// cannot afford the commitment feerate, or [`Violation::InvalidCounterpartySignature`]
-/// if the signature is invalid for the holder's initial commitment transaction.
+/// given `channel_id`, or [`Violation::InvalidCounterpartySignature`] if the
+/// signature is invalid for the holder's initial commitment transaction.
 fn verify_funding_signed(
     fs: &FundingSigned,
     channel_states: &HashMap<ChannelId, ChannelState>,
@@ -1327,12 +1331,6 @@ fn verify_funding_signed(
     let state = channel_states
         .get(&fs.channel_id)
         .ok_or(Violation::UnknownChannel(fs.channel_id))?;
-
-    // The opener cannot afford the fee, so the acceptor must not send
-    // `funding_signed`. Receiving one is a protocol violation.
-    if !state.config.can_opener_afford_feerate(&state.commitment) {
-        return Err(Violation::OpenerCannotAffordFee(fs.channel_id));
-    }
 
     state
         .config
@@ -1372,29 +1370,18 @@ fn record_send_open_channel(
 /// Pairs a received `accept_channel` with the recorded `open_channel` of the
 /// same `temporary_channel_id`.
 ///
-/// # Errors
+/// # Panics
 ///
-/// Returns [`Violation::UnknownChannel`] if no `open_channel` was recorded
-/// for the message's `temporary_channel_id`.
-///
-/// Returns [`Violation::TempChannelIdReuse`] if the negotiation already has an
-/// `accept_channel` but has not yet reached `funding_created`.
+/// Panics if no matching `open_channel` exists. This should be unreachable, as
+/// `AcceptChannelOracle` reports such messages as a [`Violation`].
 fn record_recv_accept_channel(
     negotiations: &mut HashMap<ChannelId, PendingChannel>,
     accept_channel: &AcceptChannel,
-) -> Result<(), Violation> {
-    let pending = negotiations
+) {
+    negotiations
         .get_mut(&accept_channel.temporary_channel_id)
-        .ok_or(Violation::UnknownChannel(
-            accept_channel.temporary_channel_id,
-        ))?;
-    if pending.accept_channel.is_some() && !pending.funding_built {
-        return Err(Violation::TempChannelIdReuse(
-            accept_channel.temporary_channel_id,
-        ));
-    }
-    pending.accept_channel = Some(accept_channel.clone());
-    Ok(())
+        .expect("AcceptChannelOracle guaranteed this temporary_channel_id exists")
+        .accept_channel = Some(accept_channel.clone());
 }
 
 /// Extracts a field from a parsed `accept_channel` message.
@@ -1615,7 +1602,7 @@ mod tests {
             first_per_commitment_point: sample_pubkey(6),
             tlvs: AcceptChannelTlvs {
                 upfront_shutdown_script: Some(vec![0xde, 0xad]),
-                channel_type: Some(vec![0x01]),
+                channel_type: Some(vec![0x40, 0x10, 0x00]),
             },
         }
     }
@@ -1700,7 +1687,7 @@ mod tests {
                 inputs: vec![],
             },
             Instruction {
-                operation: Operation::LoadFeatures(vec![]),
+                operation: Operation::LoadFeatures(vec![0x40, 0x10, 0x00]),
                 inputs: vec![],
             },
         ]
@@ -1889,7 +1876,7 @@ mod tests {
         assert_eq!(oc.first_per_commitment_point, pk);
         assert_eq!(oc.channel_flags, 1);
         assert_eq!(oc.tlvs.upfront_shutdown_script, Some(vec![]));
-        assert!(oc.tlvs.channel_type.is_none());
+        assert_eq!(oc.tlvs.channel_type, Some(vec![0x40, 0x10, 0x00]));
     }
 
     #[test]
@@ -2645,9 +2632,55 @@ mod tests {
             )
             .unwrap_err();
 
-        assert!(
-            matches!(err, ExecuteError::Violation(Violation::UnknownChannel(id)) if id == unknown_id)
+        let ExecuteError::Violation(Violation::InvalidAcceptChannel(id, reason)) = &err else {
+            panic!("unexpected error: {err:?}");
+        };
+        assert_eq!(*id, unknown_id);
+        assert!(reason.contains(
+            "unknown temporary_channel_id: no open_channel was sent for this negotiation"
+        ));
+    }
+
+    #[test]
+    fn execute_recv_accept_channel_opener_cannot_afford_fee() {
+        let temporary_channel_id = ChannelId::new([0xbb; 32]);
+        let ac_bytes = Message::AcceptChannel(sample_accept_channel()).encode();
+
+        // Set `push_msat` so the opener cannot afford the commitment fee
+        // requiring the peer to reject the `open_channel` per BOLT 2.
+        let mut instrs = send_open_channel_instructions();
+        instrs[3] = Instruction {
+            operation: Operation::LoadAmount(99_900_000),
+            inputs: vec![],
+        };
+        let sent_open_channel = instrs.len() - 1;
+        instrs.push(Instruction {
+            operation: Operation::RecvAcceptChannel,
+            inputs: vec![sent_open_channel],
+        });
+
+        let mut executor = Executor::new(
+            MockConnection::new(),
+            MockBitcoinCli::default(),
+            sample_context(),
         );
+        executor.conn.queue_recv(ac_bytes);
+        let err = executor
+            .execute(
+                &Program {
+                    instructions: instrs,
+                },
+                std::time::Instant::now(),
+            )
+            .unwrap_err();
+
+        let ExecuteError::Violation(Violation::InvalidAcceptChannel(id, reason)) = &err else {
+            panic!("unexpected error: {err:?}");
+        };
+        assert_eq!(*id, temporary_channel_id);
+        assert!(reason.contains(
+            "invalid open_channel: opener balance 100 sat cannot cover the commitment fee"
+        ));
     }
 
     #[test]
@@ -2687,9 +2720,13 @@ mod tests {
                 std::time::Instant::now(),
             )
             .unwrap_err();
-        assert!(matches!(
-            err,
-            ExecuteError::Violation(Violation::TempChannelIdReuse(id)) if id == temporary_channel_id
+
+        let ExecuteError::Violation(Violation::InvalidAcceptChannel(id, reason)) = &err else {
+            panic!("unexpected error: {err:?}");
+        };
+        assert_eq!(*id, temporary_channel_id);
+        assert!(reason.contains(
+            "temporary_channel_id reuse: previous negotiation has not reached funding_created"
         ));
     }
 
@@ -3567,54 +3604,6 @@ mod tests {
     }
 
     #[test]
-    fn execute_recv_funding_signed_opener_cannot_afford_fee() {
-        let mock_cli = MockBitcoinCli {
-            utxos: vec![sample_utxo()],
-            change_spk: sample_change_spk(),
-            ..Default::default()
-        };
-
-        let channel_id = ChannelId::v1_from_funding_outpoint(OutPoint {
-            txid: "09b0549b35f14ee862f63bd75811c6c27963c4dea6766ec6836952ec78df1e7e"
-                .parse()
-                .unwrap(),
-            vout: 0,
-        });
-
-        // The expected signature here was computed using LDK as the source of
-        // truth.
-        let fs_bytes = Message::FundingSigned(FundingSigned {
-            channel_id,
-            signature: "304502210096c5e8ad834af46b42a4301828852205655d16dc8d55333831de49642d70c60a02205466283b9557447dd4c5374b90eda80f023017164dd04deb7c45cfc472e03023".parse().unwrap(),
-        })
-        .encode();
-
-        let mut executor = Executor::new(MockConnection::new(), mock_cli, sample_context());
-        executor.conn.queue_recv(fs_bytes);
-
-        // Increase the pushed amount so the opener cannot afford the required
-        // fee when the commitment is built and funding_signed is received.
-        let mut negotiation = sample_funding_negotiation();
-        negotiation.open_channel.push_msat = 10_000_000_000;
-        executor
-            .negotiations
-            .insert(ChannelId::new([0xbb; 32]), negotiation);
-
-        let err = executor
-            .execute(
-                &Program {
-                    instructions: send_funding_created_and_recv_funding_signed_instructions(),
-                },
-                std::time::Instant::now(),
-            )
-            .unwrap_err();
-        assert!(matches!(
-            err,
-            ExecuteError::Violation(Violation::OpenerCannotAffordFee(id)) if id == channel_id
-        ));
-    }
-
-    #[test]
     fn execute_recv_funding_signed_invalid_signature() {
         let mock_cli = MockBitcoinCli {
             utxos: vec![sample_utxo()],
@@ -4136,7 +4125,7 @@ mod tests {
         );
         assert_eq!(
             extract_field(&ac, AcceptChannelField::ChannelType),
-            Variable::Features(vec![0x01])
+            Variable::Features(vec![0x40, 0x10, 0x00])
         );
     }
 

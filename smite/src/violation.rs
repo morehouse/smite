@@ -26,30 +26,23 @@ pub enum Violation {
     #[error("target unexpectedly disconnected")]
     UnexpectedDisconnect,
 
-    /// The target referenced a channel for which no state was ever established.
-    /// This covers:
-    /// - a `funding_signed` or `channel_ready` for a `channel_id` we never
-    ///   opened, or
-    /// - an `accept_channel` for a `temporary_channel_id` we never sent
-    ///   `open_channel` for.
-    #[error("unknown channel: no tracked state for channel_id {0:?}")]
+    /// The target's `accept_channel` broke a BOLT 2 requirement, as judged by
+    /// [`crate::oracles::AcceptChannelOracle`]. The reason names the breached
+    /// requirement, one of:
+    /// - it names a `temporary_channel_id` we sent no `open_channel` for,
+    /// - it accepts an `open_channel` BOLT 2 required it to reject,
+    /// - its own fields breach the `accept_channel` requirements, or
+    /// - it reuses a `temporary_channel_id` still awaiting `funding_created`.
+    #[error("invalid accept_channel for temporary_channel_id {0}: {1}")]
+    InvalidAcceptChannel(ChannelId, String),
+
+    /// The target sent a `funding_signed` or `channel_ready` for a `channel_id`
+    /// we never opened, i.e. one for which no state was ever established.
+    #[error("unknown channel: no tracked state for channel_id {0}")]
     UnknownChannel(ChannelId),
-
-    /// The target sent a second `accept_channel` for a `temporary_channel_id`
-    /// whose in-progress negotiation already has one, i.e. the id was reused
-    /// before its negotiation reached `funding_created`.
-    #[error(
-        "temporary_channel_id reuse: previous negotiation for {0:?} has not yet reached funding_created"
-    )]
-    TempChannelIdReuse(ChannelId),
-
-    /// The target sent `funding_signed` even though the opener cannot afford the
-    /// commitment feerate.
-    #[error("opener cannot afford commitment fee for channel_id {0:?}")]
-    OpenerCannotAffordFee(ChannelId),
 
     /// The target's `funding_signed` signature failed to verify against the
     /// holder's initial commitment transaction.
-    #[error("invalid counterparty signature for channel_id {0:?}")]
+    #[error("invalid counterparty signature for channel_id {0}")]
     InvalidCounterpartySignature(ChannelId),
 }
